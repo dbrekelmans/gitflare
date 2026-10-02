@@ -46,7 +46,8 @@ export type ChangeEvent = ChangeEventBody & {
 
 /**
  * Sent only to connected browsers and never stored: a reply being typed out by
- * the agent, and CI output as it is produced.
+ * the agent, and CI output as it is produced. `thread.delta.text` is the
+ * reply so far in full (cumulative), not an increment to append.
  */
 export type TransientChangeSignal =
   | { type: "thread.delta"; threadId: ThreadId; text: string }
