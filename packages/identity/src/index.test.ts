@@ -3,7 +3,7 @@ import { createTestDb } from "@gitflare/db/testing";
 import { ManualClock, SequentialIds } from "@gitflare/testing";
 import { eq } from "drizzle-orm";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createAccessIdentity, provisionUser } from "./index";
 
 const TEAM_DOMAIN = "https://gitflare-test.cloudflareaccess.com";
@@ -107,6 +107,47 @@ describe("createAccessIdentity", () => {
       .setExpirationTime(Math.floor(Date.now() / 1000) - 1800)
       .sign(privateKey);
     expect(await identity.identify(headers({ "Cf-Access-Jwt-Assertion": token }))).toBeNull();
+  });
+
+  describe("the log line for a token that does not validate", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it.each([
+      ["an expired token", { expiresIn: "-30m" }, "ERR_JWT_EXPIRED"],
+      [
+        "a token for another audience",
+        { audience: "someone-else" },
+        "ERR_JWT_CLAIM_VALIDATION_FAILED",
+      ],
+    ])("names the error for %s and prints none of its claims", async (_name, bad, code) => {
+      const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+      const identity = createAccessIdentity({
+        teamDomain: TEAM_DOMAIN,
+        audience: AUDIENCE,
+        fetch: fetchKeySet,
+      });
+      const token = await new SignJWT({ sub: "user-sub-secret", email: "private@example.com" })
+        .setProtectedHeader({ alg: "RS256", kid: KID })
+        .setIssuedAt()
+        .setIssuer(TEAM_DOMAIN)
+        .setAudience("audience" in bad ? bad.audience : AUDIENCE)
+        .setExpirationTime("expiresIn" in bad ? bad.expiresIn : "5m")
+        .sign(privateKey);
+
+      expect(await identity.identify(headers({ "Cf-Access-Jwt-Assertion": token }))).toBeNull();
+
+      expect(logged).toHaveBeenCalledOnce();
+      const printed =
+        logged.mock.calls[0]
+          ?.map((arg) => (typeof arg === "string" ? arg : (JSON.stringify(arg) ?? String(arg))))
+          .join(" ") ?? "";
+      expect(printed).toContain(code);
+      expect(printed).not.toContain("private@example.com");
+      expect(printed).not.toContain("user-sub-secret");
+      expect(logged.mock.calls[0]).toHaveLength(1);
+    });
   });
 
   it("returns null for a service token, which carries no user", async () => {

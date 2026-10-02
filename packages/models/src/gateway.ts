@@ -18,7 +18,13 @@ export interface AiBindingLike {
     options?: Record<string, unknown>,
   ): Promise<unknown>;
   readonly aiGatewayLogId: string | null;
-  gateway(id: string): { getLog(logId: string): Promise<{ cost?: number }> };
+  gateway(id: string): { getLog(logId: string): Promise<GatewayLog> };
+}
+
+/** The fields of an `AiGatewayLog` this package reads. */
+export interface GatewayLog {
+  cost?: number;
+  tokens_in?: number;
 }
 
 /** US dollars per million tokens, which is also micro-dollars per token. */
@@ -31,8 +37,8 @@ export interface ModelPrice {
 
 /**
  * The catalog's prices as read on 2026-10-02 (spec/research/ai-identity.md).
- * They are used only when the gateway's log has no cost for a call, so that a
- * call is never recorded as free; the log's own figure wins whenever it exists.
+ * Only a fallback: the gateway log's cost wins whenever it exists, and every
+ * use of these, or of no price at all, logs a warning, because prices change.
  */
 export const catalogPrices: Record<string, ModelPrice> = {
   "anthropic/claude-fable-5.1": { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
@@ -57,8 +63,8 @@ export type BilledCall = Pick<
 
 /**
  * A failure of a call the model did answer, and that was therefore paid for.
- * `withAccounting` records `call`, so replies that do not validate still count
- * towards a change's budget.
+ * `withAccounting` records `call`, so replies that do not validate, and streams
+ * cut off part-way, still count towards a change's budget.
  */
 export class BilledModelError extends ModelError {
   constructor(
@@ -68,6 +74,25 @@ export class BilledModelError extends ModelError {
   ) {
     super(code, message);
   }
+}
+
+type BillingSink = (call: BilledCall) => Promise<void>;
+
+const billingSink = Symbol("billingSink");
+
+/**
+ * A copy of the request carrying `sink`, which is told of every call made for
+ * it that was paid for but reaches the caller neither as a result nor as a
+ * `BilledModelError`: a stream the consumer left, a failure a fallback
+ * answered. The sink survives `{ ...request }`, so wrappers pass it on.
+ */
+export function withBillingSink<R extends object>(request: R, sink: BillingSink): R {
+  return { ...request, [billingSink]: sink };
+}
+
+/** Reports `call` to the request's billing sink, when it has one. */
+export async function reportBilled(request: object, call: BilledCall): Promise<void> {
+  await (request as { [billingSink]?: BillingSink })[billingSink]?.(call);
 }
 
 const attributionKeys = ["agent", "userId", "repositoryId", "changeId", "sessionId"] as const;
@@ -97,6 +122,7 @@ const gatewayCodes: Record<string, ModelErrorCode> = {
   "2021": "no_credits",
   "2045": "budget_exceeded",
   "2003": "rate_limited",
+  "7003": "invalid_request",
 };
 
 /** The binding's thrown error has no status or code property: the code is the prefix of its message. */
@@ -178,14 +204,10 @@ function applyUsage(usage: ModelUsage, reported: z.infer<typeof AnthropicUsage> 
   usage.cacheWriteTokens = reported.cache_creation_input_tokens ?? usage.cacheWriteTokens;
 }
 
-function readMessage(model: string, raw: unknown): Reply {
+/** The reply, or null when the gateway answered with something that is not an Anthropic message. */
+function readMessage(raw: unknown): Reply | null {
   const message = AnthropicMessage.safeParse(raw);
-  if (!message.success) {
-    throw new ModelError(
-      "unavailable",
-      `${model}: the gateway did not return an Anthropic message`,
-    );
-  }
+  if (!message.success) return null;
   const usage = emptyUsage();
   applyUsage(usage, message.data.usage);
   const text = message.data.content
@@ -195,21 +217,58 @@ function readMessage(model: string, raw: unknown): Reply {
   return { text, usage, stopReason: message.data.stop_reason ?? null };
 }
 
-/** The reply as JSON: as it stands, or inside a code fence, or between its outermost brackets. */
-function extractJson(text: string): { value: unknown } | null {
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text)?.[1];
-  const start = text.search(/[{[]/);
-  const end = Math.max(text.lastIndexOf("}"), text.lastIndexOf("]"));
-  const bracketed = start >= 0 && end > start ? text.slice(start, end + 1) : undefined;
-  for (const candidate of [text, fenced, bracketed]) {
-    if (candidate === undefined) continue;
-    try {
-      return { value: JSON.parse(candidate) };
-    } catch {
-      // Not JSON read this way; try the next.
+/** The index of the bracket that closes the one at `start`, skipping strings; -1 when none does. */
+function closingBracket(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const char = text[i];
+    if (inString) {
+      if (char === "\\") i++;
+      else if (char === '"') inString = false;
+    } else if (char === '"') {
+      inString = true;
+    } else if (char === "{" || char === "[") {
+      depth++;
+    } else if (char === "}" || char === "]") {
+      depth--;
+      if (depth === 0) return i;
     }
   }
-  return null;
+  return -1;
+}
+
+/**
+ * Every JSON value the reply could be meant as, in order: the reply as it
+ * stands, inside a code fence, then each balanced bracketed span. Prose may
+ * hold brackets of its own (`See [1]. {…}`), so the caller takes the first
+ * that matches its schema rather than the first that parses.
+ */
+function* jsonCandidates(text: string): Generator<unknown> {
+  const parse = (candidate: string) => {
+    try {
+      return { value: JSON.parse(candidate) as unknown };
+    } catch {
+      return null;
+    }
+  };
+  const whole = parse(text);
+  if (whole) yield whole.value;
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text)?.[1];
+  const inFence = fenced === undefined ? null : parse(fenced);
+  if (inFence) yield inFence.value;
+  // Spans inside a balanced span are not tried, and only so many openers are,
+  // so that a long reply cut off mid-object is not rescanned once per bracket.
+  const opener = /[{[]/g;
+  let attempts = 0;
+  for (let match = opener.exec(text); match && attempts < 32; match = opener.exec(text)) {
+    attempts++;
+    const end = closingBracket(text, match.index);
+    if (end < 0) continue;
+    const span = parse(text.slice(match.index, end + 1));
+    if (span) yield span.value;
+    opener.lastIndex = end + 1;
+  }
 }
 
 function isReadableStream(value: unknown): value is ReadableStream<Uint8Array> {
@@ -257,10 +316,15 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  *   gateway drop all of it, and with it the request's budget partition;
  * - tell the errors apart by the code at the start of the thrown message:
  *   `402`/`2021` is `no_credits`, `429`/`2045` is `budget_exceeded`,
- *   `429`/`2003` is `rate_limited`.
+ *   `429`/`2003` is `rate_limited`, `400`/`7003` is `invalid_request`.
  *
  * A call's cost is read from its gateway log, which can lag the response by
- * half a second: one retry, then an estimate from the token counts.
+ * half a second: one retry, then an estimate from the token counts and the
+ * fallback prices, with a warning.
+ *
+ * Once a model has answered, every way out is billed: a result, a
+ * `BilledModelError`, or, for a stream the consumer leaves, a report to the
+ * request's billing sink.
  */
 export function createGatewayModels(
   ai: AiBindingLike,
@@ -280,23 +344,36 @@ export function createGatewayModels(
     }
   };
 
-  const loggedCost = async (logId: string | null): Promise<MicroUsd | null> => {
+  /** The call's log, read a second time when the first read has no cost yet. */
+  const readLog = async (logId: string | null): Promise<GatewayLog | null> => {
     if (!logId) return null;
+    let log: GatewayLog | null = null;
     for (const delay of [0, logRetryDelayMs]) {
       if (delay > 0) await sleep(delay);
       try {
-        const { cost } = await ai.gateway(gatewayId).getLog(logId);
-        if (typeof cost === "number") return Math.round(cost * 1_000_000);
+        log = await ai.gateway(gatewayId).getLog(logId);
+        if (typeof log.cost === "number") return log;
       } catch {
         // "Log not found" until the gateway has written it.
       }
     }
-    return null;
+    return log;
   };
 
-  const estimatedCost = (model: string, usage: ModelUsage): MicroUsd => {
+  const costOf = (
+    model: string,
+    usage: ModelUsage,
+    logId: string | null,
+    log: GatewayLog | null,
+  ): MicroUsd => {
+    if (typeof log?.cost === "number") return Math.round(log.cost * 1_000_000);
     const price = prices[model];
-    if (!price) return 0;
+    const missing = `@gitflare/models: the gateway log ${logId ?? "(none)"} has no cost for ${model}`;
+    if (!price) {
+      console.warn(`${missing}, and there is no fallback price: recorded as 0`);
+      return 0;
+    }
+    console.warn(`${missing}: estimated from the fallback prices`);
     return Math.round(
       usage.inputTokens * price.input +
         usage.outputTokens * price.output +
@@ -305,41 +382,52 @@ export function createGatewayModels(
     );
   };
 
+  const billed = async (model: string, usage: ModelUsage, logId: string | null) => ({
+    model,
+    usage,
+    costMicroUsd: costOf(model, usage, logId, await readLog(logId)),
+    gatewayLogId: logId,
+  });
+
+  const notAnthropic = async (model: string, logId: string | null) =>
+    new BilledModelError(
+      "unavailable",
+      `${model}: the gateway did not return an Anthropic message`,
+      await billed(model, emptyUsage(), logId),
+    );
+
   const finish = async <T>(
     request: GenerateRequest<T>,
     reply: Reply,
     logId: string | null,
   ): Promise<GenerateResult<T>> => {
-    const call: BilledCall = {
-      model: request.model,
-      usage: reply.usage,
-      costMicroUsd: (await loggedCost(logId)) ?? estimatedCost(request.model, reply.usage),
-      gatewayLogId: logId,
-    };
+    const call: BilledCall = await billed(request.model, reply.usage, logId);
     if (!request.output) return { ...call, text: reply.text, output: undefined as T };
 
-    const invalid = (reason: string) =>
-      new BilledModelError(
-        "invalid_output",
-        `${request.model}: the reply is not a valid "${request.output?.name}": ${reason}`,
-        call,
-      );
-    const json = extractJson(reply.text);
-    if (!json) {
-      throw invalid(
-        reply.stopReason === "max_tokens" ? "it was cut off at max_tokens" : "it is not JSON",
-      );
+    let mismatch: string | undefined;
+    for (const value of jsonCandidates(reply.text)) {
+      const parsed = request.output.schema.safeParse(value);
+      if (parsed.success) return { ...call, text: reply.text, output: parsed.data };
+      mismatch ??= parsed.error.message;
     }
-    const parsed = request.output.schema.safeParse(json.value);
-    if (!parsed.success) throw invalid(parsed.error.message);
-    return { ...call, text: reply.text, output: parsed.data };
+    const reason =
+      reply.stopReason === "max_tokens"
+        ? "it was cut off at max_tokens"
+        : (mismatch ?? "it is not JSON");
+    throw new BilledModelError(
+      "invalid_output",
+      `${request.model}: the reply is not a valid "${request.output.name}": ${reason}`,
+      call,
+    );
   };
 
   return {
     async generate<T = undefined>(request: GenerateRequest<T>): Promise<GenerateResult<T>> {
       const metadata = attributionMetadata(request.attribution);
       const { raw, logId } = await run(request.model, messagesBody(request), metadata);
-      return finish(request, readMessage(request.model, raw), logId);
+      const reply = readMessage(raw);
+      if (!reply) throw await notAnthropic(request.model, logId);
+      return finish(request, reply, logId);
     },
 
     async *stream<T = undefined>(request: GenerateRequest<T>): AsyncIterable<ModelStreamEvent<T>> {
@@ -348,67 +436,103 @@ export function createGatewayModels(
       const { raw, logId } = await run(request.model, body, metadata);
 
       if (!isReadableStream(raw)) {
-        const reply = readMessage(request.model, raw);
-        if (reply.text) yield { type: "text", text: reply.text };
-        yield { type: "done", result: await finish(request, reply, logId) };
+        const reply = readMessage(raw);
+        if (!reply) throw await notAnthropic(request.model, logId);
+        const result = await finish(request, reply, logId);
+        let delivered = false;
+        try {
+          if (reply.text) yield { type: "text", text: reply.text };
+          delivered = true;
+          yield { type: "done", result };
+        } finally {
+          if (!delivered) await reportBilled(request, result);
+        }
         return;
       }
 
       const reply: Reply = { text: "", usage: emptyUsage(), stopReason: null };
       let started = false;
+      let stopped = false;
+      // Whether the stream ended in a result or an error; if not, the consumer left.
+      let settled = false;
       try {
-        for await (const data of sseData(raw)) {
-          const event = AnthropicStreamEvent.safeParse(data);
-          if (!event.success) continue;
-          const { type, message, delta, usage, error } = event.data;
-          if (type === "message_start") {
-            started = true;
-            applyUsage(reply.usage, message?.usage);
-          } else if (type === "content_block_delta" && delta?.type === "text_delta") {
-            const text = delta.text ?? "";
-            reply.text += text;
-            if (text) yield { type: "text", text };
-          } else if (type === "message_delta") {
-            applyUsage(reply.usage, usage);
-            reply.stopReason = delta?.stop_reason ?? reply.stopReason;
-          } else if (type === "error") {
-            throw new ModelError(
-              error?.type === "rate_limit_error" ? "rate_limited" : "unavailable",
-              `${request.model}: ${error?.message ?? error?.type ?? "the stream failed"}`,
-            );
+        try {
+          for await (const data of sseData(raw)) {
+            const event = AnthropicStreamEvent.safeParse(data);
+            if (!event.success) continue;
+            const { type, message, delta, usage, error } = event.data;
+            if (type === "message_start") {
+              started = true;
+              applyUsage(reply.usage, message?.usage);
+            } else if (type === "content_block_delta" && delta?.type === "text_delta") {
+              const text = delta.text ?? "";
+              reply.text += text;
+              if (text) yield { type: "text", text };
+            } else if (type === "message_delta") {
+              applyUsage(reply.usage, usage);
+              reply.stopReason = delta?.stop_reason ?? reply.stopReason;
+            } else if (type === "message_stop") {
+              stopped = true;
+            } else if (type === "error") {
+              throw new ModelError(
+                error?.type === "rate_limit_error" ? "rate_limited" : "unavailable",
+                `${request.model}: ${error?.message ?? error?.type ?? "the stream failed"}`,
+              );
+            }
           }
+        } catch (error) {
+          settled = true;
+          const failure = toModelError(error);
+          if (!started) throw failure;
+          const paid = await billed(request.model, reply.usage, logId);
+          const billedFailure = new BilledModelError(failure.code, failure.message, paid);
+          billedFailure.cause = failure;
+          throw billedFailure;
         }
-      } catch (error) {
-        throw toModelError(error);
+        settled = true;
+        if (!started) {
+          throw new ModelError("unavailable", `${request.model}: the stream carried no message`);
+        }
+        // A reply ends with a stop reason and `message_stop`; a stream that
+        // closes before either was cut off, whatever text it carried.
+        if (!stopped && reply.stopReason === null) {
+          throw new BilledModelError(
+            "unavailable",
+            `${request.model}: the stream ended before the reply did`,
+            await billed(request.model, reply.usage, logId),
+          );
+        }
+        yield { type: "done", result: await finish(request, reply, logId) };
+      } finally {
+        if (!settled) await reportBilled(request, await billed(request.model, reply.usage, logId));
       }
-      if (!started) {
-        throw new ModelError("unavailable", `${request.model}: the stream carried no message`);
-      }
-      yield { type: "done", result: await finish(request, reply, logId) };
     },
 
     async embed(request): Promise<EmbedResult> {
       const metadata = attributionMetadata(request.attribution);
-      // Token counts are not read yet: the hardening task takes them from the gateway log.
-      const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
       if (request.texts.length === 0) {
+        const usage = emptyUsage();
         return { vectors: [], model: request.model, usage, costMicroUsd: 0, gatewayLogId: null };
       }
       const { raw, logId } = await run(request.model, { text: request.texts }, metadata);
-      const embeddings = Embeddings.safeParse(raw);
-      if (!embeddings.success || embeddings.data.data.length !== request.texts.length) {
-        throw new ModelError(
-          "unavailable",
-          `${request.model}: the gateway did not return one vector per text`,
-        );
-      }
-      return {
-        vectors: embeddings.data.data,
+      // The reply has no token counts; the log has the input's, as `tokens_in`.
+      const log = await readLog(logId);
+      const usage = { ...emptyUsage(), inputTokens: log?.tokens_in ?? 0 };
+      const call: BilledCall = {
         model: request.model,
         usage,
-        costMicroUsd: (await loggedCost(logId)) ?? 0,
-        gatewayLogId: logId ?? null,
+        costMicroUsd: costOf(request.model, usage, logId, log),
+        gatewayLogId: logId,
       };
+      const embeddings = Embeddings.safeParse(raw);
+      if (!embeddings.success || embeddings.data.data.length !== request.texts.length) {
+        throw new BilledModelError(
+          "unavailable",
+          `${request.model}: the gateway did not return one vector per text`,
+          call,
+        );
+      }
+      return { vectors: embeddings.data.data, ...call };
     },
   };
 }

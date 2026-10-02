@@ -112,13 +112,26 @@ function hirschbergOps(a: readonly string[], b: readonly string[]): Op[] {
 
 const DEFAULT_CONTEXT = 3;
 
-/** The two sides of a changed file, as text, with a known status. */
+/**
+ * The LCS costs one step per pair of changed lines, about 100 ms at this many
+ * in Node: a 4,000-line rewrite. Beyond it the file is reported without hunks,
+ * like an oversized one, rather than spending the Worker's CPU on it.
+ */
+export const DEFAULT_MAX_DIFF_CELLS = 16_000_000;
+
+/**
+ * The two sides of a changed file, as text, with a known status. When the
+ * lines that differ, after the common prefix and suffix are set aside, are
+ * more than `maxCells` pairs, the file is too large to diff: it comes back
+ * like a binary one, with no hunks and no line counts.
+ */
 export function lineDiffStatus(
   path: string,
   before: string | null,
   after: string | null,
   status: FileStatus,
   contextLines: number = DEFAULT_CONTEXT,
+  maxCells: number = DEFAULT_MAX_DIFF_CELLS,
 ): FileDiff {
   const CONTEXT = contextLines;
   const split = (text: string | null) => (text ? text.replace(/\n$/, "").split("\n") : []);
@@ -141,6 +154,9 @@ export function lineDiffStatus(
   }
   const beforeMid = beforeLines.slice(prefix, beforeLines.length - suffix);
   const afterMid = afterLines.slice(prefix, afterLines.length - suffix);
+  if (beforeMid.length * afterMid.length > maxCells) {
+    return { path, oldPath: null, status, binary: true, insertions: 0, deletions: 0, hunks: [] };
+  }
 
   const prefixOps: Op[] = beforeLines.slice(0, prefix).map((text) => ({ kind: "context", text }));
   const suffixOps: Op[] = beforeLines

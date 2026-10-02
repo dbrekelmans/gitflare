@@ -210,6 +210,26 @@ describe("captureChange", () => {
     ]);
   });
 
+  test("reads the demo session as the fixture has it, turn times aside", async () => {
+    const db = createTestDb();
+    await seedDemo(db);
+    const { git } = buildDemoGit();
+
+    const capture = await captureChange({ db, git, clock }, demoChanges.review.id);
+    const [session] = capture.sessions;
+    const [expected] = demo.capturedSessions;
+    if (!session || !expected) throw new Error("expected one captured session");
+
+    // The fixture's turns and its checkpoint transcript disagree on when four
+    // turns happened (09:13:00 against 09:12:40, 09:21:00 against 09:21:10);
+    // the transcript is what capture reads. Everything else matches.
+    const { turns, ...rest } = session;
+    const { turns: expectedTurns, ...expectedRest } = expected;
+    expect(rest).toEqual(expectedRest);
+    const untimed = (all: typeof turns) => all.map(({ kind, text }) => ({ kind, text }));
+    expect(untimed(turns)).toEqual(untimed(expectedTurns));
+  });
+
   test("a change with no trailers yields an empty capture", async () => {
     const db = createTestDb();
     const repositoryId = "rep_notrailers" as RepositoryId;
