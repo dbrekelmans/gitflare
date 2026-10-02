@@ -1,11 +1,11 @@
-import type { ChangeId } from "@gitflare/core";
+import type { ChangeId, ThreadId } from "@gitflare/core";
 import type { LiveServerMessage } from "@gitflare/core/api";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { keys } from "./keys";
-import { useChangeLive } from "./live";
+import { useChangeLive, useThreadDraft } from "./live";
 
 /** Stands in for a browser `WebSocket`: records what was sent, and lets a test play the server's part. */
 class FakeWebSocket extends EventTarget {
@@ -96,5 +96,40 @@ describe("useChangeLive", () => {
 
     unmountB();
     expect(FakeWebSocket.instances[0]?.closed).toBe(true);
+  });
+
+  it("does not leak a socket when a hook mounts while a reconnect is pending", () => {
+    vi.useFakeTimers();
+    try {
+      const changeId = "chg_live_c" as ChangeId;
+      const queryClient = new QueryClient();
+
+      const { unmount: unmountLive } = renderHook(() => useChangeLive(changeId), {
+        wrapper: wrapper(queryClient),
+      });
+      const first = FakeWebSocket.instances[0];
+      expect(first).toBeDefined();
+
+      // The connection drops; a reconnect is now scheduled.
+      act(() => first?.close());
+
+      // A second hook mounts before that reconnect fires.
+      const { unmount: unmountDraft } = renderHook(
+        () => useThreadDraft(changeId, "thr_1" as ThreadId),
+        { wrapper: wrapper(queryClient) },
+      );
+
+      // If the scheduled reconnect were not cancelled, it would open a third
+      // socket on top of the one the second hook's mount already opened.
+      act(() => vi.advanceTimersByTime(30_000));
+
+      const open = FakeWebSocket.instances.filter((socket) => !socket.closed);
+      expect(open.length).toBe(1);
+
+      unmountLive();
+      unmountDraft();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

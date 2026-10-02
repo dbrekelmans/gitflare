@@ -11,9 +11,6 @@ export type LiveStatus = "connecting" | "live" | "offline";
 // `useChangeLive` once; anything below it that wants the transient signals
 // (a reply being typed, CI output) calls `useChangeSignal` or `useThreadDraft`
 // and is fed from that same connection. Nothing opens a second socket.
-//
-// Build task: `live`. Until it lands these report `offline` and deliver
-// nothing, and the page shows whatever its queries last fetched.
 
 interface Connection {
   changeId: ChangeId;
@@ -114,7 +111,16 @@ function acquire(changeId: ChangeId, lastEventSeq?: number): Connection {
     conn.lastSeq = Math.max(conn.lastSeq, lastEventSeq);
   }
   conn.refCount += 1;
-  if (!conn.socket) connect(conn);
+  if (!conn.socket) {
+    // A hook can mount while a dropped connection's reconnect is still
+    // pending; connect now and cancel that timer so it never fires a second,
+    // leaked socket once this one is open.
+    if (conn.reconnectTimer) {
+      clearTimeout(conn.reconnectTimer);
+      conn.reconnectTimer = null;
+    }
+    connect(conn);
+  }
   return conn;
 }
 

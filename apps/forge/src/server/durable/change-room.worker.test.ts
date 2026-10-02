@@ -94,3 +94,39 @@ it("replays the gap to a client resuming from a sequence number", async () => {
   await waitUntil(() => log.length >= 2);
   expect(log[1]).toEqual({ type: "event", event: second });
 });
+
+it("refuses the upgrade for a change that does not exist", async () => {
+  const deps = services();
+  await ensureDevDatabase(deps, env.DB);
+  const changeId = "chg_does_not_exist" as ChangeId;
+
+  const response = await env.CHANGE_ROOM.getByName(changeId).fetch(
+    `https://forge${httpRoutes.changeLive(changeId)}`,
+    { headers: { upgrade: "websocket" } },
+  );
+  expect(response.status).toBe(404);
+  expect(response.webSocket).toBeNull();
+});
+
+it("ignores a malformed client message instead of throwing", async () => {
+  const deps = services();
+  await ensureDevDatabase(deps, env.DB);
+  const changeId = demoChanges.review.id;
+
+  const log: LiveServerMessage[] = [];
+  const ws = await openSocket(changeId, log);
+  await waitUntil(() => log.length >= 1);
+
+  ws.send(JSON.stringify(null));
+  ws.send(JSON.stringify({ type: "resume" }));
+  ws.send(JSON.stringify({ type: "resume", after: "not a number" }));
+  ws.send("not json at all");
+
+  const event = await appendChangeEvent(
+    { db: deps.db, live: createChangeLive(env), clock: deps.clock },
+    changeId,
+    { type: "intent.updated" },
+  );
+  await waitUntil(() => log.length >= 2);
+  expect(log[1]).toEqual({ type: "event", event });
+});

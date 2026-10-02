@@ -1,9 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import type { ChangeEvent, ChangeId, TransientChangeSignal } from "@gitflare/core";
 import type { LiveClientMessage, LiveServerMessage } from "@gitflare/core/api";
-import { changeEventsAfter, schema } from "@gitflare/db";
-import { createD1Db } from "@gitflare/db/d1";
-import { eq } from "drizzle-orm";
+import { changeEventsAfter, changeLastEventSeq } from "@gitflare/db";
+import { getServices } from "../services";
 
 /**
  * One per change, named by change id: the browsers watching that change.
@@ -23,8 +22,21 @@ function changeIdFromUrl(url: string): ChangeId | null {
   return (match?.[1] as ChangeId | undefined) ?? null;
 }
 
+function isResumeMessage(value: unknown): value is LiveClientMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { type?: unknown }).type === "resume" &&
+    typeof (value as { after?: unknown }).after === "number"
+  );
+}
+
 function send(ws: WebSocket, message: LiveServerMessage): void {
-  ws.send(JSON.stringify(message));
+  try {
+    ws.send(JSON.stringify(message));
+  } catch {
+    // A closing or broken socket must not stop the others from hearing it.
+  }
 }
 
 export class ChangeRoom extends DurableObject<Env> {
@@ -36,17 +48,13 @@ export class ChangeRoom extends DurableObject<Env> {
     const changeId = changeIdFromUrl(request.url);
     if (!changeId) return new Response("No such change.", { status: 404 });
 
-    const db = createD1Db(this.env.DB);
-    const [row] = await db
-      .select({ lastEventSeq: schema.changes.lastEventSeq })
-      .from(schema.changes)
-      .where(eq(schema.changes.id, changeId))
-      .limit(1);
+    const lastSeq = await changeLastEventSeq(getServices().db, changeId);
+    if (lastSeq === null) return new Response("No such change.", { status: 404 });
 
     const { 0: client, 1: server } = new WebSocketPair();
     server.serializeAttachment({ changeId } satisfies Attachment);
     this.ctx.acceptWebSocket(server);
-    send(server, { type: "hello", changeId, lastSeq: row?.lastEventSeq ?? 0 });
+    send(server, { type: "hello", changeId, lastSeq });
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -54,16 +62,15 @@ export class ChangeRoom extends DurableObject<Env> {
   /** A client asking to resume gets replayed everything after the sequence number it last saw. */
   async webSocketMessage(ws: WebSocket, message: ArrayBuffer | string): Promise<void> {
     if (typeof message !== "string") return;
-    let parsed: LiveClientMessage;
+    let parsed: unknown;
     try {
       parsed = JSON.parse(message);
     } catch {
       return;
     }
-    if (parsed.type !== "resume") return;
+    if (!isResumeMessage(parsed)) return;
     const { changeId } = ws.deserializeAttachment() as Attachment;
-    const db = createD1Db(this.env.DB);
-    for (const event of await changeEventsAfter(db, changeId, parsed.after)) {
+    for (const event of await changeEventsAfter(getServices().db, changeId, parsed.after)) {
       send(ws, { type: "event", event });
     }
   }
