@@ -526,7 +526,7 @@ function Overlays() {
       title="Overlay"
       lede="One overlay surface: the same panel carries a menu's options or a popover's content, and the dialog is the floating card promoted. Overlays are transient, so they keep the shadow; nothing else in page flow has one."
     >
-      <Lane label="Menu" center note={"panel 16 · pad 8 · item 10+16\nhighlight = surface fill"}>
+      <Lane label="Menu" center note={"panel 16 · pad 8 · item 10+16\nhighlight = press fill"}>
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="outline" />}>Change actions</DropdownMenuTrigger>
           <DropdownMenuContent>

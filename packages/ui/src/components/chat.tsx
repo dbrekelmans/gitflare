@@ -247,14 +247,13 @@ export function AskField({
         event.preventDefault();
         onSubmit?.(event);
       }}
-      className="w-full"
+      className={cn("w-full", className)}
     >
       <InputGroup
         className={cn(
           "rounded-pill border border-border focus-within:border-ink has-[[data-slot=input-group-control]:focus-visible]:border-ink",
           page ? "gap-s5 py-s4 pr-s4 pl-s7" : "gap-s5 py-s2 pr-s2 pl-[18px]",
           busy ? "bg-surface" : "bg-ground",
-          className,
         )}
       >
         {scope != null && !busy && (
