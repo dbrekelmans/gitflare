@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { InstallAnswers } from "./answers.ts";
 import { CloudflareApiError, lookup } from "./cloudflare.ts";
 import { type DeployValues, renderDeployConfig } from "./config.ts";
-import type { InstallStep, StepOutputs } from "./plan.ts";
+import type { CloudflareApi, InstallStep, StepOutputs } from "./plan.ts";
 
 // Every step looks its resource up by name before creating it. The paths and
 // bodies are from spec/research/installer.md, ai-identity.md and
@@ -25,6 +25,8 @@ export const resources = {
   template: "wrangler.deploy.jsonc",
   /** The same, filled in. Beside the template: its paths are relative. Never committed. */
   config: "wrangler.gitflare.jsonc",
+  /** Where a dry run puts the bundle the deploy would upload, to fingerprint it. Ignored by git. */
+  bundle: ".wrangler/gitflare-bundle",
 } as const;
 
 /**
@@ -73,6 +75,17 @@ export function artifactsAvailable(answers: InstallAnswers): InstallStep {
         await api.request("GET", `/accounts/${answers.accountId}/artifacts/namespaces?limit=1`);
       } catch (error) {
         if (!(error instanceof CloudflareApiError)) throw error;
+        if (error.status === 401) {
+          return {
+            status: "blocked",
+            detail: `Cloudflare did not accept the API token (${error.message}). Check CLOUDFLARE_API_TOKEN is a current token for this account.`,
+            url: links.apiTokens,
+          };
+        }
+        // Which status a missing plan gets is unobserved; 403 and 404 are the
+        // plausible ones. Anything else (429, 5xx) is not an answer about the
+        // plan and is thrown, so it is reported as the failure it is.
+        if (error.status !== 403 && error.status !== 404) throw error;
         return {
           status: "blocked",
           detail: `Artifacts is not available on this account (${error.message}). It needs the Workers Paid plan, and an API token with Artifacts > Edit.`,
@@ -184,10 +197,26 @@ function gatewayPath(answers: InstallAnswers): string {
   return `/accounts/${answers.accountId}/ai-gateway/gateways`;
 }
 
-/** An update replaces the gateway's settings, so it sends back what is there. */
+/**
+ * An update replaces the gateway's settings, so it sends back what is there.
+ * Unverified: that the real `PUT` accepts every other field its `GET` returns.
+ * It runs only when a gateway already exists and needs changing.
+ */
 function gatewaySettings(existing: Gateway): Record<string, unknown> {
   const { id: _id, created_at: _c, modified_at: _m, is_default: _d, ...settings } = existing;
   return settings;
+}
+
+/** No metadata, model or provider dimension: one bucket for the whole deployment. */
+function monthlyRule(answers: InstallAnswers): SpendRule {
+  return {
+    id: resources.spendRule,
+    limitType: "cost",
+    limit: answers.monthlyBudgetUsd,
+    window: BUDGET_WINDOW_SECONDS,
+    technique: "fixed",
+    enabled: true,
+  };
 }
 
 export function gateway(answers: InstallAnswers): InstallStep {
@@ -209,6 +238,10 @@ export function gateway(answers: InstallAnswers): InstallStep {
           rate_limiting_limit: 0,
           authentication: true,
           byok_only: byokOnly,
+          // With the rule from the start, so a first install never needs the
+          // PUT in the next step: that PUT echoes the gateway back, and which
+          // read-only fields the real API refuses in it is unobserved.
+          spend_limits: { enabled: true, rules: [monthlyRule(answers)] },
         });
         return { status: "done", detail: "created", outputs };
       }
@@ -226,15 +259,7 @@ export function gateway(answers: InstallAnswers): InstallStep {
 }
 
 export function spendRule(answers: InstallAnswers): InstallStep {
-  // No metadata, model or provider dimension: one bucket for the whole deployment.
-  const wanted: SpendRule = {
-    id: resources.spendRule,
-    limitType: "cost",
-    limit: answers.monthlyBudgetUsd,
-    window: BUDGET_WINDOW_SECONDS,
-    technique: "fixed",
-    enabled: true,
-  };
+  const wanted = monthlyRule(answers);
   return {
     id: "spend-rule",
     kind: "create",
@@ -471,7 +496,12 @@ export function deployConfig(answers: InstallAnswers): InstallStep {
         D1_DATABASE_NAME: need(outputs, "D1_DATABASE_NAME"),
         D1_DATABASE_ID: need(outputs, "D1_DATABASE_ID"),
       };
-      const rendered = renderDeployConfig(template, values);
+      // On a custom domain, Access covers that hostname only: workers.dev is
+      // turned off so it is not a second, unprotected way in. Preview URLs
+      // are always off; the Access application covers neither kind.
+      const rendered = renderDeployConfig(template, values, {
+        workersDev: answers.domain === null,
+      });
       if ((await files.read(resources.config)) === rendered) {
         return { status: "unchanged", detail: "up to date" };
       }
@@ -516,7 +546,32 @@ export function migrations(answers: InstallAnswers): InstallStep {
 }
 
 interface Deployments {
-  deployments?: { annotations?: { "workers/message"?: string } }[];
+  deployments?: {
+    versions?: { version_id: string; percentage: number }[];
+    annotations?: { "workers/message"?: string };
+  }[];
+}
+
+interface WorkerVersion {
+  annotations?: { "workers/message"?: string };
+}
+
+/**
+ * The message the live deployment was made with. The docs say `wrangler deploy
+ * --message` is recorded on the version and "also applied to the deployment";
+ * neither has been read back from a real account, so this looks at the
+ * deployment first and then at the one version it serves.
+ */
+async function deployedMessage(api: CloudflareApi, accountId: string): Promise<string | undefined> {
+  const script = `/accounts/${accountId}/workers/scripts/${resources.worker}`;
+  // Listed newest first, like the fake; unverified on a real account.
+  const latest = (await lookup<Deployments>(api, `${script}/deployments`))?.deployments?.[0];
+  const onDeployment = latest?.annotations?.["workers/message"];
+  if (onDeployment !== undefined) return onDeployment;
+  const only = latest?.versions?.length === 1 ? latest.versions[0] : undefined;
+  if (only?.percentage !== 100) return undefined;
+  const version = await lookup<WorkerVersion>(api, `${script}/versions/${only.version_id}`);
+  return version?.annotations?.["workers/message"];
 }
 
 export function deployWorker(answers: InstallAnswers): InstallStep {
@@ -530,15 +585,26 @@ export function deployWorker(answers: InstallAnswers): InstallStep {
       if (config === null) throw new Error(`${resources.config} has not been written`);
       const manifest = await files.read("package.json");
       const version = manifest ? String(JSON.parse(manifest).version) : "unknown";
-      // The same release with the same config is the same deployment.
-      const fingerprint = createHash("sha256").update(`${version}\n${config}`).digest("hex");
+
+      // What would be uploaded, built without uploading it: a change to the
+      // source changes it even when the release's version number does not.
+      await files.remove(resources.bundle);
+      const built = await commands.run(
+        "wrangler",
+        ["deploy", "--dry-run", "--outdir", resources.bundle, "--config", resources.config],
+        wranglerEnv(answers),
+      );
+      if (built.exitCode !== 0) {
+        throw new Error(`wrangler deploy --dry-run failed: ${built.stderr || built.stdout}`);
+      }
+      const bundle = await files.digest(resources.bundle);
+      // The same code with the same config is the same deployment.
+      const fingerprint = createHash("sha256")
+        .update(`${version}\n${config}\n${bundle}`)
+        .digest("hex");
       const message = `gitflare ${version} ${fingerprint.slice(0, 16)}`;
 
-      const found = await lookup<Deployments>(
-        api,
-        `/accounts/${answers.accountId}/workers/scripts/${resources.worker}/deployments`,
-      );
-      if (found?.deployments?.[0]?.annotations?.["workers/message"] === message) {
+      if ((await deployedMessage(api, answers.accountId)) === message) {
         return { status: "unchanged", detail: `https://${host}` };
       }
       const deployed = await commands.run(

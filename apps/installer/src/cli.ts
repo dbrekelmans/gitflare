@@ -6,57 +6,14 @@
 // Facts it rests on: spec/research/installer.md.
 
 import { spawn } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { createCloudflareApi } from "./cloudflare.ts";
 import { main, type Options, parseOptions, usage } from "./main.ts";
-import type { CommandRunner, InstallPorts, Prompter, ReleaseFiles } from "./plan.ts";
+import type { CommandRunner, InstallPorts } from "./plan.ts";
 import { createFileAnswerStore } from "./store.ts";
-
-function terminalPrompter(): Prompter {
-  const ask = async (question: string) => {
-    const readline = createInterface({ input: process.stdin, output: process.stdout });
-    try {
-      return await readline.question(question);
-    } finally {
-      readline.close();
-    }
-  };
-  return {
-    async text(question, options) {
-      const reply = await ask(`${question}${options?.default ? ` [${options.default}]` : ""}: `);
-      return reply.trim() === "" ? (options?.default ?? "") : reply;
-    },
-    async select(question, choices) {
-      const list = choices.map((choice, index) => `  ${index + 1}. ${choice.label}`).join("\n");
-      for (;;) {
-        const choice = choices[Number(await ask(`${question}\n${list}\n> `)) - 1];
-        if (choice) return choice.value;
-      }
-    },
-    async confirm(question) {
-      return /^y(es)?$/i.test((await ask(`${question} [y/N] `)).trim());
-    },
-    note: (message) => void process.stdout.write(`${message}\n`),
-  };
-}
-
-function releaseFiles(directory: string): ReleaseFiles {
-  return {
-    async read(name) {
-      try {
-        return await readFile(join(directory, name), "utf8");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-        throw error;
-      }
-    },
-    write: (name, text) => writeFile(join(directory, name), text),
-  };
-}
+import { releaseFiles, terminalPrompter } from "./system.ts";
 
 /** Through `npx`, so the release's own Wrangler is used when it has one. */
 function commandRunner(directory: string): CommandRunner {
@@ -95,6 +52,7 @@ async function run(): Promise<number> {
   const release = resolve(
     options.release ?? fileURLToPath(new URL("../../forge", import.meta.url)),
   );
+  const prompt = terminalPrompter(process.stdin, process.stdout);
   const ports: InstallPorts = {
     api: createCloudflareApi({
       token: env.CLOUDFLARE_API_TOKEN ?? "",
@@ -102,7 +60,7 @@ async function run(): Promise<number> {
       baseUrl: env.CLOUDFLARE_API_BASE_URL,
     }),
     commands: commandRunner(release),
-    prompt: terminalPrompter(),
+    prompt,
     store: createFileAnswerStore(
       options.answers ??
         join(env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "create-gitflare", "answers.json"),
@@ -114,6 +72,8 @@ async function run(): Promise<number> {
   } catch (error) {
     process.stderr.write(`create-gitflare: ${(error as Error).message}\n`);
     return 1;
+  } finally {
+    prompt.close();
   }
 }
 
