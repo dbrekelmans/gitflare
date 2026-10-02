@@ -10,7 +10,6 @@ import {
   type StageRun,
   type User,
 } from "@gitflare/core";
-import type { PipelineRunner } from "@gitflare/core/ports";
 import { type Db, schema, toSection } from "@gitflare/db";
 import { and, eq, isNull } from "drizzle-orm";
 import { type ChangeRow, emit, headStageRuns, type PipelineDeps, requireChange } from "./deps";
@@ -103,12 +102,15 @@ export async function revokeApproval(
 
 /**
  * A person asking for a stage to run again: queues the attempt at once, so
- * the change shows it, and hands the running of it to the pipeline. A stage
- * that is still running is a `conflict`; one queued and never picked up is
- * handed over again.
+ * the change shows it, and hands the running of it to the pipeline. One
+ * queued and never picked up is handed over again.
+ *
+ * A stage that is still running is a `conflict`, but it is handed over too:
+ * if the Workflow running it died, that is what starts it again, and if not,
+ * the pipeline does nothing.
  */
 export async function rerunStage(
-  deps: PipelineDeps & { pipeline: PipelineRunner },
+  deps: PipelineDeps,
   user: User,
   changeId: ChangeId,
   stage: StageName,
@@ -119,6 +121,7 @@ export async function rerunStage(
     (run) => run.stage === stage,
   );
   if (latest?.status === "running") {
+    await deps.pipeline.rerunStage(changeId, stage, latest.attempt);
     throw new ForgeError("conflict", `The ${stage} stage is already running.`);
   }
   const run = await queueStageRerun(deps, changeId, stage);

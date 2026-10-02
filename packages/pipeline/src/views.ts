@@ -11,6 +11,7 @@ import {
   type SectionId,
   type StageRun,
   sectionApprovalState,
+  sectionStats,
   selectDiff,
   type Thread,
   type User,
@@ -157,22 +158,25 @@ export async function changeDetail(deps: ViewDeps, changeId: ChangeId): Promise<
 
   const stages = latestInStageOrder(runs);
   const current = sectionRows.map(toSection);
-  const diff = current.length > 0 ? ((await changeDiff(deps, row, session)) ?? []) : [];
+  // The sectioning stage stores each section's size. Only a section written before it
+  // did needs the diff, which is the slowest read on this page.
+  const stats = new Map(sectionRows.map((section) => [section.id, section.stats]));
+  const diff = sectionRows.some((section) => section.stats === null)
+    ? ((await changeDiff(deps, row, session)) ?? [])
+    : [];
   const headRevision = revisionRows.find((revision) => revision.id === row.headRevisionId);
   const commits = commitRows.map(toChangeCommit);
 
   const sectionView = (section: Section): SectionView => {
     const own = given.filter((approval) => approval.sectionId === section.id);
-    const files = selectDiff(diff, section.files);
+    const size = stats.get(section.id) ?? sectionStats(diff, section.files);
     return {
       section,
       approvalState: sectionApprovalState(section, own),
       approvals: own
         .sort((a, b) => b.createdAt - a.createdAt)
         .map((approval) => ({ ...approval, user: ref(approval.userId) })),
-      filesChanged: files.length,
-      insertions: files.reduce((sum, file) => sum + file.insertions, 0),
-      deletions: files.reduce((sum, file) => sum + file.deletions, 0),
+      ...size,
       openComments: threadRows.filter((t) => t.sectionId === section.id && isOpenComment(t)).length,
     };
   };

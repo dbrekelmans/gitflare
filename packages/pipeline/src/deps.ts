@@ -11,11 +11,13 @@ import type {
   CapturePort,
   ChangeLive,
   Clock,
+  CloudSessions,
   DecisionsPort,
   DiffPort,
   GitHost,
   GitWriter,
   IdGenerator,
+  PipelineRunner,
 } from "@gitflare/core/ports";
 import { appendChangeEvent, type Db, schema } from "@gitflare/db";
 import { eq } from "drizzle-orm";
@@ -29,6 +31,10 @@ export interface PipelineDeps {
   diffs: DiffPort;
   decisions: DecisionsPort;
   live: ChangeLive;
+  /** For a push the change has not taken in yet, raised again by a merge that finds it. */
+  pipeline: PipelineRunner;
+  /** For stopping a hosted session's sandbox when the session ends. */
+  cloudSessions: CloudSessions;
   clock: Clock;
   ids: IdGenerator;
 }

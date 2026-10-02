@@ -5,6 +5,7 @@ import {
   type StageHandler,
   type StageName,
   sectionContentHash,
+  sectionStats,
   type Thread,
   type User,
 } from "@gitflare/core";
@@ -130,11 +131,12 @@ export const sectionPerFile: StageHandler<PipelineDeps> = async (deps, input) =>
   for (const [position, file] of diff.entries()) {
     const files = [{ path: file.path, hunkHashes: [] }];
     const contentHash = sectionContentHash(diff, files);
+    const stats = sectionStats(diff, files);
     const known = existing.find((section) => section.title === file.path);
     if (known) {
       await db
         .update(schema.sections)
-        .set({ contentHash, updatedRevisionId: input.revisionId })
+        .set({ contentHash, stats, updatedRevisionId: input.revisionId })
         .where(eq(schema.sections.id, known.id));
     } else {
       await db.insert(schema.sections).values({
@@ -146,6 +148,7 @@ export const sectionPerFile: StageHandler<PipelineDeps> = async (deps, input) =>
         explanation: `What changed in ${file.path}.`,
         files,
         contentHash,
+        stats,
         createdRevisionId: input.revisionId,
         updatedRevisionId: input.revisionId,
       });
