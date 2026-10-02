@@ -1,7 +1,6 @@
 import {
   type Change,
   type Decision,
-  type DecisionId,
   ForgeError,
   InvalidTransitionError,
   type Thread,
@@ -61,12 +60,17 @@ export function nextThreadState(thread: Thread, action: ThreadAction): ThreadSta
  * Moves a thread, as it was read, to its next state, and says so on the
  * change. Returns null when the thread was settled or reopened by someone else
  * in between: the write is refused rather than applied on top of theirs.
+ *
+ * `decide` records the decision a dismissal stands for. It runs only once the
+ * dismissal has gone through, so a dismissal that loses a race leaves no
+ * decision behind; the decision it returns is tied to the thread before the
+ * change hears of either.
  */
 export async function applyThreadAction(
   deps: Pick<ReviewDeps, "db" | "live" | "clock" | "decisions">,
   thread: Thread,
   action: ThreadAction,
-  by: { userId: UserId | null; decisionId?: DecisionId },
+  by: { userId: UserId | null; decide?: () => Promise<Decision | null> },
 ): Promise<Thread | null> {
   const next = nextThreadState(thread, action);
   const open = next.status === "open";
@@ -77,7 +81,6 @@ export async function applyThreadAction(
       dismissal: next.dismissal,
       settledAt: open ? null : deps.clock.now(),
       settledBy: open ? null : by.userId,
-      ...(by.decisionId && { decisionId: by.decisionId }),
     })
     .where(
       and(
@@ -90,6 +93,16 @@ export async function applyThreadAction(
     )
     .returning();
   if (!updated) return null;
+  let settled = updated;
+  const decision = by.decide ? await by.decide() : null;
+  if (decision) {
+    const [linked] = await deps.db
+      .update(schema.threads)
+      .set({ decisionId: decision.id })
+      .where(and(eq(schema.threads.id, thread.id), isNull(schema.threads.decisionId)))
+      .returning();
+    settled = linked ?? (await requireThread(deps.db, thread.id));
+  }
   await appendChangeEvent(deps, thread.changeId, {
     type: "thread.status",
     threadId: thread.id,
@@ -110,7 +123,30 @@ export async function applyThreadAction(
       });
     }
   }
-  return updated;
+  return settled;
+}
+
+/**
+ * Runs `record`, keeping a failure to hand rather than letting it out: the
+ * dismissal it belongs to has already gone through and must still be
+ * announced. The caller throws `failure.error` once it has.
+ */
+export function catching(record: () => Promise<Decision>): {
+  decide: () => Promise<Decision | null>;
+  failure: { error: unknown } | null;
+} {
+  const guarded = {
+    failure: null as { error: unknown } | null,
+    decide: async () => {
+      try {
+        return await record();
+      } catch (error) {
+        guarded.failure = { error };
+        return null;
+      }
+    },
+  };
+  return guarded;
 }
 
 /** Records the decision a dismissal stands for. */
@@ -213,35 +249,58 @@ export async function settleThread(
   const { reason, ...step } = { reason: null, ...action };
   nextThreadState(thread, step);
 
-  let decisionId: DecisionId | undefined;
   const asDecision =
     (action.type === "dismiss" || action.type === "reclassify") &&
     action.classification === "design_decision";
-  if (asDecision && !thread.decisionId) {
-    const change = await requireChange(deps.db, thread.changeId);
-    // A reclassification carries no reason: the last thing a person said in the thread stands for it.
-    const said =
-      reason ??
-      (await messagesOf(deps.db, [threadId])).findLast((m) => m.author.kind === "user")?.body ??
-      "";
-    const wording = await wordDecision(deps, { thread, change, reason: said, userId: user.id });
-    const decision = await recordDismissalDecision(deps, {
-      thread,
-      change,
-      wording,
-      userId: user.id,
-    });
-    decisionId = decision.id;
-  }
+  const recording =
+    asDecision && !thread.decisionId
+      ? catching(async () => {
+          const change = await requireChange(deps.db, thread.changeId);
+          // A reclassification carries no reason: the last thing a person said in the thread stands for it.
+          const said =
+            reason ??
+            (await messagesOf(deps.db, [threadId])).findLast((m) => m.author.kind === "user")
+              ?.body ??
+            "";
+          const wording = await wordDecision(deps, {
+            thread,
+            change,
+            reason: said,
+            userId: user.id,
+          });
+          return recordDismissalDecision(deps, { thread, change, wording, userId: user.id });
+        })
+      : null;
 
-  const settled = await applyThreadAction(deps, thread, step, { userId: user.id, decisionId });
+  const settled = await applyThreadAction(deps, thread, step, {
+    userId: user.id,
+    decide: recording?.decide,
+  });
   if (!settled) {
     throw new ForgeError("conflict", "Someone else settled or reopened this comment just now.");
   }
   // The reason is part of the conversation. The thread is already settled, so
   // the agent, which answers a person's message, has nothing to answer here.
+  // It is posted even when the decision could not be recorded: the thread's
+  // writer then learns from the thread, which repairs that.
   if (reason !== null) {
     await deps.threads.post(threadId, { author: { kind: "user", userId: user.id }, body: reason });
   }
+  if (recording?.failure) throw recording.failure.error;
   return requireThread(deps.db, threadId);
+}
+
+/**
+ * Considers a settled thread for a decision worth keeping. The thread's
+ * Durable Object calls it after each turn and after a person settles, off
+ * the request path; the decision record makes a repeat call free. A failure
+ * is thrown, for the object to retry, never swallowed.
+ */
+export async function learnFromSettledThread(
+  deps: Pick<ReviewDeps, "db" | "decisions">,
+  threadId: ThreadId,
+): Promise<Decision | null> {
+  const thread = await requireThread(deps.db, threadId);
+  if (thread.status === "open") return null;
+  return deps.decisions.learnFromThread(threadId);
 }

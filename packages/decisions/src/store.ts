@@ -78,3 +78,13 @@ export function attribution(
     ...(extra.userId && { userId: extra.userId }),
   };
 }
+
+/** D1 binds at most 100 parameters to one statement; a list in `inArray` is cut to fit beside the rest. */
+const MAX_LIST = 90;
+
+/** `items` in pieces small enough for one `inArray`. */
+export function inPieces<T>(items: readonly T[], size = MAX_LIST): T[][] {
+  const pieces: T[][] = [];
+  for (let i = 0; i < items.length; i += size) pieces.push(items.slice(i, i + size));
+  return pieces;
+}

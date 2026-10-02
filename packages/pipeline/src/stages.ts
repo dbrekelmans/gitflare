@@ -46,6 +46,39 @@ export async function missingCheckpoints(
   return (await deps.capture.missingCheckpoints(changeId)).filter((id) => named.has(id));
 }
 
+/**
+ * The attempt a re-run names (`PipelineParams`), on the change's head
+ * revision, or null when there is none: a re-run is only ever queued there.
+ */
+export async function stageAttempt(
+  deps: Pick<PipelineDeps, "db">,
+  changeId: ChangeId,
+  stage: StageName,
+  attempt: number,
+): Promise<StageRun | null> {
+  const change = await requireChange(deps.db, changeId);
+  const [run] = await deps.db
+    .select()
+    .from(stageRuns)
+    .where(
+      and(
+        eq(stageRuns.revisionId, change.headRevisionId),
+        eq(stageRuns.stage, stage),
+        eq(stageRuns.attempt, attempt),
+      ),
+    );
+  return run ?? null;
+}
+
+/** One stage attempt by its id, or null when there is none. */
+export async function findStageRun(
+  deps: Pick<PipelineDeps, "db">,
+  stageRunId: StageRun["id"],
+): Promise<StageRun | null> {
+  const [run] = await deps.db.select().from(stageRuns).where(eq(stageRuns.id, stageRunId));
+  return run ?? null;
+}
+
 async function loadRun(deps: StageDeps, input: StageInput): Promise<StageRun> {
   const [run] = await deps.db.select().from(stageRuns).where(eq(stageRuns.id, input.stageRunId));
   if (!run) throw new ForgeError("not_found", `Stage run ${input.stageRunId} not found.`);

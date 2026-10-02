@@ -1,4 +1,4 @@
-import type { ChangeId, RepositoryId } from "@gitflare/core";
+import { type ChangeId, decisionApplies, type RepositoryId } from "@gitflare/core";
 import type { RetrievedDecision } from "@gitflare/core/ports";
 import { schema, toDecision } from "@gitflare/db";
 import { and, eq } from "drizzle-orm";
@@ -12,6 +12,8 @@ export interface NearestInput {
   changeId?: ChangeId;
   /** Reviews are never given a dormant decision; learning from a thread has to see them. */
   includeDormant?: boolean;
+  /** The files a change touches: a decision tied to paths is a candidate only if it applies to one. */
+  paths?: readonly string[];
 }
 
 /**
@@ -26,7 +28,7 @@ export async function nearestDecisions(
 ): Promise<RetrievedDecision[]> {
   if (input.limit <= 0) return [];
   const repository = await requireRepository(deps.db, input.repositoryId);
-  const rows = await deps.db
+  const all = await deps.db
     .select()
     .from(schema.decisions)
     .where(
@@ -37,6 +39,8 @@ export async function nearestDecisions(
             eq(schema.decisions.status, "active"),
           ),
     );
+  const { paths } = input;
+  const rows = paths ? all.filter((row) => decisionApplies(row.scope, paths)) : all;
   if (rows.length === 0) return [];
 
   const { embedding: model } = await modelSettings(deps.db, repository);
@@ -71,12 +75,20 @@ export async function nearestDecisions(
 
 /**
  * The active decisions of a repository closest in meaning to `query`, nearest
- * first. Dormant decisions are never returned. Embeds the query, then scans
- * the repository's stored vectors in memory: there is no vector database.
+ * first. Dormant decisions are never returned, and with `paths` neither is a
+ * decision tied to paths none of which the change touches. Embeds the query,
+ * then scans the repository's stored vectors in memory: there is no vector
+ * database.
  */
 export async function retrieveDecisions(
   deps: Pick<DecisionsDeps, "db" | "models">,
-  input: { repositoryId: RepositoryId; query: string; limit: number; changeId?: ChangeId },
+  input: {
+    repositoryId: RepositoryId;
+    query: string;
+    limit: number;
+    changeId?: ChangeId;
+    paths?: readonly string[];
+  },
 ): Promise<RetrievedDecision[]> {
   const found = await nearestDecisions(deps, { ...input, includeDormant: false });
   const { changeId } = input;

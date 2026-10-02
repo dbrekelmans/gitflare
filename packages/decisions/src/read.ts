@@ -10,7 +10,7 @@ import {
 } from "@gitflare/core";
 import { type Db, schema, toDecision } from "@gitflare/db";
 import { and, desc, eq } from "drizzle-orm";
-import { recordDecisionEvent } from "./record";
+import { writeDecisionEvent } from "./record";
 import { type DecisionsDeps, requireDecisionRow } from "./store";
 
 /** A repository's decisions, strongest first. */
@@ -46,8 +46,9 @@ export async function decisionHistory(
 }
 
 /**
- * Puts the statement back to what it was before one event reworded it, and
- * records that as an event of its own, so a revert can itself be undone.
+ * Puts the wording back to what it was before one event reworded it, and
+ * records that as an event of its own, so a revert can itself be undone. A
+ * decision that already reads that way has nothing to put back: `conflict`.
  */
 export async function revertDecision(
   deps: DecisionsDeps,
@@ -67,7 +68,7 @@ export async function revertDecision(
   if (event.wording === null) {
     throw new ForgeError("invalid", "That event did not change the wording.");
   }
-  return recordDecisionEvent(deps, input.decisionId, {
+  const { decision, applied } = await writeDecisionEvent(deps, input.decisionId, {
     kind: "reverted",
     ...event.wording.before,
     changeId: null,
@@ -75,4 +76,8 @@ export async function revertDecision(
     userId: input.userId,
     note: null,
   });
+  if (!applied) {
+    throw new ForgeError("conflict", "The decision already reads as it did before that event.");
+  }
+  return decision;
 }

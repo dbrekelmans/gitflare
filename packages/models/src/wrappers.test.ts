@@ -3,7 +3,8 @@ import { type GenerateRequest, ModelError, type ModelStreamEvent } from "@gitfla
 import { changeCost, schema, toModelCall } from "@gitflare/db";
 import { createTestDb } from "@gitflare/db/testing";
 import { FakeModelGateway, ManualClock, SequentialIds } from "@gitflare/testing";
-import { describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createGatewayModels } from "./gateway";
 import { StubAi } from "./stub-ai";
@@ -44,6 +45,26 @@ function setup() {
   return { db, clock, ids, inner, deps: { db, clock, ids }, recorded };
 }
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+/** A served SSE stream: the message starts, `texts` arrive, and it ends only if `complete`. */
+function sseReply(texts: string[], complete: boolean): string[] {
+  const delta = (text: string) =>
+    `data: ${JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text } })}\n\n`;
+  return [
+    'data: {"type":"message_start","message":{"usage":{"input_tokens":40}}}\n\n',
+    ...texts.map(delta),
+    ...(complete
+      ? [
+          'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":8}}\n\n',
+          'data: {"type":"message_stop"}\n\n',
+        ]
+      : []),
+  ];
+}
+
 async function codeOf(promise: Promise<unknown>) {
   const error = await promise.then(
     () => null,
@@ -74,15 +95,18 @@ describe("withFallback", () => {
     },
   );
 
-  it.each(["no_credits", "invalid_output"] as const)("never falls back on %s", async (code) => {
-    const { inner } = setup();
-    inner.fail(primary, code).reply("review", { text: "From the fallback." });
-    const models = withFallback(inner, [fallback]);
+  it.each(["no_credits", "invalid_output", "invalid_request"] as const)(
+    "never falls back on %s",
+    async (code) => {
+      const { inner } = setup();
+      inner.fail(primary, code).reply("review", { text: "From the fallback." });
+      const models = withFallback(inner, [fallback]);
 
-    expect(await codeOf(models.generate(request()))).toBe(code);
-    expect(await codeOf(collect(models.stream(request())))).toBe(code);
-    expect(inner.calls.map((call) => call.model)).toEqual([primary, primary]);
-  });
+      expect(await codeOf(models.generate(request()))).toBe(code);
+      expect(await codeOf(collect(models.stream(request())))).toBe(code);
+      expect(inner.calls.map((call) => call.model)).toEqual([primary, primary]);
+    },
+  );
 
   it("stops at no_credits part-way down the list", async () => {
     const { inner } = setup();
@@ -207,6 +231,96 @@ describe("withAccounting", () => {
         costMicroUsd: done?.type === "done" ? done.result.costMicroUsd : -1,
       },
     ]);
+  });
+
+  it("records an embedding call with its tokens and log id", async () => {
+    const { deps, recorded } = setup();
+    const ai = new StubAi();
+    ai.returns({ data: [[0.1, 0.2]] }, "log_e");
+    ai.logs.set("log_e", { cost: 0.000002, tokens_in: 7 });
+    const models = withAccounting(createGatewayModels(ai, { gatewayId: "gitflare" }), deps);
+
+    await models.embed({ model: "@cf/baai/bge-m3", texts: ["one accent"], attribution });
+
+    expect(await recorded()).toMatchObject([
+      {
+        model: "@cf/baai/bge-m3",
+        gatewayLogId: "log_e",
+        usage: { inputTokens: 7, outputTokens: 0 },
+        costMicroUsd: 2,
+      },
+    ]);
+  });
+
+  it("records a stream that fails after it produced text", async () => {
+    const { deps, recorded } = setup();
+    const ai = new StubAi();
+    ai.sse(
+      [
+        ...sseReply(["Half a "], false),
+        'data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n\n',
+      ],
+      "log_1",
+    );
+    ai.logs.set("log_1", { cost: 0.00007 });
+    const models = withAccounting(createGatewayModels(ai, { gatewayId: "gitflare" }), deps);
+
+    expect(await codeOf(collect(models.stream(request())))).toBe("unavailable");
+    expect(await recorded()).toMatchObject([{ gatewayLogId: "log_1", costMicroUsd: 70 }]);
+  });
+
+  it("records a stream that is cut off, and does not report it complete", async () => {
+    const { deps, recorded } = setup();
+    const ai = new StubAi();
+    ai.sse(sseReply(["Half a "], false), "log_1");
+    ai.logs.set("log_1", { cost: 0.00007 });
+    const models = withAccounting(createGatewayModels(ai, { gatewayId: "gitflare" }), deps);
+
+    expect(await codeOf(collect(models.stream(request())))).toBe("unavailable");
+    expect(await recorded()).toMatchObject([{ gatewayLogId: "log_1", costMicroUsd: 70 }]);
+  });
+
+  it("records a stream the consumer leaves part-way, through every wrapper", async () => {
+    const { deps, recorded } = setup();
+    const ai = new StubAi();
+    ai.sse(sseReply(["One. ", "Two."], true), "log_1");
+    ai.logs.set("log_1", { cost: 0.00012 });
+    const settings = {
+      ...defaultOrganisationSettings,
+      models: { ...defaultOrganisationSettings.models, fallbacks: [fallback] },
+    };
+    const models = composeModels(
+      createGatewayModels(ai, { gatewayId: "gitflare" }),
+      deps,
+      settings,
+    );
+
+    for await (const event of models.stream(request())) {
+      expect(event).toEqual({ type: "text", text: "One. " });
+      break;
+    }
+
+    expect(await recorded()).toMatchObject([
+      { requestedModel: primary, model: primary, gatewayLogId: "log_1", costMicroUsd: 120 },
+    ]);
+  });
+
+  it("returns the reply when its row cannot be written, and logs the call", async () => {
+    const { inner, deps, db } = setup();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    inner.reply("review", { text: "Paid for." }).reply("thread", { text: "Streamed." });
+    await db.run(sql`DROP TABLE model_calls`);
+    const models = withAccounting(inner, deps);
+
+    const result = await models.generate(request());
+    const streamed = await collect(
+      models.stream(request({ attribution: { agent: "thread", changeId: "chg_1" } })),
+    );
+
+    expect(result.text).toBe("Paid for.");
+    expect(streamed.at(-1)).toMatchObject({ type: "done", result: { text: "Streamed." } });
+    expect(logged).toHaveBeenCalledTimes(2);
+    expect(logged.mock.calls[0]?.[0]).toMatch(/could not record.*chg_1/);
   });
 
   it("records an embedding call by its cost", async () => {
@@ -335,6 +449,45 @@ describe("composeModels", () => {
     expect(result.model).toBe(fallback);
     expect(await recorded()).toMatchObject([
       { requestedModel: primary, model: fallback, costMicroUsd: result.costMicroUsd, attribution },
+    ]);
+  });
+
+  it("records a served reply that failed and the fallback that answered", async () => {
+    const { deps, recorded } = setup();
+    const ai = new StubAi();
+    ai.returns({ response: "not an Anthropic message" }, "log_odd");
+    ai.message("From the fallback.", { logId: "log_ok" });
+    ai.logs.set("log_odd", { cost: 0.00002 }).set("log_ok", { cost: 0.00005 });
+    const models = composeModels(
+      createGatewayModels(ai, { gatewayId: "gitflare" }),
+      deps,
+      settings,
+    );
+
+    const result = await models.generate(request());
+
+    expect(result.model).toBe(fallback);
+    expect(await recorded()).toMatchObject([
+      { requestedModel: primary, model: primary, gatewayLogId: "log_odd", costMicroUsd: 20 },
+      { requestedModel: primary, model: fallback, gatewayLogId: "log_ok", costMicroUsd: 50 },
+    ]);
+  });
+
+  it("records each paid failure once when no model answers", async () => {
+    const { deps, recorded } = setup();
+    const ai = new StubAi();
+    ai.returns({ response: "odd" }, "log_a").returns({ response: "odder" }, "log_b");
+    ai.logs.set("log_a", { cost: 0.00002 }).set("log_b", { cost: 0.00003 });
+    const models = composeModels(
+      createGatewayModels(ai, { gatewayId: "gitflare" }),
+      deps,
+      settings,
+    );
+
+    expect(await codeOf(models.generate(request()))).toBe("unavailable");
+    expect(await recorded()).toMatchObject([
+      { model: primary, gatewayLogId: "log_a" },
+      { model: fallback, gatewayLogId: "log_b" },
     ]);
   });
 

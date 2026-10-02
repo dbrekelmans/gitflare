@@ -7,7 +7,7 @@ import {
 } from "@gitflare/core";
 import type { ForgeApi } from "@gitflare/core/api";
 import { budgetSummary, monthStart, schema } from "@gitflare/db";
-import { eq, gte } from "drizzle-orm";
+import { and, eq, gte, ne, or, sql } from "drizzle-orm";
 import type { Services } from "../services";
 
 /**
@@ -51,22 +51,29 @@ export function accountApi(services: Services): ForgeApi["account"] {
         .where(eq(schema.users.id, input.userId))
         .limit(1);
       if (!target) throw new ForgeError("not_found", "User not found.");
-      if (target.role === "admin" && input.role !== "admin") {
-        const admins = await services.db
-          .select({ id: schema.users.id })
-          .from(schema.users)
-          .where(eq(schema.users.role, "admin"));
-        if (admins.length <= 1) {
-          throw new ForgeError("conflict", "The deployment must keep at least one administrator.");
-        }
-      }
+      // The last-administrator check is part of the update, one statement, so
+      // two administrators demoting each other at once cannot both pass it.
+      const keepsAnAdmin = or(
+        ne(schema.users.role, "admin"),
+        sql`(SELECT count(*) FROM ${schema.users} WHERE ${schema.users.role} = 'admin') > 1`,
+      );
       const [user] = await services.db
         .update(schema.users)
         .set({ role: input.role })
-        .where(eq(schema.users.id, input.userId))
+        .where(
+          input.role === "admin"
+            ? eq(schema.users.id, input.userId)
+            : and(eq(schema.users.id, input.userId), keepsAnAdmin),
+        )
         .returning();
-      if (!user) throw new ForgeError("not_found", "User not found.");
-      return user;
+      if (user) return user;
+      const [still] = await services.db
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(eq(schema.users.id, input.userId))
+        .limit(1);
+      if (!still) throw new ForgeError("not_found", "User not found.");
+      throw new ForgeError("conflict", "The deployment must keep at least one administrator.");
     },
 
     async getSettings() {

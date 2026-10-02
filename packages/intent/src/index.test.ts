@@ -1,8 +1,9 @@
 import type { StageInput } from "@gitflare/core";
 import { defaultOrganisationSettings, forkRepoName } from "@gitflare/core";
-import { type Db, schema } from "@gitflare/db";
+import { changeEventsAfter, type Db, schema } from "@gitflare/db";
 import { createTestDb } from "@gitflare/db/testing";
 import { createFakePorts, type FakePorts, fakeAuthor } from "@gitflare/testing";
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { currentIntent, runIntentStage } from "./index";
 
@@ -278,6 +279,82 @@ describe("runIntentStage", () => {
     expect(ports.models.calls).toHaveLength(1); // the retry never calls the model again
     const intent = await currentIntent(deps(), "chg_4b" as never);
     expect(intent?.version).toBe(1);
+  });
+
+  it("adds nothing when a re-run's step is retried", async () => {
+    const { revisionId } = await seedChange({
+      changeId: "chg_4c",
+      sessionId: "ses_4c",
+      title: "Something",
+      file: { path: "src/a.ts", content: "a" },
+    });
+    ports.models.reply("intent", { output: { statement: "First statement." } });
+    ports.models.reply("intent", { output: { statement: "Re-run statement." } });
+    await runIntentStage(deps(), stageInput("chg_4c", revisionId));
+    await runIntentStage(deps(), stageInput("chg_4c", revisionId, 2));
+
+    // Nothing scripted for a third call: the fake gateway would fail one.
+    const retried = await runIntentStage(deps(), stageInput("chg_4c", revisionId, 2));
+
+    expect(retried).toEqual({ status: "succeeded" });
+    expect(ports.models.calls).toHaveLength(2);
+    const versions = await db
+      .select({ version: schema.intents.version, attempt: schema.intents.attempt })
+      .from(schema.intents)
+      .where(eq(schema.intents.changeId, "chg_4c" as never));
+    expect(versions).toEqual([
+      { version: 1, attempt: 1 },
+      { version: 2, attempt: 2 },
+    ]);
+  });
+
+  it("writes one version when the same re-run runs twice at once", async () => {
+    const { revisionId } = await seedChange({
+      changeId: "chg_4d",
+      sessionId: "ses_4d",
+      title: "Something",
+      file: { path: "src/a.ts", content: "a" },
+    });
+    ports.models.reply("intent", { output: { statement: "First statement." } });
+    await runIntentStage(deps(), stageInput("chg_4d", revisionId));
+    ports.models.reply("intent", { output: { statement: "One run." } });
+    ports.models.reply("intent", { output: { statement: "The other run." } });
+
+    // Both read that attempt 2 has written nothing before either writes.
+    const outcomes = await Promise.all([
+      runIntentStage(deps(), stageInput("chg_4d", revisionId, 2)),
+      runIntentStage(deps(), stageInput("chg_4d", revisionId, 2)),
+    ]);
+
+    expect(outcomes).toEqual([{ status: "succeeded" }, { status: "succeeded" }]);
+    expect(ports.models.calls).toHaveLength(3);
+    const rows = await db
+      .select()
+      .from(schema.intents)
+      .where(eq(schema.intents.changeId, "chg_4d" as never));
+    expect(rows.map((row) => row.attempt)).toEqual([1, 2]);
+    const events = await changeEventsAfter(db, "chg_4d" as never, 0);
+    expect(events.map((event) => event.type)).toEqual(["intent.updated", "intent.updated"]);
+  });
+
+  it("records the event in the same batch as the version", async () => {
+    const { revisionId } = await seedChange({
+      changeId: "chg_4e",
+      sessionId: "ses_4e",
+      title: "Something",
+      file: { path: "src/a.ts", content: "a" },
+    });
+    ports.models.reply("intent", { output: { statement: "A statement." } });
+    // The browsers cannot be told; the event is still in the log.
+    ports.live.publish = async () => {
+      throw new Error("the change room is unreachable");
+    };
+
+    await runIntentStage(deps(), stageInput("chg_4e", revisionId));
+
+    expect(await changeEventsAfter(db, "chg_4e" as never, 0)).toEqual([
+      expect.objectContaining({ type: "intent.updated", seq: 1 }),
+    ]);
   });
 
   it("fails the stage on a malformed model reply", async () => {

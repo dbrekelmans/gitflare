@@ -36,7 +36,8 @@ git rev-parse HEAD >"$(git rev-parse --git-dir)/gitflare-pushed"`;
 
 /**
  * One turn of the agent, as a background process in the checkout: `$1` is the
- * session's branch and the rest is the agent's command. Its standard output is
+ * session's branch, `$2` how many seconds the agent may run, and the rest is
+ * the agent's command. Its standard output is
  * the turn's stream, one JSON object per line, which `parseAgentEvents` reads:
  *
  *   {"at": <ms>, "agent": "<a line the agent printed>"}
@@ -47,17 +48,20 @@ git rev-parse HEAD >"$(git rev-parse --git-dir)/gitflare-pushed"`;
  * Only its `assistant` and `result` events are kept: the rest is mostly tool
  * output, file contents included, and the stream is read whole on every poll.
  *
- * When the agent is done, whatever it committed is pushed to the session's
- * branch on the fork, which is what opens or revises the change. The script
- * exits with the agent's code. It is bash for `pipefail`, without which the
- * stamping would hide that code.
+ * When the agent is done, or has run out of time, whatever it committed is
+ * pushed to the session's branch on the fork, which is what opens or revises
+ * the change. The script exits with the agent's code, 124 when it ran out of
+ * time. It is bash for `pipefail`, without which the stamping would hide that
+ * code. The limit is the script's own, not the sandbox's: a turn killed from
+ * outside would lose its commits.
  */
 export const TURN_SCRIPT = `set -o pipefail
 branch=$1
-shift
+limit=$2
+shift 2
 # shellcheck disable=SC2016
 stamp='. as $line | (try fromjson catch null) | select(type == "object" and (.type == "assistant" or .type == "result")) | {at: (now * 1000 | floor), agent: $line}'
-"$@" </dev/null | jq -R -c --unbuffered "$stamp"
+timeout --kill-after=30 "$limit" "$@" </dev/null | jq -R -c --unbuffered "$stamp"
 code=$?
 note() {
 	# shellcheck disable=SC2016

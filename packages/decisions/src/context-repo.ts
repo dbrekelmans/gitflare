@@ -3,7 +3,13 @@ import type { FileChange } from "@gitflare/core/ports";
 import { schema, toDecision } from "@gitflare/db";
 import { inArray } from "drizzle-orm";
 import { DECISIONS_DIR, renderDecisionFile } from "./file";
-import { type DecisionsDeps, decisionsAuthor, type RepositoryRow } from "./store";
+import {
+  type DecisionRow,
+  type DecisionsDeps,
+  decisionsAuthor,
+  inPieces,
+  type RepositoryRow,
+} from "./store";
 
 const BRANCH = "main";
 const ATTEMPTS = 4;
@@ -27,10 +33,12 @@ export async function syncDecisionFiles(
   const repo = contextRepoName(repository.slug);
   for (let attempt = 1; ; attempt++) {
     const tip = await deps.git.resolveRef(repo, BRANCH);
-    const rows = await deps.db
-      .select()
-      .from(schema.decisions)
-      .where(inArray(schema.decisions.id, decisionIds));
+    const rows: DecisionRow[] = [];
+    for (const ids of inPieces(decisionIds)) {
+      rows.push(
+        ...(await deps.db.select().from(schema.decisions).where(inArray(schema.decisions.id, ids))),
+      );
+    }
 
     const changes: FileChange[] = [];
     const written: DecisionId[] = [];
@@ -52,10 +60,12 @@ export async function syncDecisionFiles(
         message,
         author: decisionsAuthor,
       });
-      await deps.db
-        .update(schema.decisions)
-        .set({ fileSha: sha })
-        .where(inArray(schema.decisions.id, written));
+      for (const ids of inPieces(written)) {
+        await deps.db
+          .update(schema.decisions)
+          .set({ fileSha: sha })
+          .where(inArray(schema.decisions.id, ids));
+      }
       return sha;
     } catch (error) {
       const moved = error instanceof ForgeError && error.code === "conflict";

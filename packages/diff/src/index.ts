@@ -34,6 +34,11 @@ export interface DiffOptions {
   maxFileBytes?: number;
   /** Lines of unchanged context around each hunk. */
   contextLines?: number;
+  /**
+   * Files whose changed lines, before times after, exceed this are reported
+   * without hunks, as too large to diff. The diff's time grows with it.
+   */
+  maxDiffCells?: number;
 }
 
 const DEFAULT_MAX_FILE_BYTES = 1_000_000;
@@ -58,6 +63,7 @@ async function fileDiffFor(
   after: TreeEntry | null,
   maxFileBytes: number,
   contextLines: number | undefined,
+  maxDiffCells: number | undefined,
 ): Promise<FileDiff> {
   const readable = (entry: TreeEntry | null): entry is TreeEntry =>
     entry !== null && entry.type !== "gitlink";
@@ -91,7 +97,10 @@ async function fileDiffFor(
   if (beforeText === afterText) {
     return { path, oldPath, status, binary: false, insertions: 0, deletions: 0, hunks: [] };
   }
-  return { ...lineDiffStatus(path, beforeText, afterText, status, contextLines), oldPath };
+  return {
+    ...lineDiffStatus(path, beforeText, afterText, status, contextLines, maxDiffCells),
+    oldPath,
+  };
 }
 
 /** The files that differ between two commits of one repository, in path order. */
@@ -136,6 +145,7 @@ export async function diffCommits(
         rename.entry,
         maxFileBytes,
         contextLines,
+        options?.maxDiffCells,
       ),
     ),
     ...rest.map((leaf) => {
@@ -151,6 +161,7 @@ export async function diffCommits(
         leaf.after,
         maxFileBytes,
         contextLines,
+        options?.maxDiffCells,
       );
     }),
   ]);
@@ -158,43 +169,25 @@ export async function diffCommits(
   return diffs.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
-/** Every commit `sha` can reach through `parents`, keyed by id. */
-async function ancestry(git: GitHost, repo: string, sha: Sha): Promise<Map<Sha, GitCommit>> {
-  const seen = new Map<Sha, GitCommit>();
-  const queue: Sha[] = [sha];
-  for (let next = queue.shift(); next; next = queue.shift()) {
-    if (seen.has(next)) continue;
-    const commit = await git.readCommit(repo, next);
-    if (!commit) continue;
-    seen.set(next, commit);
-    queue.push(...commit.parents);
-  }
-  return seen;
-}
-
-/** Whether `candidate` is reachable by walking `from`'s parents within `commits`. */
-function reaches(commits: ReadonlyMap<Sha, GitCommit>, from: Sha, candidate: Sha): boolean {
-  const stack: Sha[] = [from];
-  const visited = new Set<Sha>();
-  for (let next = stack.pop(); next; next = stack.pop()) {
-    if (next === candidate) return true;
-    if (visited.has(next)) continue;
-    visited.add(next);
-    stack.push(...(commits.get(next)?.parents ?? []));
-  }
-  return false;
-}
+const FROM_A = 1;
+const FROM_B = 2;
+const BELOW_COMMON = 4;
 
 /**
  * The newest commit both histories contain: what a change is diffed against
- * when the main repo has moved on since the session forked. A commit both
- * sides reached is a common ancestor, but the *nearest* one is the one that
- * is not itself an ancestor of another common ancestor (an older common
- * ancestor is always reachable too, through the newer one) — a true merge
- * commit can make one side reach an older common ancestor by a shorter path
- * than it reaches a newer one, so picking the first commit either walk
- * stumbles on is not enough. Among more than one equally-nearest candidate
- * (a criss-cross merge), the newest by `committedAt` is returned.
+ * when the main repo has moved on since the session forked. Walks both
+ * histories at once, newest commit first, marking each commit with the sides
+ * that reach it (git's paint-down). A commit both sides reach is a common
+ * ancestor; everything beneath it is marked as such, and the walk stops once
+ * nothing left to visit could lead to another. So it reads the commits since
+ * the fork point, not both full histories.
+ *
+ * A common ancestor that is itself an ancestor of another one is not a merge
+ * base, however short the path one side reaches it by. Among more than one
+ * equally-near candidate (a criss-cross merge), the newest by `committedAt`
+ * is returned. Commit dates order the walk but cannot make it wrong: a
+ * candidate found early through a skewed date is dropped when another
+ * candidate turns out to reach it.
  */
 export async function mergeBase(
   deps: { git: GitHost },
@@ -203,25 +196,97 @@ export async function mergeBase(
   b: Sha,
 ): Promise<Sha | null> {
   if (a === b) return a;
-  const [ancestorsOfA, ancestorsOfB] = await Promise.all([
-    ancestry(deps.git, repo, a),
-    ancestry(deps.git, repo, b),
-  ]);
-  const common = [...ancestorsOfA.keys()].filter((sha) => ancestorsOfB.has(sha));
-  if (common.length === 0) return null;
+  const commits = new Map<Sha, GitCommit | null>();
+  const read = async (sha: Sha): Promise<GitCommit | null> => {
+    if (!commits.has(sha)) commits.set(sha, await deps.git.readCommit(repo, sha));
+    return commits.get(sha) ?? null;
+  };
+  const flags = new Map<Sha, number>();
+  // Newest first. Among equal dates, commits below a common ancestor first, so
+  // that marking catches up with a side still walking (git dates are in
+  // seconds, and a run of commits often shares one); then the one queued first.
+  const queue: { sha: Sha; at: number; below: boolean; order: number }[] = [];
+  let queued = 0;
+  const visit = async (sha: Sha, mark: number) => {
+    const before = flags.get(sha) ?? 0;
+    if ((before | mark) === before) return;
+    flags.set(sha, before | mark);
+    const commit = await read(sha);
+    if (!commit) return;
+    const entry = {
+      sha,
+      at: commit.committedAt,
+      below: Boolean((before | mark) & BELOW_COMMON),
+      order: queued++,
+    };
+    const after = (other: typeof entry) =>
+      other.at !== entry.at
+        ? other.at < entry.at
+        : other.below !== entry.below
+          ? entry.below
+          : other.order > entry.order;
+    let index = queue.findIndex(after);
+    if (index < 0) index = queue.length;
+    queue.splice(index, 0, entry);
+  };
+  const stillLeads = () => queue.some(({ sha }) => !((flags.get(sha) ?? 0) & BELOW_COMMON));
 
-  const commits = new Map([...ancestorsOfA, ...ancestorsOfB]);
-  const nearest = common.filter(
-    (sha) => !common.some((other) => other !== sha && reaches(commits, other, sha)),
-  );
+  await Promise.all([visit(a, FROM_A), visit(b, FROM_B)]);
+  const candidates = new Set<Sha>();
+  while (stillLeads()) {
+    const next = queue.shift();
+    if (!next) break;
+    let mark = flags.get(next.sha) ?? 0;
+    if (mark === (FROM_A | FROM_B)) {
+      candidates.add(next.sha);
+      mark |= BELOW_COMMON;
+    }
+    const parents = (await read(next.sha))?.parents ?? [];
+    await Promise.all(parents.map((parent) => visit(parent, mark)));
+  }
 
+  // The walk can stop before the mark reaches every older candidate.
+  const left = [...candidates].filter((sha) => !((flags.get(sha) ?? 0) & BELOW_COMMON));
+  const nearest: Sha[] = [];
+  for (const sha of left) {
+    let reached = false;
+    for (const other of left) {
+      if (other !== sha && (await reaches(read, other, sha))) reached = true;
+    }
+    if (!reached) nearest.push(sha);
+  }
   return nearest.reduce<Sha | null>((best, sha) => {
-    const bestCommit = best ? commits.get(best) : null;
-    const commit = commits.get(sha);
-    if (!commit) return best;
-    if (!bestCommit || commit.committedAt > bestCommit.committedAt) return sha;
-    return best;
+    const bestAt = best ? commits.get(best)?.committedAt : undefined;
+    const at = commits.get(sha)?.committedAt;
+    if (at === undefined) return best;
+    return bestAt === undefined || at > bestAt ? sha : best;
   }, null);
+}
+
+/**
+ * Whether `candidate` is an ancestor of `from`. Commits older than the
+ * candidate are not descended into: an ancestor is not normally newer than
+ * its descendant, and this keeps two unrelated candidates from walking the
+ * whole history.
+ */
+async function reaches(
+  read: (sha: Sha) => Promise<GitCommit | null>,
+  from: Sha,
+  candidate: Sha,
+): Promise<boolean> {
+  const target = await read(candidate);
+  if (!target) return false;
+  const stack: Sha[] = [from];
+  const visited = new Set<Sha>();
+  for (let next = stack.pop(); next; next = stack.pop()) {
+    if (next === candidate) return true;
+    if (visited.has(next)) continue;
+    visited.add(next);
+    const commit = await read(next);
+    if (!commit || commit.committedAt < target.committedAt) continue;
+    stack.push(...commit.parents);
+  }
+  return false;
 }
 
 export function diffStats(diff: FileDiff[], commits: number): DiffStats {
