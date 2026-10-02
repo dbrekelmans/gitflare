@@ -1,4 +1,11 @@
-import type { DiffStats, FileDiff, FileStatus, GitCommit, Sha } from "@gitflare/core";
+import {
+  type DiffStats,
+  type FileDiff,
+  type FileStatus,
+  ForgeError,
+  type GitCommit,
+  type Sha,
+} from "@gitflare/core";
 import type { DiffPort, GitHost, TreeEntry } from "@gitflare/core/ports";
 import { lineDiffStatus } from "./line-diff";
 import { collectChangedLeaves, type LeafChange, pairRenames } from "./tree-walk";
@@ -27,6 +34,13 @@ export interface DiffOptions {
   maxFileBytes?: number;
   /** Lines of unchanged context around each hunk. */
   contextLines?: number;
+  /**
+   * A file whose two sides, after trimming their common prefix and suffix,
+   * still multiply out to more line-diff table cells than this is reported
+   * without hunks instead of being diffed, so a large rewrite cannot exhaust
+   * the Worker's memory.
+   */
+  maxDiffCells?: number;
 }
 
 const DEFAULT_MAX_FILE_BYTES = 1_000_000;
@@ -51,13 +65,27 @@ async function fileDiffFor(
   after: TreeEntry | null,
   maxFileBytes: number,
   contextLines: number | undefined,
+  maxDiffCells: number | undefined,
 ): Promise<FileDiff> {
   const readable = (entry: TreeEntry | null): entry is TreeEntry =>
     entry !== null && entry.type !== "gitlink";
-  const [beforeBytes, afterBytes] = await Promise.all([
-    readable(before) ? git.readBlob(repo, before.sha) : Promise.resolve(null),
-    readable(after) ? git.readBlob(repo, after.sha) : Promise.resolve(null),
-  ]);
+  const readBlobOrThrow = async (sha: Sha): Promise<Uint8Array> => {
+    const blob = await git.readBlob(repo, sha);
+    if (!blob) throw new ForgeError("not_found", `blob ${sha} does not exist in ${repo}`);
+    return blob;
+  };
+
+  // A rename pairs the same entry on both sides: read its blob once, not twice.
+  const sameBlob = before !== null && after !== null && before.sha === after.sha;
+  const [beforeBytes, afterBytes] = sameBlob
+    ? await (async () => {
+        const bytes = readable(before) ? await readBlobOrThrow(before.sha) : null;
+        return [bytes, bytes] as const;
+      })()
+    : await Promise.all([
+        readable(before) ? readBlobOrThrow(before.sha) : Promise.resolve(null),
+        readable(after) ? readBlobOrThrow(after.sha) : Promise.resolve(null),
+      ]);
 
   const isGitlink = before?.type === "gitlink" || after?.type === "gitlink";
   const bytes = [beforeBytes, afterBytes].filter((b): b is Uint8Array => b !== null);
@@ -71,7 +99,10 @@ async function fileDiffFor(
   if (beforeText === afterText) {
     return { path, oldPath, status, binary: false, insertions: 0, deletions: 0, hunks: [] };
   }
-  return { ...lineDiffStatus(path, beforeText, afterText, status, contextLines), oldPath };
+  return {
+    ...lineDiffStatus(path, beforeText, afterText, status, contextLines, maxDiffCells),
+    oldPath,
+  };
 }
 
 /** The files that differ between two commits of one repository, in path order. */
@@ -84,12 +115,22 @@ export async function diffCommits(
 ): Promise<FileDiff[]> {
   const maxFileBytes = options?.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
   const contextLines = options?.contextLines;
+  const maxDiffCells = options?.maxDiffCells;
+
+  const repoInfo = await deps.git.getRepo(repo);
+  if (!repoInfo) throw new ForgeError("not_found", `repo ${repo} does not exist`);
+  if (repoInfo.status !== "ready") {
+    throw new ForgeError("not_ready", `repo ${repo} is still ${repoInfo.status}`);
+  }
+
   const [baseCommit, headCommit] = await Promise.all([
     deps.git.readCommit(repo, baseSha),
     deps.git.readCommit(repo, headSha),
   ]);
-  const baseTree = baseCommit?.treeSha ?? null;
-  const headTree = headCommit?.treeSha ?? null;
+  if (!baseCommit) throw new ForgeError("not_found", `commit ${baseSha} does not exist in ${repo}`);
+  if (!headCommit) throw new ForgeError("not_found", `commit ${headSha} does not exist in ${repo}`);
+  const baseTree = baseCommit.treeSha;
+  const headTree = headCommit.treeSha;
 
   const leaves: LeafChange[] = [];
   await collectChangedLeaves(deps.git, repo, baseTree, headTree, "", leaves);
@@ -107,6 +148,7 @@ export async function diffCommits(
         rename.entry,
         maxFileBytes,
         contextLines,
+        maxDiffCells,
       ),
     ),
     ...rest.map((leaf) => {
@@ -122,6 +164,7 @@ export async function diffCommits(
         leaf.after,
         maxFileBytes,
         contextLines,
+        maxDiffCells,
       );
     }),
   ]);
@@ -129,22 +172,35 @@ export async function diffCommits(
   return diffs.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
-async function ancestry(git: GitHost, repo: string, sha: Sha): Promise<Map<Sha, GitCommit>> {
-  const seen = new Map<Sha, GitCommit>();
-  const queue: Sha[] = [sha];
-  for (let next = queue.shift(); next; next = queue.shift()) {
-    if (seen.has(next)) continue;
-    const commit = await git.readCommit(repo, next);
-    if (!commit) continue;
-    seen.set(next, commit);
-    queue.push(...commit.parents);
+/**
+ * Expands one side's frontier by one generation (every parent of every
+ * commit in it), recording each commit it has not seen before.
+ */
+async function expand(
+  git: GitHost,
+  repo: string,
+  frontier: readonly Sha[],
+  seen: Map<Sha, GitCommit>,
+): Promise<Sha[]> {
+  const commits = await Promise.all(frontier.map((sha) => git.readCommit(repo, sha)));
+  const next: Sha[] = [];
+  for (let i = 0; i < frontier.length; i++) {
+    const sha = frontier[i] as Sha;
+    const commit = commits[i];
+    if (!commit || seen.has(sha)) continue;
+    seen.set(sha, commit);
+    next.push(...commit.parents);
   }
-  return seen;
+  return next;
 }
 
 /**
  * The newest commit both histories contain: what a change is diffed against
- * when the main repo has moved on since the session forked.
+ * when the main repo has moved on since the session forked. Walks both
+ * histories outward one generation at a time (not just first-parent, so a
+ * true merge commit's other side is not missed) and returns as soon as a
+ * commit both sides have reached appears, which is nearer by graph distance
+ * than picking by timestamp, so clock skew cannot pick the wrong one.
  */
 export async function mergeBase(
   deps: { git: GitHost },
@@ -153,16 +209,23 @@ export async function mergeBase(
   b: Sha,
 ): Promise<Sha | null> {
   if (a === b) return a;
-  const [ancestorsOfA, ancestorsOfB] = await Promise.all([
-    ancestry(deps.git, repo, a),
-    ancestry(deps.git, repo, b),
-  ]);
-  let best: GitCommit | null = null;
-  for (const [sha, commit] of ancestorsOfA) {
-    if (!ancestorsOfB.has(sha)) continue;
-    if (!best || commit.committedAt > best.committedAt) best = commit;
+  const seenA = new Map<Sha, GitCommit>();
+  const seenB = new Map<Sha, GitCommit>();
+  const firstCommon = (): Sha | null => {
+    for (const sha of seenA.keys()) if (seenB.has(sha)) return sha;
+    return null;
+  };
+  let frontierA: Sha[] = [a];
+  let frontierB: Sha[] = [b];
+  while (frontierA.length > 0 || frontierB.length > 0) {
+    if (frontierA.length > 0) frontierA = await expand(deps.git, repo, frontierA, seenA);
+    const afterA = firstCommon();
+    if (afterA) return afterA;
+    if (frontierB.length > 0) frontierB = await expand(deps.git, repo, frontierB, seenB);
+    const afterB = firstCommon();
+    if (afterB) return afterB;
   }
-  return best?.sha ?? null;
+  return null;
 }
 
 export function diffStats(diff: FileDiff[], commits: number): DiffStats {

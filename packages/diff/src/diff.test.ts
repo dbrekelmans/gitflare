@@ -8,12 +8,22 @@ describe("against the demo fixture", () => {
   it("produces a diff whose section hashes match every demo section", async () => {
     const ports = createDemoPorts();
     const diffs = createDiffs({ git: ports.git });
-    const change = demoChanges.review;
-    const diff = await diffs.between(demo.git.repos.forks.review, change.baseSha, change.headSha);
 
-    for (const section of demo.sections.filter((s) => s.changeId === change.id)) {
-      expect(sectionContentHash(diff, section.files)).toBe(section.contentHash);
+    // Covers every section in the fixture, not just the review change's four:
+    // the merged change (#11) has one of its own, against its own fork.
+    const byChange = [
+      { repo: demo.git.repos.forks.merged, change: demoChanges.merged },
+      { repo: demo.git.repos.forks.review, change: demoChanges.review },
+    ];
+    let checked = 0;
+    for (const { repo, change } of byChange) {
+      const diff = await diffs.between(repo, change.baseSha, change.headSha);
+      for (const section of demo.sections.filter((s) => s.changeId === change.id)) {
+        expect(sectionContentHash(diff, section.files)).toBe(section.contentHash);
+        checked++;
+      }
     }
+    expect(checked).toBe(demo.sections.length);
   });
 
   it("finds the fork's base as the merge base of base and head", async () => {
@@ -145,6 +155,127 @@ describe("diffCommits", () => {
     const diff = await diffCommits({ git }, repo, base, base);
     expect(diff).toEqual([]);
     expect(readTree).not.toHaveBeenCalled();
+  });
+
+  it("does not pair two unrelated empty files as a rename", async () => {
+    const clock = new ManualClock();
+    const git = new FakeGit(clock);
+    const repo = "example";
+    void git.createRepo(repo);
+    const base = git.push(repo, "main", { "e1.txt": "" }).after;
+    const head = git.push(repo, "main", [
+      { path: "e1.txt", delete: true },
+      { path: "e2.txt", content: "" },
+    ]).after;
+
+    const diff = await diffCommits({ git }, repo, base, head);
+    expect(diff.map((f) => ({ path: f.path, status: f.status }))).toEqual(
+      expect.arrayContaining([
+        { path: "e1.txt", status: "deleted" },
+        { path: "e2.txt", status: "added" },
+      ]),
+    );
+    expect(diff.find((f) => f.status === "renamed")).toBeUndefined();
+  });
+
+  it("reads a renamed file's unchanged blob once, not twice", async () => {
+    const clock = new ManualClock();
+    const git = new FakeGit(clock);
+    const repo = "example";
+    void git.createRepo(repo);
+    const base = git.push(repo, "main", { "old.txt": "kept content\n" }).after;
+    const head = git.push(repo, "main", [
+      { path: "old.txt", delete: true },
+      { path: "new.txt", content: "kept content\n" },
+    ]).after;
+
+    const readBlob = vi.spyOn(git, "readBlob");
+    const diff = await diffCommits({ git }, repo, base, head);
+    expect(diff).toHaveLength(1);
+    expect(diff[0]?.status).toBe("renamed");
+    expect(readBlob).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an unknown repository", async () => {
+    const clock = new ManualClock();
+    const git = new FakeGit(clock);
+    await expect(diffCommits({ git }, "nope", "a", "b")).rejects.toMatchObject({
+      name: "ForgeError",
+      code: "not_found",
+    });
+  });
+
+  it("rejects a repository that is still forking", async () => {
+    const clock = new ManualClock();
+    const git = new FakeGit(clock);
+    git.holdCopies = true;
+    void git.createRepo("source");
+    const base = git.push("source", "main", { "a.txt": "a\n" }).after;
+    await git.forkRepo("source", "fork");
+
+    await expect(diffCommits({ git }, "fork", base, base)).rejects.toMatchObject({
+      name: "ForgeError",
+      code: "not_ready",
+    });
+  });
+
+  it("rejects an unknown commit instead of treating it as an empty tree", async () => {
+    const clock = new ManualClock();
+    const git = new FakeGit(clock);
+    const repo = "example";
+    void git.createRepo(repo);
+    const base = git.push(repo, "main", { "a.txt": "a\n", "b.txt": "b\n" }).after;
+
+    await expect(diffCommits({ git }, repo, base, "sha_does_not_exist")).rejects.toMatchObject({
+      name: "ForgeError",
+      code: "not_found",
+    });
+  });
+
+  it("rejects a tree the host cannot produce instead of reporting the subtree as added", async () => {
+    const clock = new ManualClock();
+    const git = new FakeGit(clock);
+    const repo = "example";
+    void git.createRepo(repo);
+    const base = git.push(repo, "main", { "a.txt": "a\n" }).after;
+    const head = git.push(repo, "main", { "dir/file.txt": "x\n" }).after;
+
+    vi.spyOn(git, "readTree").mockResolvedValueOnce(null);
+    await expect(diffCommits({ git }, repo, base, head)).rejects.toMatchObject({
+      name: "ForgeError",
+      code: "not_found",
+    });
+  });
+
+  it("caps the line-diff table instead of allocating it for a total rewrite", async () => {
+    const clock = new ManualClock();
+    const git = new FakeGit(clock);
+    const repo = "example";
+    void git.createRepo(repo);
+    const line = (n: number) => Array.from({ length: n }, (_, i) => `line ${i}`).join("\n");
+    const base = git.push(repo, "main", { "big.txt": line(200) }).after;
+    const head = git.push(repo, "main", {
+      "big.txt": line(200).split("").reverse().join(""),
+    }).after;
+
+    const diff = await diffCommits({ git }, repo, base, head, { maxDiffCells: 1000 });
+    expect(diff).toHaveLength(1);
+    expect(diff[0]?.binary).toBe(true);
+    expect(diff[0]?.hunks).toEqual([]);
+  });
+
+  it("gives a mid-file insertion with no context lines a real oldStart, not 0", async () => {
+    const clock = new ManualClock();
+    const git = new FakeGit(clock);
+    const repo = "example";
+    void git.createRepo(repo);
+    const base = git.push(repo, "main", { "a.txt": "one\ntwo\nthree\n" }).after;
+    const head = git.push(repo, "main", { "a.txt": "one\ntwo\ninserted\nthree\n" }).after;
+
+    const diff = await diffCommits({ git }, repo, base, head, { contextLines: 0 });
+    const hunk = diff[0]?.hunks[0];
+    expect(hunk?.oldStart).toBe(2);
+    expect(hunk?.oldLines).toBe(0);
   });
 });
 

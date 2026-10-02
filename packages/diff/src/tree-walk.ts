@@ -1,4 +1,4 @@
-import type { Sha } from "@gitflare/core";
+import { ForgeError, gitObjectId, type Sha } from "@gitflare/core";
 import type { GitHost, TreeEntry } from "@gitflare/core/ports";
 
 /** A path whose entry differs (or exists on only one side) between two trees. */
@@ -12,10 +12,18 @@ function isTree(entry: TreeEntry | null): entry is TreeEntry & { type: "tree" } 
   return entry?.type === "tree";
 }
 
+async function readTreeOrThrow(git: GitHost, repo: string, sha: Sha): Promise<TreeEntry[]> {
+  const entries = await git.readTree(repo, sha);
+  if (!entries) throw new ForgeError("not_found", `tree ${sha} does not exist in ${repo}`);
+  return entries;
+}
+
 /**
  * Every leaf whose content, type or presence differs between two trees.
  * Descends only where a directory's id differs between the two sides, so an
- * untouched subtree is never read.
+ * untouched subtree is never read. A tree a parent entry names but the host
+ * cannot produce is a broken object store, not an empty directory, so it
+ * throws rather than reporting every file beneath it as added or deleted.
  */
 export async function collectChangedLeaves(
   git: GitHost,
@@ -27,8 +35,8 @@ export async function collectChangedLeaves(
 ): Promise<void> {
   if (baseTree === headTree) return;
   const [baseEntries, headEntries] = await Promise.all([
-    baseTree ? git.readTree(repo, baseTree) : Promise.resolve(null),
-    headTree ? git.readTree(repo, headTree) : Promise.resolve(null),
+    baseTree ? readTreeOrThrow(git, repo, baseTree) : Promise.resolve(null),
+    headTree ? readTreeOrThrow(git, repo, headTree) : Promise.resolve(null),
   ]);
   const byName = new Map<string, { before: TreeEntry | null; after: TreeEntry | null }>();
   for (const entry of baseEntries ?? []) byName.set(entry.name, { before: entry, after: null });
@@ -62,6 +70,9 @@ export interface RenamedLeaf {
   entry: TreeEntry;
 }
 
+/** Every empty file shares this blob id; it names no rename on its own. */
+const EMPTY_BLOB_SHA = gitObjectId("blob", new Uint8Array(0));
+
 /**
  * Pairs an added leaf with a deleted one that carries the same blob, as an
  * exact-content rename. Mutates neither input; returns the renames found and
@@ -76,6 +87,7 @@ export function pairRenames(leaves: readonly LeafChange[]): {
   const deletedBySha = new Map<Sha, LeafChange[]>();
   for (const leaf of deleted) {
     const sha = (leaf.before as TreeEntry).sha;
+    if (sha === EMPTY_BLOB_SHA) continue;
     const bucket = deletedBySha.get(sha);
     if (bucket) bucket.push(leaf);
     else deletedBySha.set(sha, [leaf]);
@@ -85,6 +97,7 @@ export function pairRenames(leaves: readonly LeafChange[]): {
   const consumed = new Set<LeafChange>();
   for (const addedLeaf of added) {
     const after = addedLeaf.after as TreeEntry;
+    if (after.sha === EMPTY_BLOB_SHA) continue;
     const bucket = deletedBySha.get(after.sha);
     const match = bucket?.find((leaf) => leaf.before?.type === after.type && !consumed.has(leaf));
     if (!match) continue;
