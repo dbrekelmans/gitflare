@@ -15,7 +15,7 @@ Artifacts, Sandbox SDK 1.0, `@cloudflare/ci`, Worker Previews and much of AI Gat
 
 ## Hard limits
 
-- Do not deploy, and do not create, modify or delete resources in any Cloudflare account.
+- Do not deploy, and do not create, modify or delete resources in any Cloudflare account. The one exception is a task whose brief states that the project owner authorised live testing for that task: then stay inside the account, the spending limit and the resource-name prefix the brief gives, never touch a resource you did not create, and delete what you created before you finish.
 - Do not open issues or pull requests on repositories other than `dbrekelmans/gitflare`.
 - Never push to `main`, never merge a pull request, never force-push, never pass `--no-verify`, never `git add -f`. To pick up changes from `main`, merge it into your branch rather than rebasing.
 - Do not touch files outside the paths your task owns. If you need a change elsewhere (a shared contract, a root config), make the smallest possible edit and call it out in the PR description.
