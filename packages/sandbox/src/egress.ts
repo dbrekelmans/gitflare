@@ -60,13 +60,15 @@ function deny(reason: string): EgressDecision {
   return { allow: false, reason };
 }
 
+/**
+ * `checkStartOptions` refuses every pattern but a name and `*.<name>`. Only
+ * that leading `*.` is read as a glob here too, so a pattern that reached this
+ * some other way matches at most its own name.
+ */
 function matchesHost(pattern: string, host: string): boolean {
-  const expression = pattern
-    .toLowerCase()
-    .split("*")
-    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
-    .join(".*");
-  return new RegExp(`^${expression}$`).test(host);
+  const name = pattern.toLowerCase();
+  if (name.startsWith("*.")) return host.endsWith(name.slice(1));
+  return host === name;
 }
 
 /** The git remote without a trailing slash, or null when it is not an HTTPS URL. */

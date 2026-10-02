@@ -152,13 +152,15 @@ describe("start", () => {
     expect(container.calls).toEqual([]);
   });
 
-  it("refuses a host grant of *, before starting anything", async () => {
-    const { container, controller } = setup();
-    const error = await failure(
-      controller.start({ ...options, egress: [{ kind: "host", host: "*" }] }),
-    );
-    expect(error.code).toBe("invalid");
-    expect(container.calls).toEqual([]);
+  it("refuses a host grant that matches every host, before starting anything", async () => {
+    for (const host of ["*", "**", "*.*"]) {
+      const { container, controller } = setup();
+      const error = await failure(
+        controller.start({ ...options, egress: [{ kind: "host", host }] }),
+      );
+      expect([host, error.code]).toEqual([host, "invalid"]);
+      expect(container.calls).toEqual([]);
+    }
   });
 
   it("refuses to start a container that is already running", async () => {

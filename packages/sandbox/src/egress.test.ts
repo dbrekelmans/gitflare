@@ -210,6 +210,18 @@ describe("hosts", () => {
     expect(allows([{ kind: "host", host: "a.example" }], "GET", "https://axexample/")).toBe(false);
   });
 
+  it("reads only a leading *. as a glob, even in a grant that skipped validation", () => {
+    for (const host of ["**", "*.*", "*", "*npmjs.org", "registry.*"]) {
+      for (const url of ["https://registry.npmjs.org/x", "https://evil.example/x"]) {
+        expect([host, url, allows([{ kind: "host", host }], "GET", url)]).toEqual([
+          host,
+          url,
+          false,
+        ]);
+      }
+    }
+  });
+
   it("allows nothing with no grants, and nothing that is not a URL", () => {
     expect(allows([], "GET", "https://registry.npmjs.org/left-pad")).toBe(false);
     expect(allows([registry], "GET", "registry.npmjs.org")).toBe(false);
@@ -234,6 +246,23 @@ describe("the network mode", () => {
     expect(() => egressMode({ egress: [{ kind: "host", host: "*" }, registry] })).toThrow(
       ForgeError,
     );
+  });
+
+  it("refuses every other pattern that is not a host name, or one with a leading *.", () => {
+    for (const host of [
+      "**",
+      "*.*",
+      "*.",
+      "* ",
+      "*.*.org",
+      "registry.*",
+      "*npmjs.org",
+      "re*.npmjs.org",
+      "localhost",
+      "",
+    ]) {
+      expect(() => egressMode({ egress: [{ kind: "host", host }] }), host).toThrow(ForgeError);
+    }
   });
 
   it("is never open for a sandbox that is also handed a grant", () => {
