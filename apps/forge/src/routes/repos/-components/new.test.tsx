@@ -12,7 +12,7 @@ import {
 } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NewRepository } from "../new";
+import { NewRepository } from "./new";
 
 const server = vi.hoisted(() => ({
   api: undefined as unknown as ReturnType<typeof createFixtureApi>,

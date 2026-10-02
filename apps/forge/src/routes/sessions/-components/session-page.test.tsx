@@ -171,10 +171,24 @@ describe("a hosted session's page, for its owner", () => {
     expect(screen.getByRole("button", { name: "Abandon" })).toBeTruthy();
   });
 
-  it("abandons the session", async () => {
-    window.confirm = () => true;
+  it("asks for confirmation before abandoning, in-app rather than with window.confirm", async () => {
     await renderSession();
     fireEvent.click(screen.getByRole("button", { name: "Abandon" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    expect(dialog.getByText(/fork will be deleted/)).toBeTruthy();
+
+    fireEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // Cancelling must not abandon the session.
+    expect(screen.getByRole("button", { name: "Abandon" })).toBeTruthy();
+  });
+
+  it("abandons the session once confirmed", async () => {
+    await renderSession();
+    fireEvent.click(screen.getByRole("button", { name: "Abandon" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    fireEvent.click(dialog.getByRole("button", { name: "Abandon" }));
+
     await waitFor(() => expect(screen.getByText("abandoned")).toBeTruthy());
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Abandon" })).toBeNull();

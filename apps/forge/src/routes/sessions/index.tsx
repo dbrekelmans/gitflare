@@ -21,7 +21,7 @@ function Sessions() {
         title="Sessions"
         lede="Your work in progress. A session is a fork, the commits pushed to it and how they were made, wherever it runs."
         aside={
-          <Button variant="flare" render={<Link to="/sessions/new" />}>
+          <Button variant="flare" nativeButton={false} render={<Link to="/sessions/new" />}>
             Start a session
           </Button>
         }

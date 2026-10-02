@@ -128,6 +128,37 @@ describe("the workspace, for an administrator", () => {
     expect(screen.getByRole("button", { name: "Prepare again" })).toBeTruthy();
   });
 
+  it("shows preparing in progress from `preparation`, not only from the mutation's own pending state", async () => {
+    await renderSettings({
+      data: demoWith((data) => {
+        data.organisation.settings.workspace.snapshot = { id: "snap_demo", image: "debian" };
+        data.organisation.settings.workspace.preparation = {
+          state: "running",
+          startedAt: Date.now(),
+        };
+      }),
+    });
+    // The mutation that started it has long since resolved; `preparation`
+    // is the only thing still saying it is running.
+    expect(screen.getByText("preparing")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Preparing…" })).toBeTruthy();
+  });
+
+  it("shows a failed preparation with its reason", async () => {
+    await renderSettings({
+      data: demoWith((data) => {
+        data.organisation.settings.workspace.preparation = {
+          state: "failed",
+          failedAt: Date.now(),
+          error: "The managed image could not be reached.",
+        };
+      }),
+    });
+    expect(screen.getByText("not prepared")).toBeTruthy();
+    expect(screen.getByText("The managed image could not be reached.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Prepare workspace" })).toBeTruthy();
+  });
+
   it("re-preparing an already-prepared workspace does not get stuck on 'Preparing…'", async () => {
     await renderSettings({
       data: demoWith((data) => {

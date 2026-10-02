@@ -59,7 +59,7 @@ describe("the repository list, against the demo", () => {
     expect(screen.getByText("2 open · 4 decisions")).toBeTruthy();
   });
 
-  it("shows a repository whose import has not finished as importing, with no counts", async () => {
+  it("shows a repository whose import has not finished as importing, once, with no counts", async () => {
     await renderList({
       data: demoWith((data) => {
         const billing = data.repositories.find((r) => r.slug === "billing-worker");
@@ -67,8 +67,24 @@ describe("the repository list, against the demo", () => {
       }),
     });
     expect(screen.getByRole("link", { name: "billing-worker" })).toBeTruthy();
-    expect(screen.getAllByText("importing").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("importing").length).toBe(1);
     // The other repository is ready and still shows its counts.
     expect(screen.getByText(/open/)).toBeTruthy();
+  });
+
+  it("shows a repository whose import failed, not forever as importing", async () => {
+    await renderList({
+      data: demoWith((data) => {
+        const billing = data.repositories.find((r) => r.slug === "billing-worker");
+        if (billing) {
+          billing.readyAt = null;
+          billing.importFailedAt = Date.now();
+          billing.importError = "The source repository could not be reached.";
+        }
+      }),
+    });
+    expect(screen.getByRole("link", { name: "billing-worker" })).toBeTruthy();
+    expect(screen.getByText("import failed")).toBeTruthy();
+    expect(screen.queryByText("importing")).toBeNull();
   });
 });

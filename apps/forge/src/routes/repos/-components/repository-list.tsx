@@ -8,10 +8,12 @@ import { Link } from "@tanstack/react-router";
 import { RouteLink } from "@/components/shell/link";
 import { PageHead } from "@/components/shell/page";
 import { repositoryQueries } from "@/data/repositories.queries";
+import { stillImporting } from "./import-status";
 
 function RepositoryRow({ item }: { item: RepositoryView }) {
   const { repository } = item;
   const ready = repository.readyAt !== null;
+  const failed = repository.importFailedAt !== null;
   return (
     <Row
       label={
@@ -20,28 +22,38 @@ function RepositoryRow({ item }: { item: RepositoryView }) {
         </RouteLink>
       }
       annotation={
-        <Evidence size="sm" kind="note">
-          {ready ? `${item.openChanges} open · ${item.activeDecisions} decisions` : "importing"}
-        </Evidence>
+        ready ? (
+          <Evidence size="sm" kind="note">
+            {item.openChanges} open · {item.activeDecisions} decisions
+          </Evidence>
+        ) : undefined
       }
     >
       <span className="flex items-center gap-s4">
         {repository.description}
-        {!ready && <StatusPill tone="neutral">importing</StatusPill>}
+        {!ready && (
+          <StatusPill tone={failed ? "warning" : "neutral"}>
+            {failed ? "import failed" : "importing"}
+          </StatusPill>
+        )}
       </span>
     </Row>
   );
 }
 
 export function RepositoryList() {
-  const { data } = useSuspenseQuery(repositoryQueries.list());
+  const { data } = useSuspenseQuery({
+    ...repositoryQueries.list(),
+    refetchInterval: (query) =>
+      query.state.data?.some((item) => stillImporting(item.repository)) ? 3000 : false,
+  });
   return (
     <>
       <PageHead
         title="Repositories"
         lede="Each one has a main repository only gitflare writes to, and a context repository beside it."
         aside={
-          <Button variant="outline" render={<Link to="/repos/new" />}>
+          <Button variant="outline" nativeButton={false} render={<Link to="/repos/new" />}>
             New repository
           </Button>
         }

@@ -33,7 +33,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 key={destination.to}
                 to={destination.to}
                 activeOptions={{ exact: destination.exact }}
-                className="type-meta text-muted-foreground transition-colors hover:text-ink data-[status=active]:text-ink"
+                className="type-meta whitespace-nowrap text-muted-foreground transition-colors hover:text-ink data-[status=active]:text-ink"
               >
                 {destination.label}
               </Link>
