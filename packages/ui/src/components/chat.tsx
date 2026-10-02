@@ -1,6 +1,7 @@
 import type { ComponentProps, FormEvent, ReactNode } from "react";
 import { Children } from "react";
 import { cn } from "#lib/utils"
+import { InputGroup, InputGroupButton, InputGroupInput } from "#components/ui/input-group"
 
 export type LineThreadProps = ComponentProps<"div"> & {
   /** `live` holds the thread with a flare rule; `settled` drops it to grey. */
@@ -237,10 +238,7 @@ export function AskField({
 }: AskFieldProps) {
   const page = size === "page";
   const busy = answering != null;
-  const control = cn(
-    "flex shrink-0 cursor-pointer items-center justify-center rounded-pill bg-ink text-on-ink outline-none transition-colors duration-150 hover:bg-ink-hover focus-visible:outline-solid focus-visible:outline-[1.5px] focus-visible:outline-offset-2 focus-visible:outline-ring active:bg-ink-press",
-    page ? "size-[34px]" : "size-[28px]",
-  );
+  const buttonSize = page ? "icon-sm" : "icon-xs";
   const arrow = page ? 14 : 12;
 
   return (
@@ -249,60 +247,70 @@ export function AskField({
         event.preventDefault();
         onSubmit?.(event);
       }}
-      className={cn(
-        "flex w-full items-center rounded-pill border border-border focus-within:border-ink",
-        page ? "gap-s5 py-s4 pr-s4 pl-s7" : "gap-s5 py-s2 pr-s2 pl-[18px]",
-        busy ? "bg-surface" : "bg-ground",
-        className,
-      )}
+      className="w-full"
     >
-      {scope != null && !busy && (
-        <span className="-mr-[2px] flex shrink-0 items-center gap-[14px]">
-          <span className="type-mono-xs text-flare-deep">{scope}</span>
-          <span aria-hidden="true" className="h-s5 w-px bg-border" />
-        </span>
-      )}
-      {busy ? (
-        <span role="status" className="type-mono-xs grow text-muted-foreground">
-          {answering}
-        </span>
-      ) : (
-        <input
-          type="text"
-          className={cn(
-            "min-w-0 grow bg-transparent font-display text-ink outline-none placeholder:text-faint",
-            page ? "text-body leading-body-s" : "text-ui leading-ui",
-          )}
-          {...inputProps}
-        />
-      )}
-      {busy ? (
-        <button type="button" aria-label="Stop" onClick={onStop} className={control}>
-          <span aria-hidden="true" className="size-[9px] rounded-[2px] bg-on-ink" />
-        </button>
-      ) : (
-        <button type="submit" aria-label="Send" className={control}>
-          <svg
-            width={arrow}
-            height={arrow}
-            viewBox={`0 0 ${arrow} ${arrow}`}
-            aria-hidden="true"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+      <InputGroup
+        className={cn(
+          "rounded-pill border border-border focus-within:border-ink has-[[data-slot=input-group-control]:focus-visible]:border-ink",
+          page ? "gap-s5 py-s4 pr-s4 pl-s7" : "gap-s5 py-s2 pr-s2 pl-[18px]",
+          busy ? "bg-surface" : "bg-ground",
+          className,
+        )}
+      >
+        {scope != null && !busy && (
+          <span className="-mr-[2px] flex shrink-0 items-center gap-[14px]">
+            <span className="type-mono-xs text-flare-deep">{scope}</span>
+            <span aria-hidden="true" className="h-s5 w-px bg-border" />
+          </span>
+        )}
+        {busy ? (
+          <span role="status" className="type-mono-xs grow text-muted-foreground">
+            {answering}
+          </span>
+        ) : (
+          <InputGroupInput
+            type="text"
+            className={cn(
+              "min-w-0 grow bg-transparent font-display text-ink outline-none placeholder:text-faint",
+              page ? "text-body leading-body-s" : "text-ui leading-ui",
+            )}
+            {...inputProps}
+          />
+        )}
+        {busy ? (
+          <InputGroupButton
+            type="button"
+            aria-label="Stop"
+            onClick={onStop}
+            variant="default"
+            size={buttonSize}
           >
-            <path
-              d={
-                page
-                  ? "M7 11.5 L7 3 M3.4 6.4 L7 2.8 L10.6 6.4"
-                  : "M6 10 L6 2.5 M2.8 5.7 L6 2.4 L9.2 5.7"
-              }
-            />
-          </svg>
-        </button>
-      )}
+            <span aria-hidden="true" className="size-[9px] rounded-[2px] bg-on-ink" />
+          </InputGroupButton>
+        ) : (
+          <InputGroupButton type="submit" aria-label="Send" variant="default" size={buttonSize}>
+            <svg
+              width={arrow}
+              height={arrow}
+              viewBox={`0 0 ${arrow} ${arrow}`}
+              aria-hidden="true"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path
+                d={
+                  page
+                    ? "M7 11.5 L7 3 M3.4 6.4 L7 2.8 L10.6 6.4"
+                    : "M6 10 L6 2.5 M2.8 5.7 L6 2.4 L9.2 5.7"
+                }
+              />
+            </svg>
+          </InputGroupButton>
+        )}
+      </InputGroup>
     </form>
   );
 }

@@ -100,7 +100,7 @@ export function FloatingCardClaims({
   return (
     <footer
       className={cn(
-        "flex items-center gap-s6 border-t border-border bg-surface px-s8 py-s5",
+        "flex flex-wrap items-center gap-s6 border-t border-border bg-surface px-s8 py-s5 min-[880px]:flex-nowrap",
         className,
       )}
       {...props}
@@ -114,7 +114,7 @@ export function FloatingCardClaims({
         {children}
       </div>
       {aside != null && (
-        <span className="type-meta min-w-[200px] flex-1 text-right text-pretty text-muted-foreground">
+        <span className="type-meta w-full text-right text-pretty text-muted-foreground min-[880px]:w-auto min-[880px]:min-w-[200px] min-[880px]:flex-1">
           {aside}
         </span>
       )}
