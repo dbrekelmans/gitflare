@@ -321,7 +321,7 @@ Source: https://developers.cloudflare.com/artifacts/api/git-protocol/
 
 - Remote: `https://<ACCOUNT_ID>.artifacts.cloudflare.net/git/<namespace>/<repo>.git`. "Use the exact hostname from the repo `remote` returned by the Workers binding or REST API." (The 2026-04-16 changelog entry shows an older host form; do not build the URL by hand.)
 - HTTPS smart protocol only. No SSH endpoint is documented anywhere in the docset.
-- Token format: documented as `art_v1_<40 hex>?expires=<unix_seconds>`. Observed: `art_v2_e_<40 hex>?expires=<unix_seconds>` in the one `eu` namespace tested. The server ignores the `?expires=` suffix (a valid secret with a past suffix is accepted, an expired one with a future suffix is refused); do not parse the prefix.
+- Token format: documented as `art_v1_<40 hex>?expires=<unix_seconds>`. Observed: `art_v2_e_<40 hex>?expires=<unix_seconds>` in the one `eu` namespace tested. The server ignores the `?expires=` suffix (a valid secret with a past suffix is accepted, an expired one with a future suffix is refused); do not parse the prefix. In an unrestricted namespace the prefix was `art_v2_x_` (`live/entire-on-artifacts.md`).
 - Two ways to present it:
 
 ```sh
@@ -333,7 +333,7 @@ export ARTIFACTS_TOKEN_SECRET="${ARTIFACTS_TOKEN%%\?expires=*}"
 export ARTIFACTS_AUTH_REMOTE="https://x:${ARTIFACTS_TOKEN_SECRET}@${ARTIFACTS_REMOTE#https://}"
 ```
 
-- "Use any non-empty username in the URL. Artifacts accepts that username but does not otherwise use or log it." A credential helper therefore returns any username plus the stripped secret as the password.
+- "Use any non-empty username in the URL. Artifacts accepts that username but does not otherwise use or log it." A credential helper therefore returns any username plus the stripped secret as the password. Observed live 2026-10-02 (`live/entire-on-artifacts.md`): stripping is not required — the token with or without its `?expires=` suffix was accepted in both the Bearer and the Basic form. A token for another repository got `remote: Invalid or expired token` with HTTP 403, and so did the one case tried of a valid token against a repository name that does not exist.
 - Scopes: `read` allows clone, fetch, pull; `write` adds push. Tokens are repo-scoped. The docs list only these two scopes; no per-branch or per-ref restriction is documented anywhere (an absence, not a stated guarantee).
 - TTL: minimum 60 s, maximum 31,536,000 s (1 year), default 86,400 s (24 h). Out of range is `INVALID_TTL`.
 - Minting: `repo.createToken(scope?, ttl?)`, `POST …/tokens`, `wrangler artifacts repos issue-token <REPO> --namespace --scope --ttl`, or the dashboard. Listing: `repo.listTokens()` or `GET …/repos/:name/tokens`. Revoking: `repo.revokeToken(tokenOrId)` (plaintext or id) or `DELETE …/tokens/:id`.

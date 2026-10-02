@@ -1,0 +1,8 @@
+#!/bin/sh
+# Logging shim: put a directory holding this file (named `git`) first on PATH to record
+# every network git command the Entire CLI runs. GIT_TRACE is not passed through by the CLI.
+case " $* " in *" fetch "*|*" push "*|*" ls-remote "*|*" clone "*)
+  hdr=$(env | grep -c '^GIT_CONFIG_VALUE_.*Authorization')
+  echo "git $* [auth-header-in-env=$hdr]" >> "$GF15/gitshim.log" ;;
+esac
+exec "$REAL_GIT" "$@"
