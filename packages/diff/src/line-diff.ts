@@ -3,11 +3,33 @@ import { type DiffLine, type FileDiff, type FileStatus, type Hunk, hunkHash } fr
 type Op = { kind: DiffLine["kind"]; text: string };
 
 /**
- * Longest-common-subsequence line diff over the two middle sections only
- * (the common prefix and suffix are stripped by the caller): deterministic,
- * so the same two texts always split into the same hunks.
+ * The full `(rows+1) * (cols+1)` LCS table is cheap up to this many cells
+ * (a few tens of megabytes). Above it `lineOps` switches to Hirschberg's
+ * divide-and-conquer, which finds the same optimal alignment in `O(n+m)`
+ * space instead of allocating the whole table, so a large rewrite is diffed
+ * properly rather than given up on.
+ */
+const DIRECT_DIFF_CELLS = 1_000_000;
+
+/**
+ * Longest-common-subsequence line diff: deterministic, so the same two texts
+ * always split into the same hunks. Dispatches to the table-based algorithm
+ * for anything small enough to allocate directly, and to the linear-space
+ * algorithm otherwise; both compute the same optimal alignment.
  */
 function lineOps(before: readonly string[], after: readonly string[]): Op[] {
+  if (
+    before.length <= 1 ||
+    after.length <= 1 ||
+    before.length * after.length <= DIRECT_DIFF_CELLS
+  ) {
+    return directLineOps(before, after);
+  }
+  return hirschbergOps(before, after);
+}
+
+/** The LCS table and backtrack, `before.length <= 1 || after.length <= 1` never allocates more than a single row either way. */
+function directLineOps(before: readonly string[], after: readonly string[]): Op[] {
   const rows = before.length;
   const cols = after.length;
   const lcs: number[][] = Array.from({ length: rows + 1 }, () =>
@@ -41,16 +63,54 @@ function lineOps(before: readonly string[], after: readonly string[]): Op[] {
   return ops;
 }
 
-const DEFAULT_CONTEXT = 3;
+/** `scores[j]` is the LCS length of all of `a` against `b[0..j)`, keeping only one row of the table alive at a time. */
+function lcsScoresAgainstEveryPrefix(a: readonly string[], b: readonly string[]): number[] {
+  let previous = new Array<number>(b.length + 1).fill(0);
+  let current = new Array<number>(b.length + 1).fill(0);
+  for (let i = 1; i <= a.length; i++) {
+    current[0] = 0;
+    for (let j = 1; j <= b.length; j++) {
+      current[j] =
+        a[i - 1] === b[j - 1]
+          ? (previous[j - 1] ?? 0) + 1
+          : Math.max(previous[j] ?? 0, current[j - 1] ?? 0);
+    }
+    [previous, current] = [current, previous];
+  }
+  return previous;
+}
 
 /**
- * The LCS table is `(rows+1) * (cols+1)` numbers: a file rewritten with no
- * common prefix or suffix left (after trimming) above this many cells is
- * reported as oversized instead, so a large file cannot exhaust the Worker's
- * memory. 1,000,000 cells is a few tens of megabytes even without a typed
- * array, comfortably inside a Worker's limit.
+ * Hirschberg's algorithm: splits `a` in half, scores each half against every
+ * split of `b` from its own end (one O(a+b)-space pass forwards, one
+ * backwards), and recurses on the two quarters the best split makes — the
+ * same optimal alignment `directLineOps` would backtrack from its table, in
+ * `O(a.length + b.length)` space at each level of the recursion.
  */
-const DEFAULT_MAX_DIFF_CELLS = 1_000_000;
+function hirschbergOps(a: readonly string[], b: readonly string[]): Op[] {
+  if (a.length * b.length <= DIRECT_DIFF_CELLS) return directLineOps(a, b);
+
+  const mid = Math.floor(a.length / 2);
+  const forward = lcsScoresAgainstEveryPrefix(a.slice(0, mid), b);
+  const backward = lcsScoresAgainstEveryPrefix([...a.slice(mid)].reverse(), [...b].reverse());
+
+  let splitAt = 0;
+  let bestScore = -1;
+  for (let column = 0; column <= b.length; column++) {
+    const score = (forward[column] ?? 0) + (backward[b.length - column] ?? 0);
+    if (score > bestScore) {
+      bestScore = score;
+      splitAt = column;
+    }
+  }
+
+  return [
+    ...lineOps(a.slice(0, mid), b.slice(0, splitAt)),
+    ...lineOps(a.slice(mid), b.slice(splitAt)),
+  ];
+}
+
+const DEFAULT_CONTEXT = 3;
 
 /** The two sides of a changed file, as text, with a known status. */
 export function lineDiffStatus(
@@ -59,7 +119,6 @@ export function lineDiffStatus(
   after: string | null,
   status: FileStatus,
   contextLines: number = DEFAULT_CONTEXT,
-  maxDiffCells: number = DEFAULT_MAX_DIFF_CELLS,
 ): FileDiff {
   const CONTEXT = contextLines;
   const split = (text: string | null) => (text ? text.replace(/\n$/, "").split("\n") : []);
@@ -82,10 +141,6 @@ export function lineDiffStatus(
   }
   const beforeMid = beforeLines.slice(prefix, beforeLines.length - suffix);
   const afterMid = afterLines.slice(prefix, afterLines.length - suffix);
-
-  if (beforeMid.length * afterMid.length > maxDiffCells) {
-    return { path, oldPath: null, status, binary: true, insertions: 0, deletions: 0, hunks: [] };
-  }
 
   const prefixOps: Op[] = beforeLines.slice(0, prefix).map((text) => ({ kind: "context", text }));
   const suffixOps: Op[] = beforeLines

@@ -34,13 +34,6 @@ export interface DiffOptions {
   maxFileBytes?: number;
   /** Lines of unchanged context around each hunk. */
   contextLines?: number;
-  /**
-   * A file whose two sides, after trimming their common prefix and suffix,
-   * still multiply out to more line-diff table cells than this is reported
-   * without hunks instead of being diffed, so a large rewrite cannot exhaust
-   * the Worker's memory.
-   */
-  maxDiffCells?: number;
 }
 
 const DEFAULT_MAX_FILE_BYTES = 1_000_000;
@@ -65,7 +58,6 @@ async function fileDiffFor(
   after: TreeEntry | null,
   maxFileBytes: number,
   contextLines: number | undefined,
-  maxDiffCells: number | undefined,
 ): Promise<FileDiff> {
   const readable = (entry: TreeEntry | null): entry is TreeEntry =>
     entry !== null && entry.type !== "gitlink";
@@ -99,10 +91,7 @@ async function fileDiffFor(
   if (beforeText === afterText) {
     return { path, oldPath, status, binary: false, insertions: 0, deletions: 0, hunks: [] };
   }
-  return {
-    ...lineDiffStatus(path, beforeText, afterText, status, contextLines, maxDiffCells),
-    oldPath,
-  };
+  return { ...lineDiffStatus(path, beforeText, afterText, status, contextLines), oldPath };
 }
 
 /** The files that differ between two commits of one repository, in path order. */
@@ -115,7 +104,6 @@ export async function diffCommits(
 ): Promise<FileDiff[]> {
   const maxFileBytes = options?.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
   const contextLines = options?.contextLines;
-  const maxDiffCells = options?.maxDiffCells;
 
   const repoInfo = await deps.git.getRepo(repo);
   if (!repoInfo) throw new ForgeError("not_found", `repo ${repo} does not exist`);
@@ -148,7 +136,6 @@ export async function diffCommits(
         rename.entry,
         maxFileBytes,
         contextLines,
-        maxDiffCells,
       ),
     ),
     ...rest.map((leaf) => {
@@ -164,7 +151,6 @@ export async function diffCommits(
         leaf.after,
         maxFileBytes,
         contextLines,
-        maxDiffCells,
       );
     }),
   ]);
@@ -172,35 +158,43 @@ export async function diffCommits(
   return diffs.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
-/**
- * Expands one side's frontier by one generation (every parent of every
- * commit in it), recording each commit it has not seen before.
- */
-async function expand(
-  git: GitHost,
-  repo: string,
-  frontier: readonly Sha[],
-  seen: Map<Sha, GitCommit>,
-): Promise<Sha[]> {
-  const commits = await Promise.all(frontier.map((sha) => git.readCommit(repo, sha)));
-  const next: Sha[] = [];
-  for (let i = 0; i < frontier.length; i++) {
-    const sha = frontier[i] as Sha;
-    const commit = commits[i];
-    if (!commit || seen.has(sha)) continue;
-    seen.set(sha, commit);
-    next.push(...commit.parents);
+/** Every commit `sha` can reach through `parents`, keyed by id. */
+async function ancestry(git: GitHost, repo: string, sha: Sha): Promise<Map<Sha, GitCommit>> {
+  const seen = new Map<Sha, GitCommit>();
+  const queue: Sha[] = [sha];
+  for (let next = queue.shift(); next; next = queue.shift()) {
+    if (seen.has(next)) continue;
+    const commit = await git.readCommit(repo, next);
+    if (!commit) continue;
+    seen.set(next, commit);
+    queue.push(...commit.parents);
   }
-  return next;
+  return seen;
+}
+
+/** Whether `candidate` is reachable by walking `from`'s parents within `commits`. */
+function reaches(commits: ReadonlyMap<Sha, GitCommit>, from: Sha, candidate: Sha): boolean {
+  const stack: Sha[] = [from];
+  const visited = new Set<Sha>();
+  for (let next = stack.pop(); next; next = stack.pop()) {
+    if (next === candidate) return true;
+    if (visited.has(next)) continue;
+    visited.add(next);
+    stack.push(...(commits.get(next)?.parents ?? []));
+  }
+  return false;
 }
 
 /**
  * The newest commit both histories contain: what a change is diffed against
- * when the main repo has moved on since the session forked. Walks both
- * histories outward one generation at a time (not just first-parent, so a
- * true merge commit's other side is not missed) and returns as soon as a
- * commit both sides have reached appears, which is nearer by graph distance
- * than picking by timestamp, so clock skew cannot pick the wrong one.
+ * when the main repo has moved on since the session forked. A commit both
+ * sides reached is a common ancestor, but the *nearest* one is the one that
+ * is not itself an ancestor of another common ancestor (an older common
+ * ancestor is always reachable too, through the newer one) — a true merge
+ * commit can make one side reach an older common ancestor by a shorter path
+ * than it reaches a newer one, so picking the first commit either walk
+ * stumbles on is not enough. Among more than one equally-nearest candidate
+ * (a criss-cross merge), the newest by `committedAt` is returned.
  */
 export async function mergeBase(
   deps: { git: GitHost },
@@ -209,23 +203,25 @@ export async function mergeBase(
   b: Sha,
 ): Promise<Sha | null> {
   if (a === b) return a;
-  const seenA = new Map<Sha, GitCommit>();
-  const seenB = new Map<Sha, GitCommit>();
-  const firstCommon = (): Sha | null => {
-    for (const sha of seenA.keys()) if (seenB.has(sha)) return sha;
-    return null;
-  };
-  let frontierA: Sha[] = [a];
-  let frontierB: Sha[] = [b];
-  while (frontierA.length > 0 || frontierB.length > 0) {
-    if (frontierA.length > 0) frontierA = await expand(deps.git, repo, frontierA, seenA);
-    const afterA = firstCommon();
-    if (afterA) return afterA;
-    if (frontierB.length > 0) frontierB = await expand(deps.git, repo, frontierB, seenB);
-    const afterB = firstCommon();
-    if (afterB) return afterB;
-  }
-  return null;
+  const [ancestorsOfA, ancestorsOfB] = await Promise.all([
+    ancestry(deps.git, repo, a),
+    ancestry(deps.git, repo, b),
+  ]);
+  const common = [...ancestorsOfA.keys()].filter((sha) => ancestorsOfB.has(sha));
+  if (common.length === 0) return null;
+
+  const commits = new Map([...ancestorsOfA, ...ancestorsOfB]);
+  const nearest = common.filter(
+    (sha) => !common.some((other) => other !== sha && reaches(commits, other, sha)),
+  );
+
+  return nearest.reduce<Sha | null>((best, sha) => {
+    const bestCommit = best ? commits.get(best) : null;
+    const commit = commits.get(sha);
+    if (!commit) return best;
+    if (!bestCommit || commit.committedAt > bestCommit.committedAt) return sha;
+    return best;
+  }, null);
 }
 
 export function diffStats(diff: FileDiff[], commits: number): DiffStats {

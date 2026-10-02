@@ -247,21 +247,35 @@ describe("diffCommits", () => {
     });
   });
 
-  it("caps the line-diff table instead of allocating it for a total rewrite", async () => {
+  it("diffs a large file with scattered edits correctly, not as oversized", async () => {
     const clock = new ManualClock();
     const git = new FakeGit(clock);
     const repo = "example";
     void git.createRepo(repo);
-    const line = (n: number) => Array.from({ length: n }, (_, i) => `line ${i}`).join("\n");
-    const base = git.push(repo, "main", { "big.txt": line(200) }).after;
+    // 1,200 unique lines with edits near the start, middle and end: trimming
+    // the common prefix/suffix still leaves well over the 1,000,000-cell
+    // direct-table threshold, so this only passes with the linear-space path.
+    const size = 1200;
+    const content = (edits: Record<number, string>) =>
+      `${Array.from({ length: size }, (_, i) => edits[i] ?? `line ${i}`).join("\n")}\n`;
+    const base = git.push(repo, "main", { "big.txt": content({}) }).after;
     const head = git.push(repo, "main", {
-      "big.txt": line(200).split("").reverse().join(""),
+      "big.txt": content({
+        100: "edited near the start",
+        600: "edited in the middle",
+        1150: "edited near the end",
+      }),
     }).after;
 
-    const diff = await diffCommits({ git }, repo, base, head, { maxDiffCells: 1000 });
+    const diff = await diffCommits({ git }, repo, base, head);
     expect(diff).toHaveLength(1);
-    expect(diff[0]?.binary).toBe(true);
-    expect(diff[0]?.hunks).toEqual([]);
+    const file = diff[0];
+    expect(file?.binary).toBe(false);
+    expect(file?.insertions).toBe(3);
+    expect(file?.deletions).toBe(3);
+    // Three edits hundreds of lines apart, each with its own default 3-line
+    // context window, cannot land in the same hunk.
+    expect(file?.hunks.length).toBe(3);
   });
 
   it("gives a mid-file insertion with no context lines a real oldStart, not 0", async () => {
@@ -297,6 +311,37 @@ describe("mergeBase", () => {
     expect(merge.status).toBe("merged");
 
     expect(await mergeBase({ git }, repo, ours, theirsBranch)).toBe(root);
+  });
+
+  it("picks the newer fork point, not an older ancestor reached by a shorter path", async () => {
+    // x forks from main at m0; b forks from main later, at m3; main then
+    // advances ten more commits and merges x. The merge commit's x-side
+    // parent reaches m0 in one hop, while its mainline-side parent only
+    // reaches m3 after ten: m3 is still the correct (newer) common ancestor
+    // with b, because m0 is itself an ancestor of m3, not a sibling of it.
+    const clock = new ManualClock();
+    const git = new FakeGit(clock);
+    const repo = "example";
+    const author = { name: "Test", email: "test@example.com" };
+    void git.createRepo(repo);
+    const m0 = git.push(repo, "main", { "a.txt": "0" }).after;
+    const xTip = git.push(repo, "x", { "x.txt": "x" }, { author }).after;
+    git.push(repo, "main", { "a.txt": "1" });
+    git.push(repo, "main", { "a.txt": "2" });
+    const m3 = git.push(repo, "main", { "a.txt": "3" }).after;
+    const bTip = git.push(repo, "b", { "b.txt": "b" }, { author }).after;
+    for (let i = 0; i < 10; i++) git.push(repo, "main", { "a.txt": `m${4 + i}` });
+    const merge = await git.merge({
+      target: { repo, branch: "main" },
+      source: { repo, sha: xTip },
+      message: "merge x",
+      author,
+    });
+    if (merge.status !== "merged") throw new Error("expected a merge");
+    expect(m0).not.toBe(m3);
+
+    expect(await mergeBase({ git }, repo, bTip, merge.sha)).toBe(m3);
+    expect(await mergeBase({ git }, repo, merge.sha, bTip)).toBe(m3);
   });
 });
 
