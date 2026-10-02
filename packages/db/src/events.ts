@@ -40,6 +40,16 @@ export async function appendChangeEvent(
   return event;
 }
 
+/** The change's current sequence number, or null when there is no such change. */
+export async function changeLastEventSeq(db: Db, changeId: ChangeId): Promise<number | null> {
+  const [row] = await db
+    .select({ lastEventSeq: changes.lastEventSeq })
+    .from(changes)
+    .where(eq(changes.id, changeId))
+    .limit(1);
+  return row?.lastEventSeq ?? null;
+}
+
 /** The change's events after a sequence number, oldest first. */
 export async function changeEventsAfter(
   db: Db,

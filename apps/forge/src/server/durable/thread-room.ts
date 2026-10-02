@@ -1,7 +1,16 @@
 import { DurableObject } from "cloudflare:workers";
 import type { ThreadId, ThreadMessage } from "@gitflare/core";
-import { notImplemented } from "@gitflare/core";
 import type { NewThreadMessage } from "@gitflare/core/ports";
+import { appendMessage, runAgentTurn } from "@gitflare/review";
+import { getServices } from "../services";
+
+/** The turn in flight: the thread, and the person's message it has still to answer. */
+interface PendingTurn {
+  threadId: ThreadId;
+  seq: number;
+}
+
+const TURN = "turn";
 
 /**
  * One per thread, named by thread id: the single writer of that thread's
@@ -10,10 +19,27 @@ import type { NewThreadMessage } from "@gitflare/core/ports";
  * storage holds the turn in flight (so an eviction mid-reply can be picked up
  * again); settled messages are written through to `thread_messages` with
  * `appendMessage` from `@gitflare/review`. Build task: `review`.
+ *
+ * The turn runs in the object's alarm: an alarm outlives the request that set
+ * it and an eviction, is retried when it throws, and never runs twice at once.
  */
 export class ThreadRoom extends DurableObject<Env> {
   /** Appends the message, then, for a person's message, starts the agent's turn without waiting for it. */
-  async post(_threadId: ThreadId, _message: NewThreadMessage): Promise<ThreadMessage> {
-    return notImplemented("ThreadRoom.post");
+  async post(threadId: ThreadId, message: NewThreadMessage): Promise<ThreadMessage> {
+    const stored = await appendMessage(getServices(), threadId, message);
+    if (message.author.kind === "user") {
+      await this.ctx.storage.put<PendingTurn>(TURN, { threadId, seq: stored.seq });
+      await this.ctx.storage.setAlarm(Date.now());
+    }
+    return stored;
+  }
+
+  async alarm(): Promise<void> {
+    const turn = await this.ctx.storage.get<PendingTurn>(TURN);
+    if (!turn) return;
+    await runAgentTurn(getServices(), turn.threadId);
+    // A person who wrote during the turn has set the alarm again; their message is the newer one.
+    const latest = await this.ctx.storage.get<PendingTurn>(TURN);
+    if (latest?.seq === turn.seq) await this.ctx.storage.delete(TURN);
   }
 }
