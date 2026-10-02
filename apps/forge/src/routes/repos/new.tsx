@@ -11,7 +11,7 @@ import {
 import { Input } from "@gitflare/ui/components/ui/input";
 import { useForm } from "@tanstack/react-form";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { PageHead, Unbuilt } from "@/components/shell/page";
+import { PageHead } from "@/components/shell/page";
 import { useCreateRepository } from "@/data/repositories.queries";
 
 export const Route = createFileRoute("/repos/new")({
@@ -134,7 +134,6 @@ function NewRepository() {
           )}
         </div>
       </form>
-      <Unbuilt task="web-inbox-repos" />
     </>
   );
 }
