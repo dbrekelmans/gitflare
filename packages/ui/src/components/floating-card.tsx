@@ -1,16 +1,20 @@
 import type { ComponentProps, ReactNode } from "react";
-import { cx } from "../cx";
+import { cn } from "#lib/utils";
 
 /**
- * The single elevated surface of a view. Three bands inside one clipped
+ * The one elevated surface in page flow. Three bands inside one clipped
  * container, so the head hairline and the strip fill land flush against the
- * radius. This is where the system's one shadow lives: a view gets one
- * `FloatingCard`, and nothing else on it floats.
+ * radius.
+ *
+ * A view gets at most one `FloatingCard`; nothing else in the page flow
+ * carries a shadow. Transient overlays (popover, menu, dialog) are a
+ * different layer and keep theirs. If a second thing on the page seems to
+ * want a card, it wants a `Row` or a `SectionHead` instead.
  */
 export function FloatingCard({ className, ...props }: ComponentProps<"section">) {
   return (
     <section
-      className={cx(
+      className={cn(
         "flex w-full max-w-card flex-col overflow-clip rounded-card border-[1.5px] border-border bg-ground shadow-floating",
         className,
       )}
@@ -19,15 +23,18 @@ export function FloatingCard({ className, ...props }: ComponentProps<"section">)
   );
 }
 
-/** Head row: what this is on the left, its status on the right. */
+/**
+ * Head row: what this is on the left, its status on the right. The left
+ * side gives way first: it truncates so the status never wraps.
+ */
 export function FloatingCardHead({
   className,
   ...props
 }: ComponentProps<"header">) {
   return (
     <header
-      className={cx(
-        "flex items-center justify-between gap-7 border-b border-border px-8 py-6",
+      className={cn(
+        "flex items-center justify-between gap-s7 border-b border-border px-s8 py-s6 *:first:min-w-0 *:first:truncate *:last:shrink-0",
         className,
       )}
       {...props}
@@ -39,37 +46,52 @@ export function FloatingCardHead({
 export function FloatingCardBody({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
-      className={cx("flex flex-col gap-5 px-8 pt-8 pb-[26px]", className)}
+      className={cn("flex flex-col gap-s5 px-s8 pt-s8 pb-[26px]", className)}
       {...props}
     />
   );
 }
 
-/** A row of answers inside the body: buttons, then an unboxed recommendation. */
+/**
+ * A row of answers inside the body: buttons, then an unboxed recommendation.
+ * The buttons keep their size; the recommendation takes what is left and
+ * wraps inside it.
+ */
 export function FloatingCardActions({
   className,
   ...props
 }: ComponentProps<"div">) {
   return (
     <div
-      className={cx("flex flex-wrap items-center gap-3 pt-1", className)}
+      className={cn(
+        "flex items-center gap-s3 pt-s1 *:data-[slot=button]:shrink-0 *:not-data-[slot=button]:min-w-0",
+        className,
+      )}
       {...props}
     />
   );
 }
 
+/** What the machine reports for the claims in the strip. */
+export type ClaimsState = "verified" | "unverified" | "checks failed";
+
 export type FloatingCardClaimsProps = Omit<ComponentProps<"footer">, "children"> & {
-  /** The state the machine reports for the claims that follow, e.g. "verified". */
-  label?: ReactNode;
+  /** Set in mono, because the machine is the one saying it. */
+  state?: ClaimsState;
   /** Right-aligned and muted: the escape hatch, available but not offered. */
   aside?: ReactNode;
   /** `Claim` elements. Stated, never boxed. */
   children?: ReactNode;
 };
 
-/** Footer claims strip: what was checked without you. */
+/**
+ * Footer claims strip: what was checked without you. The claims and the
+ * escape hatch share one row. At the card's full width the claims sit on one
+ * line and the aside wraps beside them; in a narrower column the claims wrap
+ * too, rather than squeezing the aside into a sliver.
+ */
 export function FloatingCardClaims({
-  label,
+  state,
   aside,
   className,
   children,
@@ -77,20 +99,24 @@ export function FloatingCardClaims({
 }: FloatingCardClaimsProps) {
   return (
     <footer
-      className={cx(
-        "flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-border bg-surface px-8 py-5",
+      className={cn(
+        "flex items-center gap-s6 border-t border-border bg-surface px-s8 py-s5",
         className,
       )}
       {...props}
     >
-      {label != null && (
-        <span className="shrink-0 font-mono text-xs leading-xs font-medium tracking-status text-muted uppercase">
-          {label}
-        </span>
-      )}
-      {children}
+      <div className="flex min-w-0 flex-wrap items-center gap-x-s6 gap-y-s1">
+        {state != null && (
+          <span className="shrink-0 font-mono text-xs leading-xs font-medium tracking-status text-muted-foreground uppercase">
+            {state}
+          </span>
+        )}
+        {children}
+      </div>
       {aside != null && (
-        <span className="type-meta grow text-right text-muted">{aside}</span>
+        <span className="type-meta min-w-[200px] flex-1 text-right text-pretty text-muted-foreground">
+          {aside}
+        </span>
       )}
     </footer>
   );
@@ -99,7 +125,7 @@ export function FloatingCardClaims({
 export function Claim({ className, ...props }: ComponentProps<"span">) {
   return (
     <span
-      className={cx("type-meta shrink-0 text-ink", className)}
+      className={cn("type-meta shrink-0 text-ink", className)}
       {...props}
     />
   );

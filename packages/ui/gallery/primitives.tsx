@@ -2,120 +2,172 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import {
   AskField,
-  Button,
   ChatTurn,
-  Checkbox,
   Citation,
   Citations,
-  Dialog,
-  DialogBody,
-  DialogFoot,
-  DialogHead,
-  ErrorText,
-  Evidence,
-  Heading,
-  HelpText,
-  Input,
-  Label,
   LineThread,
   LineThreadSummary,
-  Menu,
-  MenuItem,
-  MenuSeparator,
-  Pill,
-  Popover,
-  Radio,
-  SearchIcon,
-  SectionHead,
-  Segmented,
-  Select,
   SettledExchange,
-  SplitButton,
-  StatusDot,
-  StatusIcon,
-  Switch,
+} from "#components/chat";
+import {
+  Claim,
+  FloatingCard,
+  FloatingCardActions,
+  FloatingCardBody,
+  FloatingCardClaims,
+  FloatingCardHead,
+} from "#components/floating-card";
+import { ChevronDown } from "#components/icons";
+import { SectionHead } from "#components/row";
+import { StatusDot, StatusIcon, StatusPill } from "#components/status";
+import { Evidence, Heading, Text, TextLink } from "#components/typography";
+import { Badge } from "#components/ui/badge";
+import { Button } from "#components/ui/button";
+import {
+  ButtonGroup,
+  ButtonGroupSeparator,
+  ButtonGroupText,
+} from "#components/ui/button-group";
+import { Checkbox } from "#components/ui/checkbox";
+import {
+  Dialog,
+  DialogBody,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "#components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuShortcut,
+  DropdownMenuTrigger,
+} from "#components/ui/dropdown-menu";
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "#components/ui/field";
+import { Input } from "#components/ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "#components/ui/input-group";
+import {
+  Popover,
+  PopoverContent,
+  PopoverDescription,
+  PopoverTitle,
+  PopoverTrigger,
+} from "#components/ui/popover";
+import { RadioGroup, RadioGroupItem } from "#components/ui/radio-group";
+import { ScrollArea } from "#components/ui/scroll-area";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from "#components/ui/select";
+import { Separator } from "#components/ui/separator";
+import { Skeleton } from "#components/ui/skeleton";
+import { Switch } from "#components/ui/switch";
+import {
   Table,
-  Td,
-  Text,
-  Textarea,
-  TextLink,
-  Th,
-  Tr,
-} from "../src";
-import type { StatusTone } from "../src";
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "#components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "#components/ui/tabs";
+import { Textarea } from "#components/ui/textarea";
+import { ToggleGroup, ToggleGroupItem } from "#components/ui/toggle-group";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "#components/ui/tooltip";
 import { Lane, Note, Sheet } from "./kit";
 
 function Captioned({ caption, children }: { caption: string; children: ReactNode }) {
   return (
-    <div className="flex flex-col items-start gap-3">
+    <div className="flex flex-col items-start gap-s3">
       {children}
       <Note>{caption}</Note>
     </div>
   );
 }
 
-const statusTones: Array<[StatusTone, string]> = [
+const tones = [
   ["success", "Approve"],
   ["warning", "Override"],
   ["danger", "Delete"],
-];
+] as const;
 
 function Buttons() {
   return (
     <Sheet
       title="Button"
-      lede="Two primaries, split by what the action is. Flare marks a moment the system is waiting on; ink marks a standing action. Never more than one flare primary on screen."
+      lede="Two primaries, split by what the action is. Ink is a standing action; flare marks the moment the system is waiting on. Never more than one flare button on screen."
     >
       <Lane label="Variants">
-        <div className="flex items-start gap-5">
-          <Captioned caption={'tone="flare" · a moment'}>
-            <Button tone="flare">Drop replay</Button>
-          </Captioned>
-          <Captioned caption="primary · standing">
+        <div className="flex items-start gap-s5">
+          <Captioned caption="default · standing">
             <Button>Deploy your forge</Button>
           </Captioned>
-          <Captioned caption={'variant="secondary"'}>
-            <Button variant="secondary">Open the diff</Button>
+          <Captioned caption={'variant="flare" · a moment'}>
+            <Button variant="flare">Drop replay</Button>
+          </Captioned>
+          <Captioned caption={'variant="outline"'}>
+            <Button variant="outline">Open the diff</Button>
           </Captioned>
           <Captioned caption={'variant="ghost"'}>
             <Button variant="ghost">Log in</Button>
           </Captioned>
-          <Captioned caption="TextLink">
-            <span className="flex h-[40px] items-center">
-              <TextLink href="#">Read the transcript</TextLink>
-            </span>
-          </Captioned>
-          <Captioned caption={'TextLink tone="quiet"'}>
-            <span className="flex h-[40px] items-center">
-              <TextLink href="#" tone="quiet">
-                view diff
-              </TextLink>
+          <Captioned caption={'variant="link"'}>
+            <span className="flex h-10 items-center">
+              <Button variant="link">Read the transcript</Button>
             </span>
           </Captioned>
         </div>
       </Lane>
-      <Lane label="Sizes" center note="17 / 14+30 · 15 / 11+24 · 13 / 7+16">
-        <div className="flex items-center gap-5">
-          <Button tone="flare" size="lg">
+      <Lane label="Sizes" center note="lg 17 / 14+30 · default 15 / 11+24 · sm 13 / 7+16">
+        <div className="flex items-center gap-s5">
+          <Button variant="flare" size="lg">
             Large
           </Button>
-          <Button tone="flare">Medium</Button>
-          <Button tone="flare" size="sm">
+          <Button variant="flare">Default</Button>
+          <Button variant="flare" size="sm">
             Small
           </Button>
+          <Button variant="outline" size="icon" aria-label="More">
+            <ChevronDown />
+          </Button>
         </div>
       </Lane>
-      <Lane label="On ground" note="rest · disabled. Hover and pressed are live: point at one.">
-        <div className="grid w-fit grid-cols-[repeat(4,auto)] items-center gap-5">
-          <Button tone="flare">Merge</Button>
+      <Lane label="On ground" note="rest above, disabled below. Hover, pressed and focus are live.">
+        <div className="grid w-fit grid-cols-[repeat(4,auto)] items-center gap-s5">
+          <Button variant="flare">Merge</Button>
           <Button>Merge</Button>
-          <Button variant="secondary">Merge</Button>
+          <Button variant="outline">Merge</Button>
           <Button variant="ghost">Merge</Button>
-          <Button tone="flare" disabled>
+          <Button variant="flare" disabled>
             Merge
           </Button>
           <Button disabled>Merge</Button>
-          <Button variant="secondary" disabled>
+          <Button variant="outline" disabled>
             Merge
           </Button>
           <Button variant="ghost" disabled>
@@ -123,17 +175,17 @@ function Buttons() {
           </Button>
         </div>
       </Lane>
-      <Lane label="On flare" note="No flare primary here: white takes the moment, ink still stands.">
-        <div className="on-flare grid w-fit grid-cols-[repeat(4,auto)] items-center gap-5 rounded-card bg-flare px-9 pt-8 pb-9">
-          <Button tone="flare">Merge</Button>
+      <Lane label="On flare" note="No flare button here: white takes the moment, ink still stands.">
+        <div className="on-flare grid w-fit grid-cols-[repeat(4,auto)] items-center gap-s5 rounded-card bg-flare px-s9 pt-s8 pb-s9">
+          <Button variant="flare">Merge</Button>
           <Button>Merge</Button>
-          <Button variant="secondary">Merge</Button>
+          <Button variant="outline">Merge</Button>
           <Button variant="ghost">Merge</Button>
-          <Button tone="flare" disabled>
+          <Button variant="flare" disabled>
             Merge
           </Button>
           <Button disabled>Merge</Button>
-          <Button variant="secondary" disabled>
+          <Button variant="outline" disabled>
             Merge
           </Button>
           <Button variant="ghost" disabled>
@@ -141,57 +193,47 @@ function Buttons() {
           </Button>
         </div>
       </Lane>
-      <Lane label="Status tones" note="One per view, never two, and never on a flare field.">
-        <div className="grid w-fit grid-cols-[repeat(3,auto)] items-center gap-x-5 gap-y-6">
-          {statusTones.map(([tone, label]) => (
+      <Lane label="Status tones" note="At most one status-toned button per view, and never on a flare field.">
+        <div className="grid w-fit grid-cols-[repeat(3,auto)] items-center gap-x-s5 gap-y-s6">
+          {tones.map(([tone, label]) => (
             <Button key={tone} tone={tone}>
               {label}
             </Button>
           ))}
-          {statusTones.map(([tone, label]) => (
-            <Button key={tone} variant="secondary" tone={tone}>
+          {tones.map(([tone, label]) => (
+            <Button key={tone} variant="outline" tone={tone}>
               {label}
             </Button>
           ))}
-          {statusTones.map(([tone, label]) => (
+          {tones.map(([tone, label]) => (
             <Button key={tone} variant="ghost" tone={tone}>
               {label}
             </Button>
           ))}
         </div>
       </Lane>
-    </Sheet>
-  );
-}
-
-function ButtonGroups() {
-  const [view, setView] = useState<"unified" | "split" | "unit">("unified");
-  const options = [
-    { value: "unified", label: "Unified diff" },
-    { value: "split", label: "Split" },
-    { value: "unit", label: "Per unit" },
-  ] as const;
-  return (
-    <Sheet
-      title="Button group"
-      lede="Segments share one outline and one hairline between them. The selected segment is ink: a group is a view filter, not an action."
-    >
-      <Lane label="Segmented" center>
-        <div className="flex items-center gap-5">
-          <Segmented options={options} value={view} onChange={setView} />
-          <Segmented options={options.slice(0, 2)} value="unified" disabled />
-        </div>
-      </Lane>
-      <Lane label="Split" center note="State lands on one part; disabled takes the whole group.">
-        <div className="flex items-center gap-5">
-          <SplitButton>Merge all 4 units</SplitButton>
-          <SplitButton variant="outline" trailing="128">
-            Watch
-          </SplitButton>
-          <SplitButton disabled>Merge all</SplitButton>
-          <SplitButton variant="outline" trailing="128" disabled>
-            Watch
-          </SplitButton>
+      <Lane label="Groups" center note="Segments share one outline; selected is ink, because a group filters a view.">
+        <div className="flex flex-wrap items-center gap-s5">
+          <ToggleGroup defaultValue={["unified"]} aria-label="Diff layout">
+            <ToggleGroupItem value="unified">Unified diff</ToggleGroupItem>
+            <ToggleGroupItem value="split">Split</ToggleGroupItem>
+            <ToggleGroupItem value="unit">Per unit</ToggleGroupItem>
+          </ToggleGroup>
+          <ButtonGroup>
+            <Button variant="flare">Merge all 4 units</Button>
+            <ButtonGroupSeparator />
+            <Button variant="flare" className="px-[14px]" aria-label="More merge options">
+              <ChevronDown />
+            </Button>
+          </ButtonGroup>
+          <ButtonGroup>
+            <Button variant="outline" className="px-s5">
+              Watch
+            </Button>
+            <ButtonGroupText>
+              <Evidence className="leading-ui tracking-mono">128</Evidence>
+            </ButtonGroupText>
+          </ButtonGroup>
         </div>
       </Lane>
     </Sheet>
@@ -204,25 +246,35 @@ function Statuses() {
       title="Status"
       lede="Flare means it is waiting on you. Everything checked without you stays quiet, in neutral, so the one thing that needs a person is the one thing with colour."
     >
-      <Lane label="Pill" center note={"13px medium · 6+14 · dot 7\na status a person reads as a sentence"}>
-        <div className="flex flex-wrap items-center gap-5">
-          <Pill>1 question for you</Pill>
-          <Pill mark={<StatusIcon kind="needs-you" />}>Ready — 1 question for you</Pill>
-          <Pill tone="success">Landed</Pill>
-          <Pill tone="warning">Stale</Pill>
-          <Pill tone="danger">Checks failed</Pill>
-          <Pill tone="neutral">Merged</Pill>
+      <Lane label="Badge" center note={"13px medium · 6+14\ntinted, never solid"}>
+        <div className="flex flex-wrap items-center gap-s5">
+          <Badge>Needs you</Badge>
+          <Badge variant="secondary">Merged</Badge>
+          <Badge variant="success">Landed</Badge>
+          <Badge variant="warning">Stale</Badge>
+          <Badge variant="destructive">Checks failed</Badge>
+          <Badge variant="outline">Draft</Badge>
+        </div>
+      </Lane>
+      <Lane label="Status pill" center note={"a badge with its dot · dot 7\na status a person reads as a sentence"}>
+        <div className="flex flex-wrap items-center gap-s5">
+          <StatusPill>1 question for you</StatusPill>
+          <StatusPill mark={<StatusIcon kind="needs-you" />}>Ready — 1 question for you</StatusPill>
+          <StatusPill tone="success">Landed</StatusPill>
+          <StatusPill tone="warning">Stale</StatusPill>
+          <StatusPill tone="danger">Checks failed</StatusPill>
+          <StatusPill tone="neutral">Merged</StatusPill>
         </div>
       </Lane>
       <Lane label="Dot" center note="6px, beside a label in a table">
-        <div className="flex items-center gap-7">
-          <span className="flex items-center gap-2">
+        <div className="flex items-center gap-s7">
+          <span className="flex items-center gap-s2">
             <StatusDot />
             <Text as="span" size="meta" className="font-regular">
               1 question
             </Text>
           </span>
-          <span className="flex items-center gap-2">
+          <span className="flex items-center gap-s2">
             <StatusDot tone="neutral" />
             <Text as="span" size="meta" tone="muted" className="font-regular">
               Verifying
@@ -240,7 +292,7 @@ function Statuses() {
               ["open", "stated and left open"],
             ] as const
           ).map(([kind, label]) => (
-            <span key={kind} className="flex items-center gap-2">
+            <span key={kind} className="flex items-center gap-s2">
               <StatusIcon kind={kind} />
               <Text as="span" size="meta" tone={kind === "failed" ? "muted" : "ink"} className="font-regular">
                 {label}
@@ -259,43 +311,118 @@ function Statuses() {
           </Evidence>
         </div>
       </Lane>
+      <Lane label="Inline link" note="TextLink takes the size of the text around it">
+        <Text tone="muted" className="max-w-body">
+          Seven findings were resolved before this page existed. One larger
+          refactor was out of scope and{" "}
+          <TextLink href="#">filed as a proposal</TextLink>; the rest is in the
+          shipping branch.
+        </Text>
+      </Lane>
     </Sheet>
   );
 }
 
+function Cards() {
+  const card = (
+    <FloatingCard>
+      <FloatingCardHead>
+        <Evidence className="leading-xs font-medium">change · add usage-based billing</Evidence>
+        <StatusPill>1 question for you</StatusPill>
+      </FloatingCardHead>
+      <FloatingCardBody>
+        <Heading level={4} size="lede">
+          Should metering share the rate-limit counters, or will billing evolve
+          separately?
+        </Heading>
+        <Text tone="muted">
+          Both count events per user. Sharing saves one abstraction now;
+          splitting costs ~2 days later if billing needs audit-grade accuracy.
+        </Text>
+        <FloatingCardActions>
+          <Button>Evolves separately</Button>
+          <Button variant="outline">Share counters</Button>
+          <Text size="meta" tone="muted" className="pl-s2 text-pretty">
+            Recommended: separate — billing precedent in 2 prior decisions
+          </Text>
+        </FloatingCardActions>
+      </FloatingCardBody>
+      <FloatingCardClaims
+        state="verified"
+        aside={
+          <TextLink tone="quiet" href="#">
+            view diff (you haven’t needed to in 12 days)
+          </TextLink>
+        }
+      >
+        <Claim>split into 4 units, each green</Claim>
+        <Claim>auth path untouched</Claim>
+        <Claim>7 findings resolved</Claim>
+      </FloatingCardClaims>
+    </FloatingCard>
+  );
+  return (
+    <Sheet
+      title="Floating card"
+      lede="The one elevated surface in page flow. The lede balances when it wraps, the recommendation and the escape hatch wrap in place, and the claims keep to their row."
+    >
+      <div className="flex items-start gap-s11 pb-s10">
+        <div className="w-card shrink-0">{card}</div>
+        <Note>{"880 · max-w-card\nradius 24 · border 1.5\nshadow: ink at 25%, 0 24 48 −24"}</Note>
+      </div>
+      <div className="flex items-start gap-s11 pb-s10">
+        <div className="w-[640px] shrink-0">{card}</div>
+        <Note>{"640\nin a narrower column the same card holds its three bands: the claims wrap, the status never does"}</Note>
+      </div>
+    </Sheet>
+  );
+}
+
+// Base UI's Select shows the raw value unless it is given the labels.
+const depths = [
+  { value: "unit", label: "Verify every unit" },
+  { value: "merged", label: "Verify the merged result only" },
+  { value: "request", label: "Verify on request" },
+  { value: "never", label: "Never verify" },
+];
+
 function Forms() {
-  const [depth, setDepth] = useState("");
+  const [depth, setDepth] = useState<string | null>(null);
   return (
     <Sheet
       title="Form"
       lede="A field is a rule you type on. Focus thickens that rule to 1.5px ink rather than adding a glow. Controls mark in ink; only the switch takes flare, because it reports something live."
     >
-      <Lane label="Label" note={"13px medium ink\nthe machine-facing half in mono, right"}>
-        <div className="flex w-support flex-col gap-[6px]">
-          <Label htmlFor="g-repo" hint="required">
-            Repository name
-          </Label>
-          <HelpText>Lowercase, hyphens only. This becomes the forge subdomain.</HelpText>
+      <Lane label="Field" note={"label 13 medium · description 13 muted\nFieldError is a flare dot, not a red box"}>
+        <FieldGroup className="w-aside">
+          <Field>
+            <FieldLabel htmlFor="g-repo">Repository name</FieldLabel>
+            <Input id="g-repo" placeholder="metering-service" />
+            <FieldDescription>Lowercase, hyphens only. This becomes the forge subdomain.</FieldDescription>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="g-decision">Decision</FieldLabel>
+            <Input id="g-decision" defaultValue="billing-evolves-separately" />
+          </Field>
+          <Field data-invalid>
+            <FieldLabel htmlFor="g-sub">Subdomain</FieldLabel>
+            <Input id="g-sub" defaultValue="Metering Service" aria-invalid />
+            <FieldError>Uppercase and spaces aren’t allowed in a subdomain.</FieldError>
+          </Field>
+        </FieldGroup>
+      </Lane>
+      <Lane label="Framed" note={"InputGroup · radius 12 · 1.5px border\noverlays and table filters only"}>
+        <div className="flex w-aside flex-col gap-s5">
+          <InputGroup>
+            <InputGroupAddon>
+              <SearchIcon />
+            </InputGroupAddon>
+            <InputGroupInput placeholder="Filter 1,284 commits" aria-label="Filter commits" />
+          </InputGroup>
+          <Input variant="framed" placeholder="Branch name" aria-label="Branch name" />
         </div>
       </Lane>
-      <Lane label="Input" note={"rest · filled · focus is live\n16/24 · rule 1px, 1.5px ink on focus"}>
-        <div className="flex w-aside flex-col gap-[32px]">
-          <Input id="g-repo" placeholder="metering-service" />
-          <Input defaultValue="billing-evolves-separately" aria-label="Decision" />
-        </div>
-      </Lane>
-      <Lane label="Invalid" note="The only place flare enters a control, as a status dot.">
-        <div className="flex w-aside flex-col gap-3">
-          <Input defaultValue="Metering Service" aria-invalid aria-label="Subdomain" />
-          <ErrorText>Uppercase and spaces aren’t allowed in a subdomain.</ErrorText>
-        </div>
-      </Lane>
-      <Lane label="Framed" note={"radius 12 · 1.5px border\noverlays and table filters only"}>
-        <div className="w-aside">
-          <Input variant="framed" leading={<SearchIcon />} placeholder="Filter 1,284 commits" aria-label="Filter commits" />
-        </div>
-      </Lane>
-      <Lane label="Multiline" note="grows to content; the rule stays at the last line">
+      <Lane label="Textarea" note="grows to content; the rule stays at the last line">
         <div className="w-aside">
           <Textarea
             aria-label="Reasoning"
@@ -304,43 +431,79 @@ function Forms() {
         </div>
       </Lane>
       <Lane label="Checkbox" note={"18px · radius 5\nchecked · empty · mixed · disabled"}>
-        <div className="flex w-aside flex-col gap-6">
-          <Checkbox defaultChecked>Split the change into units before review</Checkbox>
-          <Checkbox>Run the full verification suite on every push</Checkbox>
-          <Checkbox indeterminate>Notify on findings — 2 of 5 severities</Checkbox>
-          <Checkbox disabled>Auto-merge (requires a paid plan)</Checkbox>
-        </div>
+        <FieldGroup data-slot="checkbox-group" className="w-aside">
+          <Field orientation="horizontal">
+            <Checkbox id="g-c1" defaultChecked />
+            <FieldLabel htmlFor="g-c1">Split the change into units before review</FieldLabel>
+          </Field>
+          <Field orientation="horizontal">
+            <Checkbox id="g-c2" />
+            <FieldLabel htmlFor="g-c2">Run the full verification suite on every push</FieldLabel>
+          </Field>
+          <Field orientation="horizontal">
+            <Checkbox id="g-c3" indeterminate />
+            <FieldLabel htmlFor="g-c3">Notify on findings — 2 of 5 severities</FieldLabel>
+          </Field>
+          <Field orientation="horizontal" data-disabled>
+            <Checkbox id="g-c4" disabled />
+            <FieldLabel htmlFor="g-c4">Auto-merge (requires a paid plan)</FieldLabel>
+          </Field>
+        </FieldGroup>
       </Lane>
       <Lane label="Radio" note={"18px · full circle\ndescription optional, 13px muted"}>
-        <div className="flex w-aside flex-col gap-6">
-          <Radio name="g-billing" defaultChecked description="Costs about two days later, keeps audit-grade accuracy.">
-            Billing evolves separately
-          </Radio>
-          <Radio name="g-billing" description="Saves one abstraction now.">
-            Share the rate-limit counters
-          </Radio>
-        </div>
+        <RadioGroup defaultValue="separate" className="w-aside" aria-label="Billing counters">
+          <Field orientation="horizontal">
+            <RadioGroupItem value="separate" id="g-r1" />
+            <FieldContent>
+              <FieldLabel htmlFor="g-r1">Billing evolves separately</FieldLabel>
+              <FieldDescription>Costs about two days later, keeps audit-grade accuracy.</FieldDescription>
+            </FieldContent>
+          </Field>
+          <Field orientation="horizontal">
+            <RadioGroupItem value="share" id="g-r2" />
+            <FieldContent>
+              <FieldLabel htmlFor="g-r2">Share the rate-limit counters</FieldLabel>
+              <FieldDescription>Saves one abstraction now.</FieldDescription>
+            </FieldContent>
+          </Field>
+        </RadioGroup>
       </Lane>
       <Lane label="Switch" note={"44 × 26 · knob 20\non = flare, off = rule\nlabel left, switch right"}>
-        <div className="flex w-aside flex-col gap-6">
-          <Switch defaultChecked>Verify before it reaches me</Switch>
-          <Switch>Email me every finding</Switch>
-        </div>
+        <FieldGroup data-slot="checkbox-group" className="w-aside">
+          <Field orientation="horizontal">
+            <FieldLabel htmlFor="g-s1">Verify before it reaches me</FieldLabel>
+            <Switch id="g-s1" defaultChecked />
+          </Field>
+          <Field orientation="horizontal">
+            <FieldLabel htmlFor="g-s2">Email me every finding</FieldLabel>
+            <Switch id="g-s2" />
+          </Field>
+        </FieldGroup>
       </Lane>
-      <Lane label="Select" note={"value 16px · chevron 12 × 8\nempty takes the placeholder, faint"}>
+      <Lane label="Select" note={"value 16px · chevron 12 × 8\nempty takes the placeholder, faint\nopen, it is the overlay panel"}>
         <div className="flex w-aside flex-col gap-[28px]">
-          <Select defaultValue="unit" aria-label="Verification depth">
-            <option value="unit">Verify every unit</option>
-            <option value="merged">Verify the merged result only</option>
+          <Select items={depths} defaultValue="unit">
+            <SelectTrigger aria-label="Verification depth">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="unit">Verify every unit</SelectItem>
+              <SelectItem value="merged">Verify the merged result only</SelectItem>
+              <SelectItem value="request">Verify on request</SelectItem>
+              <SelectSeparator />
+              <SelectItem value="never" className="text-muted-foreground">
+                Never verify
+              </SelectItem>
+            </SelectContent>
           </Select>
-          <Select
-            placeholder="Choose a verification depth"
-            value={depth}
-            onChange={(event) => setDepth(event.target.value)}
-            aria-label="Verification depth"
-          >
-            <option value="unit">Verify every unit</option>
-            <option value="merged">Verify the merged result only</option>
+          <Select items={depths} value={depth} onValueChange={setDepth}>
+            <SelectTrigger aria-label="Verification depth">
+              <SelectValue placeholder="Choose a verification depth" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="unit">Verify every unit</SelectItem>
+              <SelectItem value="merged">Verify the merged result only</SelectItem>
+            </SelectContent>
           </Select>
         </div>
       </Lane>
@@ -348,99 +511,97 @@ function Forms() {
   );
 }
 
+function SearchIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+      <circle cx="6" cy="6" r="4.75" />
+      <path d="M9.5 9.5 L13 13" />
+    </svg>
+  );
+}
+
 function Overlays() {
-  const [open, setOpen] = useState(false);
   return (
     <Sheet
       title="Overlay"
-      lede="One overlay surface: the same panel carries a menu's options or a popover's content, and the dialog is the floating card promoted. Whichever is open is the view's one elevated surface."
+      lede="One overlay surface: the same panel carries a menu's options or a popover's content, and the dialog is the floating card promoted. Overlays are transient, so they keep the shadow; nothing else in page flow has one."
     >
-      <Lane label="Menu" note={"panel 16 · pad 8 · item 10+16\nselected = surface fill + check"}>
-        <Menu aria-label="Verification depth">
-          <MenuItem selected>Verify every unit</MenuItem>
-          <MenuItem>Verify the merged result only</MenuItem>
-          <MenuItem>Verify on request</MenuItem>
-          <MenuSeparator />
-          <MenuItem quiet>Never verify</MenuItem>
-        </Menu>
+      <Lane label="Menu" center note={"panel 16 · pad 8 · item 10+16\nhighlight = surface fill"}>
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="outline" />}>Change actions</DropdownMenuTrigger>
+          <DropdownMenuContent>
+            <DropdownMenuItem>
+              Open the diff
+              <DropdownMenuShortcut>⌥D</DropdownMenuShortcut>
+            </DropdownMenuItem>
+            <DropdownMenuItem>Read the transcript</DropdownMenuItem>
+            <DropdownMenuItem>Copy change id</DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive">Close without merging</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </Lane>
-      <Lane label="Popover" note={"pad 20 · gap 14 · max 400\nsmall buttons only · no tail"}>
+      <Lane label="Popover" center note={"pad 20 · gap 14 · 400 wide\nsmall buttons only · no tail"}>
         <Popover>
-          <Evidence size="xs">a3f19c2 · 4 units</Evidence>
-          <Heading level={4} size="title">
-            Why this split
-          </Heading>
-          <Text size="sm" tone="muted">
-            Each unit compiles, tests, and reverts on its own. The auth path
-            was left untouched so it stays out of the review surface.
-          </Text>
-          <div className="flex items-center gap-3 pt-1">
-            <Button tone="flare" size="sm">
-              View diff
-            </Button>
-            <Button variant="secondary" size="sm">
-              Dismiss
-            </Button>
-          </div>
+          <PopoverTrigger render={<Button variant="outline" />}>Why this split</PopoverTrigger>
+          <PopoverContent>
+            <Evidence size="xs">a3f19c2 · 4 units</Evidence>
+            <PopoverTitle>Why this split</PopoverTitle>
+            <PopoverDescription>
+              Each unit compiles, tests, and reverts on its own. The auth path
+              was left untouched so it stays out of the review surface.
+            </PopoverDescription>
+            <div className="flex items-center gap-s3 pt-s1">
+              <Button variant="flare" size="sm">
+                View diff
+              </Button>
+              <Button variant="outline" size="sm">
+                Dismiss
+              </Button>
+            </div>
+          </PopoverContent>
         </Popover>
+      </Lane>
+      <Lane label="Tooltip" center note="ink, flat, no tail">
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger render={<Button variant="ghost" />}>Hover or focus me</TooltipTrigger>
+            <TooltipContent>Lands by itself once you answer</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       </Lane>
       <Lane
         label="Dialog"
+        center
         note={"600 wide · radius 24\nhead 16+30 · body 30 · foot 20+30\nscrim: ink at 40%, no blur"}
       >
-        <Dialog open modal={false} aria-label="Question">
-          <DialogHead>
-            <Evidence className="tracking-mono">change · drop legacy webhook path</Evidence>
-            <Pill>1 question for you</Pill>
-          </DialogHead>
-          <DialogBody>
-            <Heading level={4} size="lede">
-              Unit 3 fails on replay. Drop replay support, or hold the change
-              until it passes?
-            </Heading>
-            <Text tone="muted">
-              Nothing else in the change depends on replay. Two customers
-              called the endpoint last quarter, both from a deprecated SDK.
-            </Text>
-          </DialogBody>
-          <DialogFoot>
-            <Text as="span" size="meta" tone="muted" className="font-regular">
-              Recommended: drop it
-            </Text>
-            <div className="flex items-center gap-3">
-              <Button variant="secondary">Hold the change</Button>
-              <Button tone="flare">Drop replay</Button>
-            </div>
-          </DialogFoot>
-        </Dialog>
-        <div className="pt-6">
-          <Button variant="secondary" size="sm" onClick={() => setOpen(true)}>
-            Open it as a modal
-          </Button>
-        </div>
-        <Dialog open={open} onClose={() => setOpen(false)} aria-label="Question">
-          <DialogHead>
-            <Evidence className="tracking-mono">change · drop legacy webhook path</Evidence>
-            <Pill>1 question for you</Pill>
-          </DialogHead>
-          <DialogBody>
-            <Heading level={4} size="lede">
-              Drop replay support, or hold the change until it passes?
-            </Heading>
-          </DialogBody>
-          <DialogFoot>
-            <Text as="span" size="meta" tone="muted" className="font-regular">
-              Recommended: drop it
-            </Text>
-            <div className="flex items-center gap-3">
-              <Button variant="secondary" onClick={() => setOpen(false)}>
-                Hold the change
-              </Button>
-              <Button tone="flare" onClick={() => setOpen(false)}>
-                Drop replay
-              </Button>
-            </div>
-          </DialogFoot>
+        <Dialog>
+          <DialogTrigger render={<Button variant="outline" />}>Open the question</DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <Evidence className="tracking-mono">change · drop legacy webhook path</Evidence>
+              <StatusPill>1 question for you</StatusPill>
+            </DialogHeader>
+            <DialogBody>
+              <DialogTitle>
+                Unit 3 fails on replay. Drop replay support, or hold the change
+                until it passes?
+              </DialogTitle>
+              <DialogDescription>
+                Nothing else in the change depends on replay. Two customers
+                called the endpoint last quarter, both from a deprecated SDK.
+              </DialogDescription>
+            </DialogBody>
+            <DialogFooter>
+              <Text as="span" size="meta" tone="muted" className="font-regular">
+                Recommended: drop it
+              </Text>
+              <div className="flex items-center gap-s3">
+                <DialogClose render={<Button variant="outline" />}>Hold the change</DialogClose>
+                <DialogClose render={<Button variant="flare" />}>Drop replay</DialogClose>
+              </div>
+            </DialogFooter>
+          </DialogContent>
         </Dialog>
       </Lane>
     </Sheet>
@@ -449,54 +610,108 @@ function Overlays() {
 
 const changes = [
   { title: "Add usage-based billing", tone: "flare", status: "1 question", units: "4 / 4 green", claim: "auth path untouched · 7 findings resolved", opened: "2h ago", selected: true },
-  { title: "Migrate sessions to Durable Objects", tone: "neutral", status: "Verifying", units: "2 / 6 green", claim: "preview running · 3 findings open", opened: "yesterday" },
-  { title: "Rate-limit counters per tenant", tone: "neutral", status: "Merged", units: "3 / 3 green", claim: "no findings · claims held on preview", opened: "4 days ago" },
-  { title: "Drop the legacy webhook path", tone: "neutral", status: "Blocked", units: "1 / 5 green", claim: "unit 3 fails on replay · needs your call", opened: "6 days ago" },
+  { title: "Migrate sessions to Durable Objects", tone: "neutral", status: "Verifying", units: "2 / 6 green", claim: "preview running · 3 findings open", opened: "yesterday", selected: false },
+  { title: "Rate-limit counters per tenant", tone: "neutral", status: "Merged", units: "3 / 3 green", claim: "no findings · claims held on preview", opened: "4 days ago", selected: false },
+  { title: "Drop the legacy webhook path", tone: "neutral", status: "Blocked", units: "1 / 5 green", claim: "unit 3 fails on replay · needs your call", opened: "6 days ago", selected: false },
 ] as const;
 
-function Tables() {
+function Data() {
   return (
     <Sheet
-      title="Table"
-      lede="Horizontal hairlines only. No vertical rules, no zebra, no outer border. Machine columns are mono; human columns are not."
+      title="Table and tabs"
+      lede="Horizontal hairlines only. No vertical rules, no zebra, no outer border. Machine columns are mono; human columns are not. Tabs sit on the same hairline, the active one in ink."
     >
-      <Table>
-        <thead>
-          <tr>
-            <Th className="w-[42px]">
-              <Checkbox aria-label="Select all changes" />
-            </Th>
-            <Th className="w-[304px]">Change</Th>
-            <Th className="w-[144px]">Status</Th>
-            <Th className="w-[134px]">Units</Th>
-            <Th>Verified claim</Th>
-            <Th align="right" className="w-[110px]">
-              Opened
-            </Th>
-          </tr>
-        </thead>
-        <tbody>
-          {changes.map((change) => (
-            <Tr key={change.title} selected={"selected" in change}>
-              <Td>
-                <Checkbox defaultChecked={"selected" in change} aria-label={`Select ${change.title}`} />
-              </Td>
-              <Td kind="primary">{change.title}</Td>
-              <Td tone={change.tone === "flare" ? "ink" : "muted"}>
-                <span className="flex items-center gap-2">
-                  <StatusDot tone={change.tone} />
-                  {change.status}
-                </span>
-              </Td>
-              <Td kind="machine">{change.units}</Td>
-              <Td>{change.claim}</Td>
-              <Td kind="machine" align="right" tone="faint">
-                {change.opened}
-              </Td>
-            </Tr>
-          ))}
-        </tbody>
-      </Table>
+      <Tabs defaultValue="changes">
+        <TabsList>
+          <TabsTrigger value="changes">
+            Changes <Evidence kind="note" size="xs">4 open</Evidence>
+          </TabsTrigger>
+          <TabsTrigger value="findings">
+            Findings
+            <span className="flex items-center gap-[5px]">
+              <StatusDot className="size-[5px]" />
+              <Evidence size="xs" className="text-flare">
+                3 · 1 blocks
+              </Evidence>
+            </span>
+          </TabsTrigger>
+          <TabsTrigger value="decisions">Decisions</TabsTrigger>
+        </TabsList>
+        <TabsContent value="changes">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[58px]">
+                  <Checkbox aria-label="Select all changes" />
+                </TableHead>
+                <TableHead className="w-[304px]">Change</TableHead>
+                <TableHead className="w-[144px]">Status</TableHead>
+                <TableHead className="w-[134px]">Units</TableHead>
+                <TableHead>Verified claim</TableHead>
+                <TableHead className="w-[126px] text-right">Opened</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {changes.map((change) => (
+                <TableRow key={change.title} data-state={change.selected ? "selected" : undefined}>
+                  <TableCell>
+                    <Checkbox defaultChecked={change.selected} aria-label={`Select ${change.title}`} />
+                  </TableCell>
+                  <TableCell className="text-ui font-medium text-ink">{change.title}</TableCell>
+                  <TableCell className={change.tone === "flare" ? "text-ink" : undefined}>
+                    <span className="flex items-center gap-s2">
+                      <StatusDot tone={change.tone} />
+                      {change.status}
+                    </span>
+                  </TableCell>
+                  <TableCell>
+                    <Evidence className="leading-ui tracking-mono">{change.units}</Evidence>
+                  </TableCell>
+                  <TableCell>{change.claim}</TableCell>
+                  <TableCell className="text-right">
+                    <Evidence kind="note" className="leading-ui tracking-mono">
+                      {change.opened}
+                    </Evidence>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TabsContent>
+        <TabsContent value="findings">
+          <Text tone="muted">Three findings, one of which blocks unit 3.</Text>
+        </TabsContent>
+        <TabsContent value="decisions">
+          <Text tone="muted">Two prior billing decisions apply to this change.</Text>
+        </TabsContent>
+      </Tabs>
+      <div className="flex items-start gap-s11 pt-s10">
+        <Text size="detail" tone="muted" className="w-lane shrink-0">
+          Loading and scroll
+        </Text>
+        <div className="flex w-aside flex-col gap-s4">
+          <Skeleton className="h-[18px] w-[280px]" />
+          <Skeleton className="h-[18px] w-[200px]" />
+          <Separator className="my-s2" />
+          <ScrollArea className="h-[96px] rounded-chip border-[1.5px] border-border">
+            <div className="flex flex-col gap-s1 p-s5">
+              {[
+                "Change-Intent: 214",
+                "Co-authored-by: claude-code <agent@acme>",
+                "Reviewed-By: priya",
+                "Review-Scope: intent and shape, not implementation",
+                "Verified-Claims: 6 of 7",
+                "Units: 4",
+              ].map((line) => (
+                <Evidence key={line}>{line}</Evidence>
+              ))}
+            </div>
+          </ScrollArea>
+        </div>
+        <Note className="ml-auto w-annotation shrink-0">
+          {"Skeleton · Separator · ScrollArea\nthe scroll area is an inset, so it takes a border, not a shadow"}
+        </Note>
+      </div>
     </Sheet>
   );
 }
@@ -592,13 +807,13 @@ function AskFields() {
 
 function DiffLine({ number, added = false, marked = false, children }: { number: number; added?: boolean; marked?: boolean; children: string }) {
   return (
-    <div className={`flex items-center py-px pr-2 ${added ? "bg-success-tint" : "bg-surface"}`}>
+    <div className={`flex items-center py-px pr-s2 ${added ? "bg-success-tint" : "bg-surface"}`}>
       <div className="flex w-[22px] shrink-0 items-center pl-[6px]">
-        {marked && <div className="h-5 w-[3px] rounded-pill bg-flare" />}
+        {marked && <div className="h-s5 w-[3px] bg-flare" />}
       </div>
       <span className="type-mono-sm w-[40px] shrink-0 text-right text-faint">{number}</span>
       <span className="type-mono w-[22px] shrink-0 text-center text-success">{added ? "+" : ""}</span>
-      <span className={`type-mono grow whitespace-pre ${added ? "text-ink" : "text-muted"}`}>
+      <span className={`type-mono grow whitespace-pre ${added ? "text-ink" : "text-muted-foreground"}`}>
         {children}
       </span>
     </div>
@@ -617,7 +832,7 @@ function LineThreads() {
           <DiffLine number={46} added marked>
             {"  await bumpCounter(db, e.tenantId, day);"}
           </DiffLine>
-          <LineThread className="mt-5 ml-[62px]">
+          <LineThread className="mt-s5 ml-[62px]">
             <ChatTurn kind="question" author="you" anchor="on line 46">
               Why is the counter bump its own call now?
             </ChatTurn>
@@ -649,12 +864,12 @@ function LineThreads() {
 export function Primitives() {
   return (
     <>
+      <Cards />
       <Buttons />
-      <ButtonGroups />
       <Statuses />
       <Forms />
       <Overlays />
-      <Tables />
+      <Data />
       <Chat />
       <AskFields />
       <LineThreads />

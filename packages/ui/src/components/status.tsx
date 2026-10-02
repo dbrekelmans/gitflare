@@ -1,14 +1,16 @@
 import type { ComponentProps, ReactNode } from "react";
-import { cx } from "../cx";
+import type { VariantProps } from "class-variance-authority";
+import { Badge, type badgeVariants } from "#components/ui/badge";
+import { cn } from "#lib/utils";
 
 /**
  * `flare` means "this is waiting on you". The three status tones are
  * semantic and are never used as a second accent. `neutral` is everything
  * that needs no attention.
  */
-export type BadgeTone = "flare" | "success" | "warning" | "danger" | "neutral";
+export type StatusTone = "flare" | "success" | "warning" | "danger" | "neutral";
 
-const dotTones: Record<BadgeTone, string> = {
+const dotTones: Record<StatusTone, string> = {
   flare: "bg-flare",
   success: "bg-success",
   warning: "bg-warning",
@@ -23,7 +25,7 @@ const dotSizes = {
 } as const;
 
 export type StatusDotProps = ComponentProps<"span"> & {
-  tone?: BadgeTone;
+  tone?: StatusTone;
   size?: keyof typeof dotSizes;
 };
 
@@ -36,7 +38,7 @@ export function StatusDot({
   return (
     <span
       aria-hidden="true"
-      className={cx(
+      className={cn(
         "inline-block shrink-0 rounded-pill",
         dotSizes[size],
         dotTones[tone],
@@ -47,56 +49,57 @@ export function StatusDot({
   );
 }
 
-const tints: Record<BadgeTone, string> = {
-  flare: "bg-flare-tint text-flare-deep",
-  success: "bg-success-tint text-success-deep",
-  warning: "bg-warning-tint text-warning-deep",
-  danger: "bg-danger-tint text-danger-deep",
-  neutral: "bg-surface text-muted",
+const badgeVariant: Record<
+  StatusTone,
+  NonNullable<VariantProps<typeof badgeVariants>["variant"]>
+> = {
+  flare: "default",
+  success: "success",
+  warning: "warning",
+  danger: "destructive",
+  neutral: "secondary",
 };
 
-export type PillProps = ComponentProps<"span"> & {
-  tone?: BadgeTone;
+export type StatusPillProps = Omit<ComponentProps<typeof Badge>, "variant"> & {
+  tone?: StatusTone;
   /** Replaces the status dot, e.g. with a `StatusIcon`. Pass `null` for none. */
   mark?: ReactNode;
 };
 
 /** A status a person reads as a sentence: "1 question for you". */
-export function Pill({
+export function StatusPill({
   tone = "flare",
   mark,
-  className,
   children,
   ...props
-}: PillProps) {
+}: StatusPillProps) {
   return (
-    <span
-      className={cx(
-        "inline-flex items-center gap-2 rounded-pill px-[14px] py-[6px] font-display text-sm leading-xs font-medium whitespace-nowrap",
-        tints[tone],
-        className,
-      )}
-      {...props}
-    >
+    <Badge variant={badgeVariant[tone]} {...props}>
       {mark === undefined ? <StatusDot tone={tone} size={7} /> : mark}
       {children}
-    </span>
+    </Badge>
   );
 }
 
-// Mono at 11px on a tint needs the darkest orange to stay legible.
-const badgeTints: Record<BadgeTone, string> = {
-  ...tints,
+const tints: Record<StatusTone, string> = {
+  // Mono at 11px on a tint needs the darkest orange to stay legible.
   flare: "bg-flare-tint text-flare-shade",
+  success: "bg-success-tint text-success-deep",
+  warning: "bg-warning-tint text-warning-deep",
+  danger: "bg-danger-tint text-danger-deep",
+  neutral: "bg-surface text-muted-foreground",
 };
 
-export type StatusBadgeProps = ComponentProps<"span"> & {
-  tone?: BadgeTone;
+export type StatusBadgeProps = Omit<ComponentProps<"span">, "children"> & {
+  tone?: StatusTone;
+  /** The state as the system reports it: "verified", "checks failed". */
+  children: string;
 };
 
 /**
- * A state the machine reports about itself: verified, unverified, checks
- * failed. Mono because the machine is the author. Not a category label.
+ * A state the machine reports about itself. Mono because the machine is the
+ * author; it takes a string from the system, not copy. For a status phrased
+ * for a person, use `StatusPill`.
  */
 export function StatusBadge({
   tone = "success",
@@ -106,9 +109,9 @@ export function StatusBadge({
 }: StatusBadgeProps) {
   return (
     <span
-      className={cx(
-        "inline-flex h-[28px] items-center gap-2 rounded-pill px-4 font-mono text-mono-xs leading-mono-xs tracking-status whitespace-nowrap uppercase",
-        badgeTints[tone],
+      className={cn(
+        "inline-flex h-[28px] items-center gap-s2 rounded-pill px-s4 font-mono text-mono-xs leading-mono-xs tracking-status whitespace-nowrap uppercase",
+        tints[tone],
         className,
       )}
       {...props}
@@ -119,17 +122,26 @@ export function StatusBadge({
   );
 }
 
-export type ChipProps = ComponentProps<"span"> & {
-  tone?: Exclude<BadgeTone, "neutral">;
+const chipTints: Record<Exclude<StatusTone, "neutral">, string> = {
+  flare: "bg-flare-tint text-flare-deep",
+  success: "bg-success-tint text-success-deep",
+  warning: "bg-warning-tint text-warning-deep",
+  danger: "bg-danger-tint text-danger-deep",
+};
+
+export type ChipProps = Omit<ComponentProps<"span">, "children"> & {
+  tone?: Exclude<StatusTone, "neutral">;
+  /** A machine-authored line: provenance, a trailer, a record id. */
+  children: string;
 };
 
 /** An evidence chip: a machine-authored line set off on a tint. */
 export function Chip({ tone = "flare", className, ...props }: ChipProps) {
   return (
     <span
-      className={cx(
-        "inline-flex items-center rounded-chip px-[18px] py-4 font-mono text-meta leading-ui font-medium",
-        tints[tone],
+      className={cn(
+        "inline-flex items-center rounded-chip px-[18px] py-s4 font-mono text-meta leading-ui font-medium",
+        chipTints[tone],
         className,
       )}
       {...props}
@@ -165,7 +177,7 @@ export function StatusIcon({
       role={label ? "img" : undefined}
       aria-label={label}
       aria-hidden={label ? undefined : true}
-      className={cx("shrink-0", className)}
+      className={cn("shrink-0", className)}
       {...props}
     >
       {kind === "done" && (

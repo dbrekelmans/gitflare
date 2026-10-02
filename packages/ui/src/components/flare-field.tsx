@@ -1,5 +1,5 @@
 import type { ComponentProps } from "react";
-import { cx } from "../cx";
+import { cn } from "#lib/utils"
 
 /**
  * The hero field: the one place flare is a surface. Inside it neutrals are
@@ -9,7 +9,7 @@ import { cx } from "../cx";
 export function FlareField({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
-      className={cx("on-flare rounded-card bg-flare-field text-on-flare", className)}
+      className={cn("on-flare rounded-card bg-flare-field text-on-flare", className)}
       {...props}
     />
   );

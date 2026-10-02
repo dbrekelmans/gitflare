@@ -1,5 +1,5 @@
 import type { ComponentProps } from "react";
-import { cx } from "../cx";
+import { cn } from "#lib/utils"
 
 export type LogoProps = Omit<ComponentProps<"span">, "children"> & {
   /** Height of the mark in px. The wordmark scales with it. */
@@ -21,7 +21,7 @@ export function Logo({
     <span
       role="img"
       aria-label="gitflare"
-      className={cx("inline-flex items-center gap-[0.524em]", className)}
+      className={cn("inline-flex items-center gap-[0.524em]", className)}
       style={{ fontSize: size * WORDMARK_RATIO, ...style }}
       {...props}
     >

@@ -1,6 +1,6 @@
 import type { ComponentProps, FormEvent, ReactNode } from "react";
 import { Children } from "react";
-import { cx } from "../cx";
+import { cn } from "#lib/utils"
 
 export type LineThreadProps = ComponentProps<"div"> & {
   /** `live` holds the thread with a flare rule; `settled` drops it to grey. */
@@ -19,8 +19,8 @@ export function LineThread({
 }: LineThreadProps) {
   return (
     <div
-      className={cx(
-        "flex flex-col gap-[18px] border-l-2 py-[2px] pl-6",
+      className={cn(
+        "flex flex-col gap-[18px] border-l-2 py-[2px] pl-s6",
         state === "live" ? "border-flare" : "border-rule",
         className,
       )}
@@ -33,7 +33,7 @@ export type LineThreadSummaryProps = Omit<ComponentProps<"button">, "children"> 
   /** The question that opened the thread. */
   quote: ReactNode;
   /** What the machine knows about it: "answered · 2 replies". */
-  meta?: ReactNode;
+  meta?: string;
 };
 
 /** A settled thread, collapsed to one line. It keeps its place in the diff. */
@@ -46,13 +46,13 @@ export function LineThreadSummary({
   return (
     <button
       type="button"
-      className={cx(
-        "group flex w-full cursor-pointer items-center gap-4 border-l-2 border-rule pl-6 text-left outline-offset-2 outline-ink focus-visible:outline-[1.5px]",
+      className={cn(
+        "group flex w-full cursor-pointer items-center gap-s4 border-l-2 border-rule pl-s6 text-left outline-none focus-visible:outline-solid focus-visible:outline-[1.5px] focus-visible:outline-offset-2 focus-visible:outline-ring",
         className,
       )}
       {...props}
     >
-      <span className="type-sm text-muted group-hover:text-ink">{quote}</span>
+      <span className="type-detail text-muted-foreground group-hover:text-ink">{quote}</span>
       {meta != null && (
         <span className="type-mono-xs shrink-0 text-faint">{meta}</span>
       )}
@@ -77,11 +77,11 @@ export function LineThreadSummary({
 
 export type ChatTurnProps = Omit<ComponentProps<"div">, "children"> & {
   /** Who is speaking. A name, not an avatar. */
-  author: ReactNode;
+  author: string;
   /** Beside the name: what the turn is anchored to, in place of a timestamp. */
-  anchor?: ReactNode;
+  anchor?: string;
   /** Beside the name while streaming: what the agent is reading right now. */
-  activity?: ReactNode;
+  activity?: string;
   /** A question is set heavier than an answer; intent is what gets scanned for. */
   kind?: "question" | "answer";
   /** Shows the caret at the end of the text. The caret is the only motion. */
@@ -91,7 +91,11 @@ export type ChatTurnProps = Omit<ComponentProps<"div">, "children"> & {
   children: ReactNode;
 };
 
-/** One turn of an exchange. No bubbles: a mono name, then prose. */
+/**
+ * One turn of an exchange. No bubbles: a mono name, then prose. The mono
+ * line (`author`, `anchor`, `activity`) takes strings the system supplies:
+ * an identity, a line reference, a file being read. Never copy.
+ */
 export function ChatTurn({
   author,
   anchor,
@@ -104,8 +108,8 @@ export function ChatTurn({
   ...props
 }: ChatTurnProps) {
   return (
-    <div className={cx("flex flex-col gap-[6px]", className)} {...props}>
-      <div className="type-mono-xs flex items-center gap-2 text-faint">
+    <div className={cn("flex flex-col gap-[6px]", className)} {...props}>
+      <div className="type-mono-xs flex items-center gap-s2 text-faint">
         <span>
           {author}
           {anchor != null && <> · {anchor}</>}
@@ -115,7 +119,7 @@ export function ChatTurn({
       <div
         className={
           kind === "question"
-            ? "font-display text-body-m leading-body-s font-medium tracking-tight text-ink"
+            ? "font-display text-body-m leading-body-s font-medium tracking-heading text-ink"
             : "type-body text-ink"
         }
       >
@@ -129,7 +133,7 @@ export function ChatTurn({
           </span>
         )}
       </div>
-      {citations != null && <div className="mt-1">{citations}</div>}
+      {citations != null && <div className="mt-s1">{citations}</div>}
     </div>
   );
 }
@@ -137,7 +141,7 @@ export function ChatTurn({
 export type SettledExchangeProps = Omit<ComponentProps<"div">, "children"> & {
   question: ReactNode;
   /** Who asked and when: "priya · 1h ago". */
-  byline?: ReactNode;
+  byline?: string;
   /** The answer. */
   children: ReactNode;
 };
@@ -151,16 +155,16 @@ export function SettledExchange({
   ...props
 }: SettledExchangeProps) {
   return (
-    <div className={cx("flex flex-col gap-1", className)} {...props}>
-      <div className="flex items-baseline justify-between gap-7">
-        <div className="font-display text-body leading-body-s font-medium tracking-tight text-ink">
+    <div className={cn("flex flex-col gap-s1", className)} {...props}>
+      <div className="flex items-baseline justify-between gap-s7">
+        <div className="font-display text-body leading-body-s font-medium tracking-heading text-ink">
           {question}
         </div>
         {byline != null && (
           <div className="type-mono-xs shrink-0 text-faint">{byline}</div>
         )}
       </div>
-      <div className="type-body-s text-muted">{children}</div>
+      <div className="type-body-s text-muted-foreground">{children}</div>
     </div>
   );
 }
@@ -173,7 +177,7 @@ export function Citations({
 }: ComponentProps<"div">) {
   const items = Children.toArray(children);
   return (
-    <div className={cx("flex flex-wrap items-center gap-4", className)} {...props}>
+    <div className={cn("flex flex-wrap items-center gap-s4", className)} {...props}>
       {items.map((item, index) => (
         <span key={index} className="contents">
           {index > 0 && (
@@ -191,8 +195,8 @@ export function Citations({
 export function Citation({ className, ...props }: ComponentProps<"a">) {
   return (
     <a
-      className={cx(
-        "type-mono-xs cursor-pointer text-muted underline decoration-1 underline-offset-[3px] outline-offset-2 outline-ink hover:text-ink focus-visible:outline-[1.5px]",
+      className={cn(
+        "type-mono-xs cursor-pointer text-muted-foreground underline decoration-1 underline-offset-[3px] outline-none hover:text-ink focus-visible:outline-solid focus-visible:outline-[1.5px] focus-visible:outline-offset-2 focus-visible:outline-ring",
         className,
       )}
       {...props}
@@ -207,12 +211,12 @@ export type AskFieldProps = Omit<
   /** `page` sits under the intent, scoped to the whole change; `inline` lives in a line thread. */
   size?: "page" | "inline";
   /** What the question is anchored to: "line 46". Stated, not implied. */
-  scope?: ReactNode;
+  scope?: string;
   /**
    * Set while the agent answers. The field goes quiet, the send becomes a
    * stop, and this replaces the placeholder: "answering · 2.1s".
    */
-  answering?: ReactNode;
+  answering?: string;
   onSubmit?: (event: FormEvent<HTMLFormElement>) => void;
   onStop?: () => void;
   className?: string;
@@ -232,9 +236,9 @@ export function AskField({
   ...inputProps
 }: AskFieldProps) {
   const page = size === "page";
-  const busy = answering != null && answering !== false;
-  const control = cx(
-    "flex shrink-0 cursor-pointer items-center justify-center rounded-pill bg-ink text-on-ink outline-offset-2 outline-ink transition-colors duration-150 hover:bg-ink-hover focus-visible:outline-[1.5px] active:bg-ink-press",
+  const busy = answering != null;
+  const control = cn(
+    "flex shrink-0 cursor-pointer items-center justify-center rounded-pill bg-ink text-on-ink outline-none transition-colors duration-150 hover:bg-ink-hover focus-visible:outline-solid focus-visible:outline-[1.5px] focus-visible:outline-offset-2 focus-visible:outline-ring active:bg-ink-press",
     page ? "size-[34px]" : "size-[28px]",
   );
   const arrow = page ? 14 : 12;
@@ -245,9 +249,9 @@ export function AskField({
         event.preventDefault();
         onSubmit?.(event);
       }}
-      className={cx(
+      className={cn(
         "flex w-full items-center rounded-pill border border-border focus-within:border-ink",
-        page ? "gap-5 py-4 pr-4 pl-7" : "gap-5 py-2 pr-2 pl-[18px]",
+        page ? "gap-s5 py-s4 pr-s4 pl-s7" : "gap-s5 py-s2 pr-s2 pl-[18px]",
         busy ? "bg-surface" : "bg-ground",
         className,
       )}
@@ -255,17 +259,17 @@ export function AskField({
       {scope != null && !busy && (
         <span className="-mr-[2px] flex shrink-0 items-center gap-[14px]">
           <span className="type-mono-xs text-flare-deep">{scope}</span>
-          <span aria-hidden="true" className="h-5 w-px bg-border" />
+          <span aria-hidden="true" className="h-s5 w-px bg-border" />
         </span>
       )}
       {busy ? (
-        <span role="status" className="type-mono-xs grow text-muted">
+        <span role="status" className="type-mono-xs grow text-muted-foreground">
           {answering}
         </span>
       ) : (
         <input
           type="text"
-          className={cx(
+          className={cn(
             "min-w-0 grow bg-transparent font-display text-ink outline-none placeholder:text-faint",
             page ? "text-body leading-body-s" : "text-ui leading-ui",
           )}

@@ -8,7 +8,7 @@ export function Gallery() {
   return (
     <main className="mx-auto w-frame bg-ground">
       <System />
-      <div className="mx-13 mt-15 border-t border-rule" />
+      <div className="mx-s13 mt-s15 border-t border-rule" />
       <Primitives />
       <Appendix />
     </main>

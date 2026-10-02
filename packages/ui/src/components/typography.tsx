@@ -1,5 +1,5 @@
 import type { ComponentProps, ElementType, ReactNode } from "react";
-import { cx } from "../cx";
+import { cn } from "#lib/utils"
 
 export type HeadingSize =
   | "display-xl"
@@ -47,9 +47,10 @@ export function Heading({
   const Tag = `h${level}` as const;
   return (
     <Tag
-      className={cx(
+      className={cn(
         headingSizes[size],
-        "text-ink on-flare:text-on-flare on-ink:text-on-ink",
+        // Balanced, so a heading that wraps in the real faces wraps evenly.
+        "text-balance text-ink on-flare:text-on-flare on-ink:text-on-ink",
         className,
       )}
       {...props}
@@ -62,7 +63,7 @@ export type TextSize =
   | "body-m"
   | "body"
   | "body-s"
-  | "sm"
+  | "detail"
   | "ui"
   | "meta";
 
@@ -71,7 +72,7 @@ const textSizes: Record<TextSize, string> = {
   "body-m": "type-body-m",
   body: "type-body",
   "body-s": "type-body-s",
-  sm: "type-sm",
+  detail: "type-detail",
   ui: "type-ui",
   meta: "type-meta",
 };
@@ -80,7 +81,7 @@ export type Tone = "ink" | "muted" | "faint";
 
 const tones: Record<Tone, string> = {
   ink: "text-ink on-flare:text-on-flare on-ink:text-on-ink",
-  muted: "text-muted on-flare:text-on-flare-body on-ink:text-faint-inverse",
+  muted: "text-muted-foreground on-flare:text-on-flare-body on-ink:text-faint-inverse",
   faint: "text-faint on-flare:text-on-flare-body on-ink:text-faint-inverse",
 };
 
@@ -100,7 +101,7 @@ export function Text({
   ...props
 }: TextProps) {
   return (
-    <Tag className={cx(textSizes[size], tones[tone], className)} {...props} />
+    <Tag className={cn(textSizes[size], tones[tone], className)} {...props} />
   );
 }
 
@@ -113,7 +114,7 @@ export type EvidenceKind = "id" | "payload" | "note";
 
 const evidenceKinds: Record<EvidenceKind, string> = {
   id: "font-medium text-ink on-flare:text-on-flare on-ink:text-on-ink",
-  payload: "text-muted on-flare:text-on-flare-body on-ink:text-faint-inverse",
+  payload: "text-muted-foreground on-flare:text-on-flare-body on-ink:text-faint-inverse",
   note: "text-faint on-flare:text-on-flare-body on-ink:text-faint-inverse",
 };
 
@@ -147,7 +148,7 @@ export function Evidence({
 }: EvidenceProps) {
   return (
     <Tag
-      className={cx(evidenceSizes[size], evidenceKinds[kind], className)}
+      className={cn(evidenceSizes[size], evidenceKinds[kind], className)}
       {...props}
     />
   );
@@ -156,16 +157,28 @@ export function Evidence({
 export type TextLinkProps = ComponentProps<"a"> & {
   /** `quiet` is the escape hatch: available, not offered. */
   tone?: "ink" | "quiet";
+  /**
+   * By default a link takes the size and weight of the text around it, so it
+   * can sit inside body copy. `standalone` sets it as its own 14px medium
+   * line, for a link that is not inside a sentence.
+   */
+  standalone?: boolean;
 };
 
-export function TextLink({ tone = "ink", className, ...props }: TextLinkProps) {
+export function TextLink({
+  tone = "ink",
+  standalone = false,
+  className,
+  ...props
+}: TextLinkProps) {
   return (
     <a
-      className={cx(
-        "type-meta cursor-pointer decoration-1 underline-offset-[3px] outline-offset-2 outline-ink focus-visible:outline-[1.5px]",
+      className={cn(
+        "cursor-pointer decoration-1 underline-offset-[3px] outline-none focus-visible:outline-solid focus-visible:outline-[1.5px] focus-visible:outline-offset-2 focus-visible:outline-ring",
+        standalone && "type-meta",
         tone === "ink"
           ? "text-ink underline on-flare:text-on-flare"
-          : "text-muted hover:text-ink hover:underline on-flare:text-on-flare-body on-flare:hover:text-on-flare",
+          : "text-muted-foreground hover:text-ink hover:underline on-flare:text-on-flare-body on-flare:hover:text-on-flare",
         className,
       )}
       {...props}

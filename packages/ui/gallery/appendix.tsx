@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Evidence, Text } from "../src";
+import { Evidence, Text } from "#components/typography";
 import { Statement } from "./kit";
 import { hex, namespace } from "./tokens";
 import type { Token } from "./tokens";
@@ -15,16 +15,16 @@ function Group({
 }) {
   const tokens = namespace(prefix);
   return (
-    <div className="flex items-start gap-11 border-t border-rule pt-[22px] pb-9">
+    <div className="flex items-start gap-s11 border-t border-rule pt-[22px] pb-s9">
       <div className="w-label shrink-0">
         <Text className="text-body-m font-semibold">{title}</Text>
         <Evidence kind="note" size="sm">
           {prefix}* · {tokens.length}
         </Evidence>
       </div>
-      <div className="grid flex-1 grid-cols-2 gap-x-11 gap-y-[6px]">
+      <div className="grid flex-1 grid-cols-2 gap-x-s11 gap-y-[6px]">
         {tokens.map((token) => (
-          <div key={token.name} className="flex min-h-[28px] items-center gap-5">
+          <div key={token.name} className="flex min-h-[28px] items-center gap-s5">
             <div className="flex w-[120px] shrink-0 items-center">{sample(token)}</div>
             <Evidence kind="id" className="w-[230px] shrink-0">
               {token.name}
@@ -40,13 +40,13 @@ function Group({
 }
 
 const bar = (value: string) => (
-  <div className="h-2 rounded-[2px] bg-flare" style={{ width: `min(${value}, 120px)` }} />
+  <div className="h-s2 rounded-[2px] bg-flare" style={{ width: `min(${value}, 120px)` }} />
 );
 
 /** Every token in the theme, straight from the file. */
 export function Appendix() {
   return (
-    <section className="px-13 pt-15 pb-15">
+    <section className="px-s13 pt-s15 pb-s15">
       <Statement title="Every token.">
         Read from theme.css at build time: a token that is not in the theme
         cannot appear here, and one that is cannot be missing.
@@ -111,14 +111,14 @@ export function Appendix() {
         title="Container"
         prefix="--container-"
         sample={({ value }) => (
-          <div className="h-2 rounded-[2px] bg-flare" style={{ width: `calc(${value} / 12)` }} />
+          <div className="h-s2 rounded-[2px] bg-flare" style={{ width: `calc(${value} / 12)` }} />
         )}
       />
       <Group
         title="Breakpoint"
         prefix="--breakpoint-"
         sample={({ value }) => (
-          <div className="h-2 rounded-[2px] bg-rule" style={{ width: `calc(${value} / 12)` }} />
+          <div className="h-s2 rounded-[2px] bg-rule" style={{ width: `calc(${value} / 12)` }} />
         )}
       />
       <Group
