@@ -1,0 +1,33 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "gitflare-spike-c-container",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": true,
+	"preview_urls": false,
+	"observability": { "enabled": true },
+	"secrets": { "required": ["SPIKE_KEY"] },
+	"vars": { "NAMESPACE": "gitflare-spike-c-ns" },
+	"containers": [
+		{
+			"name": "gitflare-spike-c-box",
+			"class_name": "Box",
+			"scheduling_policy": "durable_object",
+			// Phase 1 was deployed without "images" (managed image only) to see whether deploy needs Docker.
+			"images": { "git": { "dockerfile": "./Dockerfile" } }
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "BOX", "class_name": "Box" },
+			{ "name": "RECORDER", "class_name": "Recorder" }
+		]
+	},
+	"exports": {
+		"Box": { "type": "durable-object", "storage": "sqlite" },
+		"Recorder": { "type": "durable-object", "storage": "sqlite" }
+	},
+	"ai": { "binding": "AI" },
+	"artifacts": [{ "binding": "ARTIFACTS", "namespace": "gitflare-spike-c-ns" }]
+}
