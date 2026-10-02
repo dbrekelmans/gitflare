@@ -58,7 +58,7 @@ $S/session.sh $GF15/clone2 "Now append the line 'second turn' to README.md and c
 
 # 5. Question 5, failures. A token directory whose checkpoint token is invalid:
 mkdir -p $GF15/secrets-bad && cp $GF15/secrets/$CODE_REPO.token $GF15/secrets-bad/
-printf 'art_v2_x_%040d?expires=1791045291' 0 > $GF15/secrets-bad/$CKPT_REPO.token
+printf 'art_v2_x_%040d?expires=<unix-seconds>' 0 > $GF15/secrets-bad/$CKPT_REPO.token   # any future timestamp
 ARTIFACTS_TOKEN_DIR=$GF15/secrets-bad git push origin main      # code goes through, checkpoint stays queued
 entire status                                                    # "1 checkpoint not yet pushed"
 #    A checkpoint repository that does not exist (local override, then remove it again):
@@ -66,8 +66,10 @@ cp $GF15/secrets/$CKPT_REPO.token $GF15/secrets/gitflare-spike-e-missing.token
 echo '{ "strategy_options": { "checkpoint_remote": { "provider": "artifacts", "repo": "git/'$NS'/gitflare-spike-e-missing" } } }' > .entire/settings.local.json
 git push origin main; rm .entire/settings.local.json
 
-# 6. Question 2, ENTIRE_CHECKPOINT_TOKEN for the push (helper has only the code token):
+# 6. Question 2, ENTIRE_CHECKPOINT_TOKEN for the push (helper has only the code token).
+#    First the control with no checkpoint credential at all, then with the variable:
 mkdir -p $GF15/secrets-codeonly && cp $GF15/secrets/$CODE_REPO.token $GF15/secrets-codeonly/
+ARTIFACTS_TOKEN_DIR=$GF15/secrets-codeonly git push origin main   # "could not read Username", ref stays queued
 ARTIFACTS_TOKEN_DIR=$GF15/secrets-codeonly ENTIRE_CHECKPOINT_TOKEN="$(cat $GF15/secrets/$CKPT_REPO.token)" git push origin main
 
 # 7. Question 2, fetch paths, from a clone with no local checkpoints.
@@ -97,9 +99,25 @@ echo '{ "checkpoints": { "primary": { "type": "git-branch" } } }' > $GF15/clone5
 $S/session.sh $GF15/clone5 "Append the line 'legacy backend' to README.md, then commit that change with git using the message 'Legacy backend commit'. Do nothing else."
 cd $GF15/clone5 && git push origin main && git ls-remote --symref "$CKPT_URL"
 
-# 11. Clean up (outside the sandbox), then delete the empty namespace as cleanup.sh describes.
+# 11. The run in which Claude Code cannot write its transcript (dangling trailer, commit-time
+#     probe of the sibling). Run this one INSIDE a command sandbox that denies writes to
+#     ~/.claude/projects and allows only api.anthropic.com; outside such a sandbox it simply succeeds.
+git clone "$CODE_URL" $GF15/clone1
+$S/session.sh $GF15/clone1 "Append the line 'hello from session one' to README.md, then commit that change with git using the message 'Add greeting'. Do nothing else."
+git -C $GF15/clone1 log -1 --format=%B; git -C $GF15/clone1 for-each-ref refs/entire   # trailer, no ref
+grep -E '"level":"WARN"' $GF15/clone1/.entire/logs/entire.log
+
+# 12. Clean up (outside the sandbox).
 $S/cleanup.sh
 ```
+
+The namespace was deleted with the Cloudflare API MCP tool (`execute`), not with an API token:
+a `GET /accounts/<account-id>/artifacts/namespaces/gitflare-spike-e-ns` to confirm `repo_count: 0`,
+then `DELETE` on the same path (204). No other way of issuing that call was tried.
+
+Not reproducible from these steps: the second dangling trailer in the note. It came from two extra
+edit-only sessions in `clone2` and a `git reset --soft` made while the human-commit test was still
+being worked out; the exact sequence was not kept as a script, and its cause was not isolated.
 
 Other one-off checks in the note (`Bearer`/`Basic` token variants, force-push and delete of a ref
 under `refs/entire/`, `git clone --filter=blob:none`) are plain git commands quoted there in full.

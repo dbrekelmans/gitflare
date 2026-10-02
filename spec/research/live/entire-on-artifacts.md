@@ -14,20 +14,24 @@ In the output below the account id is written `<account-id>`, and `<code>` / `<s
 
 1. **No fork of the Entire CLI is needed to capture into a sibling Artifacts repository.** A
    hand-written `.entire/settings.json` with `checkpoint_remote: {"provider": "artifacts", "repo":
-   "git/<namespace>/<sibling>"}` makes the unmodified CLI push every checkpoint to the sibling. The
+   "git/<namespace>/<sibling>"}` made the unmodified CLI push its checkpoints to the sibling in the pushes made here (two
+   per-checkpoint refs, and the legacy branch in question 3). The
    "fork in the meantime" fallback can be dropped; an upstream provider would only buy the CLI flag
    and a nicer `repo` value.
-2. **A git credential helper is the only token route that works in both directions**, and it needs
-   `credential.useHttpPath=true` so the two repositories on one host get different tokens.
-   `ENTIRE_CHECKPOINT_TOKEN` pushes fine but reads look in the *code* repository and report
-   "checkpoint not found"; with provider `github`/`gitlab` they go to that public host with the
-   token attached. Do not set the variable anywhere in gitflare, and never use those two provider
-   names.
+2. **Of the two token routes tested, only the git credential helper worked in both directions.**
+   It needs `credential.useHttpPath=true` so the two repositories on one host get different tokens.
+   `ENTIRE_CHECKPOINT_TOKEN` pushed fine, but the one read command tested (`entire checkpoint
+   explain`) then looked in the *code* repository and reported "checkpoint not found"; with provider
+   `gitlab` the same command addressed `gitlab.com` with the Authorization header set in the git
+   command's environment (run with a dummy token, connection blocked). Provider `github` was not
+   run, and `http.<url>.extraHeader` was not tested with Entire, so that route is not ruled out.
+   Until it is tested: helper only, variable unset, provider name neither `github` nor `gitlab`.
 3. **Artifacts accepts `refs/entire/checkpoints/<shard>/<id>`**, so the default `git-refs` backend
-   is the one to use. The legacy branch backend also works but is not needed, and it has a side
-   effect: the sibling's `HEAD` starts pointing at `entire/checkpoints/v1`.
-4. **A commit trailer without a checkpoint is a normal state, and can be permanent.** The checkpoint
-   push is fail-soft (the code push goes through, the developer sees two terse lines), and when
+   is the one to use. The legacy branch backend also worked in the one run made, but is not needed,
+   and it had a side effect: the sibling's `HEAD` resolved to `entire/checkpoints/v1` afterwards.
+4. **A commit trailer without a checkpoint is a normal state, and can be permanent.** A push whose
+   checkpoint token was invalid (rejected at once) still delivered the code, and the developer saw
+   two terse lines; a slow or hanging sibling was not tested. And when
    Entire fails to condense a session the commit still carries a trailer whose checkpoint was never
    written. The forge must show "evidence pending" and "evidence missing" rather than assume the
    sibling has what the trailer names.
@@ -41,9 +45,12 @@ In the output below the account id is written `<account-id>`, and `<code>` / `<s
 7. **A plain `git clone` of the sibling is empty.** With the `git-refs` backend nothing is under
    `refs/heads/`; "one extra clone" to take the evidence elsewhere means
    `git fetch <sibling> '+refs/entire/*:refs/entire/*'`.
-8. **Reading works exactly as the research note describes**, including the cumulative transcript
-   and its slice offsets. Each checkpoint ref had two commits (`Checkpoint:` then `Finalize
-   transcript for Checkpoint:`), so the reader must take the ref tip and expect a second push.
+8. **For what was exercised, reading matches the research note**, including the cumulative
+   transcript and its slice offsets. Exercised: Claude Code only, one two-turn session plus
+   single-turn ones, unchunked transcripts, one session per checkpoint, no subagents. Each checkpoint
+   ref had two commits (`Checkpoint:` then `Finalize transcript for Checkpoint:`), so the reader
+   must take the ref tip. Both commits always arrived in one push here; a ref updated by a later
+   push was not observed.
 
 Corrections made to `spec/research/entire-capture.md` and `spec/research/artifacts.md` in the same
 pull request are listed at the end.
@@ -169,14 +176,26 @@ Token handling by Artifacts itself, with plain `git ls-remote <sibling>`:
 | `Authorization: Basic x-access-token:<full token>` | ok |
 | the code repository's token | `remote: Invalid or expired token` / HTTP 403 |
 
-**Means.** Use a credential helper and nothing else. It covers the push in the `pre-push` hook and
-every read, with no change to Entire, and it can refresh an expiring token. It must be registered
-with `credential.useHttpPath=true`: without the path git cannot tell the code repository from the
-sibling, and tokens are strictly per repository. `ENTIRE_CHECKPOINT_TOKEN` is confirmed unusable for
-gitflare, for the reason the research note gave from the code: reads are redirected. Fixing that
-needs a change in the CLI (`fetchURLResolved`), which gitflare no longer has a reason to make.
-`http.<url>.extraHeader` in git config was not tested with Entire (the Bearer form works with plain
-git).
+**Means.** Use a credential helper. It covered the push in the `pre-push` hook and the read command
+tested, with no change to Entire, and being a program it can hand out a fresh token each time (not
+exercised: no token expired during the test). It must be registered with
+`credential.useHttpPath=true`: without the path git cannot tell the code repository from the
+sibling, and a token for one repository was refused on the other. `ENTIRE_CHECKPOINT_TOKEN` is
+unsuitable for gitflare for the reason the research note gave from the code: the read was
+redirected. Fixing that needs a change in the CLI (`fetchURLResolved`), which gitflare has no
+reason to make while the helper works.
+
+Limits of this evidence:
+
+- "Read" means one command, `entire checkpoint explain --commit`, which ran `git ls-remote` and
+  `git fetch`. `entire session resume`, `checkpoint list` against a remote, and the push-recovery
+  fetch were not run with either route (the recovery fetch appears only in the failure log of
+  question 5, where it failed with the same bad token).
+- Provider `github` was not run. Provider `gitlab` was run once with a dummy token and the
+  connection was blocked by the sandbox; what is observed is the URL and that the git command's
+  environment carried an Authorization header (`auth-header-in-env=1`), not bytes on the wire.
+- `http.<url>.extraHeader` in git config was not tested with Entire (the Bearer form works with
+  plain git), so it is untested, not excluded.
 
 ## 3. Refs — `works` (git-refs); legacy branch backend also `works`
 
@@ -210,17 +229,25 @@ Legacy backend: a 12-hex id, and a branch in the sibling:
 2b61d1e Legacy backend commit …  Entire-Checkpoint: 40896ba8ff1a
 $ git push origin main
 [entire] Pushing entire/checkpoints/v1 to checkpoint remote... done
-$ git ls-remote --symref <sibling>
-ref: refs/heads/entire/checkpoints/v1	HEAD
+$ git ls-remote <sibling>
+cd96739bab14f3d376c556fdb24bd8fd0d47be5f	HEAD
+f7eb5850e80286e5724a205f5801ac07185f2fe6	refs/entire/checkpoints/NW/01M3YQQJVN37X48WND4YW3N1NW
+83a5561a7aaa00d24579c38aafd46ec307c5090b	refs/entire/checkpoints/SE/01M3YQP715MH9266Q4XVX1D8SE
 cd96739bab14f3d376c556fdb24bd8fd0d47be5f	refs/heads/entire/checkpoints/v1
+$ git ls-remote --symref <sibling> HEAD
+ref: refs/heads/entire/checkpoints/v1	HEAD
+cd96739bab14f3d376c556fdb24bd8fd0d47be5f	HEAD
 ```
+
+Before this push the sibling held the two `refs/entire/…` refs from the earlier runs and no branch;
+its `ls-remote` listed no `HEAD` (see question 1).
 
 with the checkpoint at `40/896ba8ff1a/` on that branch and `sessions[].*` paths prefixed
 `/40/896ba8ff1a/…`.
 
 **Means.** The `git-branch` fallback in the research note is not needed. If it is ever used, expect
 the sibling's `HEAD` to resolve to the checkpoint branch (the repository was created with default
-branch `main`, which does not exist there). Artifacts does not enforce fast-forward-only updates on
+branch `main`, which does not exist there). This was one run with one developer. Artifacts does not enforce fast-forward-only updates on
 these refs: a force-push and a delete were both accepted, so any holder of a sibling write token can
 replace or remove a checkpoint. Not tested: whether a push to `refs/entire/*` emits a
 `cf.artifacts.repo.pushed` event (needs a deployed Worker; out of this task's set-up), and two
@@ -289,23 +316,51 @@ the second one's offsets. Line counts per commit on the two refs:
 | `1cd1dbd` | `Checkpoint: …NW` | 71 | 10 |
 | `f7eb585` | `Finalize transcript for Checkpoint: …NW` | 77 | 11 |
 
-**Means.** The layout, both metadata shapes, the leading-`/` session paths, the trailers on the
-checkpoint commit, `content_hash.txt` and the slicing rule in the research note all match what the
-CLI wrote. Details the forge's reader should know:
+First checkpoint of the same session, for comparison (trimmed; note there is no
+`checkpoint_transcript_start` key):
 
-- `checkpoint_transcript_start` is absent on a session's first checkpoint (zero is omitted) while
-  `compact_transcript_start: 0` is present; treat a missing value as 0.
-- The first commit on a ref is written at commit time, mid-turn, and lacks the end of the turn; the
-  `Finalize` commit at turn end completes it. Both were queued and pushed together here because the
-  push came after the turn. An agent that pushes inside the turn will deliver the first commit
-  alone and the second on a later push.
-- Root and session `checkpoints_count` were 1 on both checkpoints; it is not a running total.
-- `full.jsonl` is large relative to the work: 193 KB for a four-call session (26 of its 50 lines are
-  Claude Code `attachment` lines), 219 KB cumulative after the second turn. Transcript content
-  includes absolute local paths.
-- The checkpoint commits were unsigned here because the isolated git config had no signing set up.
+```
+trailers: ['01M3YQP715MH9266Q4XVX1D8SE']
+tree:
+  100644 blob deb307bd…  193119	0/full.jsonl
+  100644 blob 77d016dd…    2868	0/transcript.jsonl
+  …
+session 0 metadata.json:
+  "checkpoints_count": 1, …, "turn_id": "07b4067a9171",
+  "compact_transcript_start": 0,
+  "token_usage": {…}, "initial_attribution": {…}, "prompt_attributions": [{"checkpoint_number": 1, …}]
+full.jsonl: 50 lines, 1 chunk(s); this checkpoint = lines[0:] (50 lines)
+  line types: {'queue-operation': 2, 'attachment': 26, 'user': 5, 'atis-latch': 3, 'last-prompt': 2, 'ai-title': 2, 'assistant': 10}
+transcript.jsonl: 6 lines; compact_transcript_start=0; slice:
+    … [{"id": "toolu_01Hb6ptwmsh2GTnKwTgdTRYM", "input": {"file_path": "/private/tmp/claude-501/gf15/clone2/README.md"}, "name": "Read", …
 
-## 5. Ordering and failure — `works` (checkpoint first; failure never blocks the code push)
+$ git log -1 --format='%s | %an | sig=%G?' 83a5561
+Finalize transcript for Checkpoint: 01M3YQP715MH9266Q4XVX1D8SE | Spike E | sig=N
+```
+
+**Means.** For the cases exercised — Claude Code, one session per checkpoint, transcripts in a
+single chunk, no subagents — the layout, both metadata shapes, the leading-`/` session paths, the
+trailers on the checkpoint commit, `content_hash.txt` and the slicing rule in the research note
+match what the CLI wrote. Chunked transcripts, several sessions on one checkpoint, `tasks/`, and
+other agents were not exercised. Details the forge's reader should know:
+
+- `checkpoint_transcript_start` was absent on the session's first checkpoint while
+  `compact_transcript_start: 0` was present (output above); treat a missing value as 0.
+- The first commit on a ref was written at commit time, mid-turn, and lacked the end of the turn
+  (44 against 50 lines in the table); the `Finalize` commit completed it. Both were queued and
+  pushed together in every run here, because each push came after the turn had ended. What an agent
+  that pushes inside its turn delivers was not tested; from the queue behaviour the likely outcome
+  is the first commit alone and the second on a later push, so the reader should not assume a ref
+  is final on first sight.
+- Root and session `checkpoints_count` were 1 on both checkpoints of the two-turn session (outputs
+  above), so it was not a running total there.
+- `full.jsonl` is large relative to the work: 193,119 bytes for a four-call session (26 of its 50
+  lines are Claude Code `attachment` lines), 219,272 bytes cumulative after the second turn.
+  Transcript content includes absolute local paths (visible in the tool input above).
+- The checkpoint commits were unsigned here (`sig=N`); the isolated git config had no signing set
+  up, so signing was not exercised.
+
+## 5. Ordering and failure — `works` (checkpoint first; the failures tested did not block the code push)
 
 **Ran.** `GIT_TRACE=1 git push origin main`; then a push with an invalid checkpoint token, a push
 with `checkpoint_remote` pointed (local override) at a repository that does not exist, and a push
@@ -363,11 +418,21 @@ Two further observations from the same runs:
   history had been reset during testing, ended the same way (`failed to get commit object: object
   not found`; cause not isolated).
 - In that failed case `post-commit` ran `git ls-remote <sibling> refs/entire/checkpoints/95/…`: a
-  commit can make a network call to the sibling, with credentials. In the successful runs the
-  helper log shows no call at commit time.
+  commit can make a network call to the sibling. From `.entire/logs/entire.log` (the sandbox
+  refused the connection):
 
-**Means.** The research note's reading is confirmed: checkpoint first, synchronous, fail-soft, with
-the ref left queued. The forge will regularly see a code commit whose checkpoint has not arrived,
+  ```
+  "msg":"failed to update combined checkpoint attribution", … "checkpoint_id":"01M3YQM9RM702QH2DFDGRXSS95","error":"reading checkpoint summary: fetch checkpoint ref refs/entire/checkpoints/95/01M3YQM9RM702QH2DFDGRXSS95: probe checkpoint ref … on <sibling>: git ls-remote: exit status 128 (fatal: unable to access '<sibling>/': CONNECT tunnel failed, response 403)"
+  ```
+
+  In the successful runs the credential helper's log has no entry at commit time.
+
+**Means.** The research note's reading held in these runs: checkpoint first, synchronous, fail-soft,
+with the ref left queued. All three failures were immediate rejections (the push with the invalid
+token took about one second in total); a sibling that hangs, times out or is unreachable was not
+tested, so how long the hook can delay a code push is unknown. Only the first of the three pushes
+had code to send; the other two were `Everything up-to-date` and show the queue surviving, not a
+code push surviving. The forge will regularly see a code commit whose checkpoint has not arrived,
 and occasionally one whose checkpoint never will. Both need a visible state on the change page. The
 on-screen message does not say why the push failed, and Artifacts answers a missing repository like
 a bad token, so gitflare's own tooling (the login command or the helper) should be what tells a
@@ -412,23 +477,42 @@ a3b9656 Human commit (prompt, declined) | trailer=[]
 
 **Means.** The forge can pre-configure a repository by committing three files; a developer needs the
 `entire` binary and a credential helper, nothing else. Keep `commit_linking: "always"` in the
-committed file: with the default, a human can decline and the commit arrives unlinked. A commit made
-in a fresh clone *before* the first prompt has no hooks and therefore no trailer (the hook directory
-was empty until the first prompt). Also seen: the same human commit run from a shell that still had
+committed file: with `prompt`, a human declined and the commit arrived unlinked. A commit made in a
+fresh clone *before* the first prompt was not run; the hook directory was empty until the first
+prompt (output above), so git had no `prepare-commit-msg` hook to add a trailer — an inference, as
+in the research note. Also seen: the same human commit run from a shell that still had
 Claude Code's environment variables (`CLAUDECODE`, `CLAUDE_CODE_*`) showed no prompt under
 `commit_linking: "prompt"` and added the trailer; which variable causes that was not isolated.
 
 ## Other observations
 
-- **Partial clone works.** Protocol v2 advertises `fetch=shallow filter sideband-all`
-  (`agent=gitty/1.0`), and `git clone --bare --filter=blob:none <code>` produced a clone with 6
-  objects missing (the blobs). Entire's `filtered_fetches` was not exercised.
+- **A blobless clone completed; lazy fetching was not tested.** One run:
+
+  ```
+  $ GIT_TRACE_PACKET=1 git ls-remote <code>
+  packet:          git< version 2
+  packet:          git< agent=gitty/1.0
+  packet:          git< fetch=shallow filter sideband-all
+  $ git clone --bare --filter=blob:none <code> blobless
+  Cloning into bare repository 'blobless'...
+  $ git -C blobless count-objects -v
+  count: 0
+  in-pack: 10
+  $ git -C blobless rev-list --objects --all --missing=print | grep -c '^?'
+  6
+  ```
+
+  So the server honoured the filter on clone. Fetching a missing blob on demand (a checkout, or
+  `git cat-file` of a missing object) was not tried, and neither was Entire's `filtered_fetches`.
 - **The token format is not the documented one.** Tokens from `wrangler artifacts repos create` look
-  like `art_v2_x_<40 hex>?expires=<unix seconds>`, and that initial token expired exactly 24 hours
-  after creation.
+  like `art_v2_x_<40 hex>?expires=<unix seconds>`. The `expires` value of the initial token was
+  24 hours after creation (`2026-10-03T16:34:47Z` for a repository created at
+  `2026-10-02T16:34:47Z`); the test ended long before that, so expiry itself was not observed.
 - **Namespaces can be deleted.** `DELETE /accounts/<account-id>/artifacts/namespaces/<namespace>`
   returned 204 for the empty namespace; the route is in Cloudflare's OpenAPI description but not on
-  the REST docs page, and wrangler 4.147.0 has no command for it. `wrangler artifacts repos delete
+  the REST docs page, and wrangler 4.147.0 has no command for it. It was issued through the
+  Cloudflare API MCP tool this thread is authorised for (`search` to find the route, `execute` for a
+  `GET` that confirmed `repo_count: 0`, then the `DELETE`); no API token was created. `wrangler artifacts repos delete
   <name> --namespace <ns> --force` deletes a repository.
 - **The Entire CLI calls `api.github.com`** on `enable`, `status` and `checkpoint explain` even with
   telemetry off (seen as blocked connections in the sandbox; what it requests was not inspected).
@@ -438,13 +522,36 @@ Claude Code's environment variables (`CLAUDECODE`, `CLAUDE_CODE_*`) showed no pr
 
 ## Cost and cleanup
 
-- Model: eight headless Claude Code sessions on Haiku 4.5, $0.209 in total at list price as reported
-  by `claude -p --output-format json` ($0.017–$0.045 each). Cloudflare: Artifacts operations only,
-  inside the included allowance and before billing starts — $0.
-- Created: namespace `gitflare-spike-e-ns`, repositories `gitflare-spike-e-code` and
-  `gitflare-spike-e-checkpoints`. All three deleted on 2026-10-02 (repositories with wrangler, the
-  namespace with the REST route above); `artifacts namespaces list` no longer shows the namespace.
-  Local token files deleted. Nothing left over.
+Model: eight headless Claude Code sessions on Haiku 4.5, $0.209 in total at list price as reported
+by `claude -p --output-format json`. Cloudflare: Artifacts operations only, inside the included
+allowance and before billing starts — $0.
+
+| # | Clone | Prompt | Used for | Cost |
+|---|---|---|---|---|
+| 1 | `clone1`, inside the sandbox | edit + commit | transcript could not be written: dangling trailer, commit-time probe (question 5) | $0.029 |
+| 2 | `clone2` | edit + commit | questions 1, 2, 3, 5, 6 | $0.031 |
+| 3 | `clone2`, `--resume` of 2 | edit + commit | questions 4, 5 | $0.045 |
+| 4 | `clone2` | edit only | first human-commit attempt, run with the agent's environment variables still set (question 6, last sentence) | $0.017 |
+| 5 | `clone2` | edit only | second human-commit attempt after a `git reset --soft`; answer typed too early; condensation failed (question 5) | $0.017 |
+| 6 | `clone4` | edit only | human commit, `always` (question 6) | $0.024 |
+| 7 | `clone4` | edit only | human commit, `prompt` declined (question 6) | $0.017 |
+| 8 | `clone5` | edit + commit | legacy branch backend (question 3) | $0.028 |
+
+Sessions 4 and 5 were a mis-designed first attempt at the human commit and are not in the README's
+steps; their only lasting results are the two observations attributed to them above.
+
+On the account: namespace `gitflare-spike-e-ns` and repositories `gitflare-spike-e-code` and
+`gitflare-spike-e-checkpoints` were created, and all three deleted on 2026-10-02 (repositories with
+`wrangler artifacts repos delete … --force`, the namespace with the REST route above). Afterwards
+`wrangler artifacts repos list --namespace gitflare-spike-e-ns` reported no repositories and the
+namespace list returned by the API no longer contained the namespace. Nothing of this task is left
+on the account.
+
+On the machine: the scratch directory (clones, binary, logs, token files) is deleted. Left behind
+are Claude Code's own transcripts of sessions 2–8 (session 1 could not write one), in
+`~/.claude/projects/` under `-private-tmp-claude-501-gf15-clone2`, `…-clone4` and `…-clone5`; the
+command sandbox does not allow deleting there. The sessions only read and edited a scratch
+`README.md` and ran `git add`/`git commit`; no token was ever passed to them.
 
 ## Corrections made to the research notes
 
@@ -455,13 +562,15 @@ Claude Code's environment variables (`CLAUDECODE`, `CLAUDE_CODE_*`) showed no pr
   credential helper in `pre-push`, fast-forward enforcement, `--filter=blob:none`) now state what
   was observed and point here.
 - The legacy-backend line said the v1 branch "is not pushed to a remote that has no remote-tracking
-  refs yet, so it cannot become the default branch". With a `checkpoint_remote` it was pushed to an
-  empty sibling and the sibling's `HEAD` now points at it.
+  refs yet, so it cannot become the default branch". With a `checkpoint_remote` it was pushed to a
+  sibling that had no branch (only `refs/entire/*` refs), and the sibling's `HEAD` then pointed at it.
 - The Artifacts token format quoted from Cloudflare's page (`art_v1_…`) is annotated with the
   observed `art_v2_x_…`.
 
 `spec/research/artifacts.md` (smallest possible edits; the Artifacts live test owns the rest):
 
 - Token format, and the statement that Basic auth needs the suffix stripped (both forms work).
-- "Partial clone may not work" / "Whether `--filter=blob:none` works": it works over protocol v2.
-- The initial token's TTL (24 hours), and the existence of a namespace delete route.
+- "Partial clone may not work" / "Whether `--filter=blob:none` works": a blobless clone completed;
+  lazy fetching is still untested, so the shallow-fetch plan stands.
+- The initial token's `expires` value (24 hours after creation), and the existence of a namespace
+  delete route.
