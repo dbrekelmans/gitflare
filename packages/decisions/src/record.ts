@@ -13,7 +13,7 @@ import {
 } from "@gitflare/core";
 import type { NewDecision } from "@gitflare/core/ports";
 import { schema, toDecision } from "@gitflare/db";
-import { and, eq, getTableColumns, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import { syncDecisionFiles } from "./context-repo";
 import { embedDecision } from "./embedding";
 import { cleanTitle, DECISIONS_DIR, decisionPath } from "./file";
@@ -95,7 +95,7 @@ export async function recordDecision(deps: DecisionsDeps, input: NewDecision): P
   const decision: Decision = {
     id,
     repositoryId: input.repositoryId,
-    path: await freePath(deps, { ...input, title }, id),
+    path: "",
     title,
     statement,
     rationale,
@@ -120,12 +120,30 @@ export async function recordDecision(deps: DecisionsDeps, input: NewDecision): P
     note: createdNote[input.origin],
     createdAt: now,
   };
-  await deps.db.batch([
-    deps.db.insert(schema.decisions).values({ ...decision, ...embedding, fileSha: null }),
-    deps.db.insert(schema.decisionEvents).values(event),
-  ]);
+  for (let attempt = 1; ; attempt++) {
+    decision.path = await freePath(deps, { ...input, title }, id);
+    try {
+      await deps.db.batch([
+        deps.db.insert(schema.decisions).values({ ...decision, ...embedding, fileSha: null }),
+        deps.db.insert(schema.decisionEvents).values(event),
+      ]);
+      break;
+    } catch (error) {
+      // Someone recorded a decision with the same title between finding the path free and taking it.
+      if (!pathTaken(error) || attempt === ATTEMPTS) throw error;
+    }
+  }
   await syncDecisionFiles(deps, repository, [id], `Record decision: ${title}`);
   return decision;
+}
+
+/** Whether a write failed because another decision of the repository holds the path. */
+function pathTaken(error: unknown): boolean {
+  const messages: string[] = [];
+  for (let cause = error; cause instanceof Error; cause = cause.cause) messages.push(cause.message);
+  return messages.some((message) =>
+    /UNIQUE constraint failed: decisions\.repository_id, decisions\.path/.test(message),
+  );
 }
 
 export type DecisionEventInput = Pick<
@@ -158,6 +176,8 @@ async function applyEvent(
   for (let attempt = 1; ; attempt++) {
     const row = await requireDecisionRow(deps.db, decisionId);
     if (input.kind === "revived" && row.status !== "dormant") {
+      // Reviving again what was just revived is a retry: it succeeds, and repairs the file.
+      if ((await lastEventKind(deps, decisionId)) === "revived") return { row, applied: false };
       throw new ForgeError("invalid", "Only a dormant decision can be revived.");
     }
 
@@ -232,6 +252,19 @@ async function applyEvent(
   }
 }
 
+async function lastEventKind(
+  deps: Pick<DecisionsDeps, "db">,
+  decisionId: DecisionId,
+): Promise<DecisionEventKind | null> {
+  const [event] = await deps.db
+    .select({ kind: schema.decisionEvents.kind })
+    .from(schema.decisionEvents)
+    .where(eq(schema.decisionEvents.decisionId, decisionId))
+    .orderBy(desc(schema.decisionEvents.createdAt), desc(schema.decisionEvents.id))
+    .limit(1);
+  return event?.kind ?? null;
+}
+
 function commitMessage(kind: DecisionEventKind, title: string): string {
   switch (kind) {
     case "reshaped":
@@ -256,11 +289,20 @@ export async function recordDecisionEvent(
   decisionId: DecisionId,
   event: DecisionEventInput,
 ): Promise<Decision> {
-  const { row } = await applyEvent(deps, decisionId, event);
+  return (await writeDecisionEvent(deps, decisionId, event)).decision;
+}
+
+/** `recordDecisionEvent`, also saying whether the event changed anything. */
+export async function writeDecisionEvent(
+  deps: DecisionsDeps,
+  decisionId: DecisionId,
+  event: DecisionEventInput,
+): Promise<{ decision: Decision; applied: boolean }> {
+  const { row, applied } = await applyEvent(deps, decisionId, event);
   const repository = await requireRepository(deps.db, row.repositoryId);
   // Also when nothing was applied: an earlier attempt may have stopped before the file was written.
   await syncDecisionFiles(deps, repository, [row.id], commitMessage(event.kind, row.title));
-  return toDecision(row);
+  return { decision: toDecision(row), applied };
 }
 
 /** Records how a change related to a decision it was reviewed against. The latest word stands. */
@@ -324,7 +366,6 @@ export async function settleChangeDecisions(
     .where(
       and(
         eq(schema.decisionEvents.changeId, changeId),
-        inArray(schema.decisionEvents.decisionId, decisionIds),
         inArray(schema.decisionEvents.kind, Object.values(settledAs)),
       ),
     );

@@ -1,16 +1,24 @@
 import { applyDecisionEvent, type Decision, ForgeError, type RepositoryId } from "@gitflare/core";
+import { ModelError } from "@gitflare/core/ports";
 import { schema } from "@gitflare/db";
 import { eq, inArray } from "drizzle-orm";
 import { readDecisionFiles } from "./context-repo";
 import { embeddingText, embedTexts } from "./embedding";
 import { parseDecisionFile } from "./file";
-import { attribution, type DecisionsDeps, modelSettings, requireRepository } from "./store";
+import {
+  attribution,
+  type DecisionsDeps,
+  inPieces,
+  modelSettings,
+  requireRepository,
+} from "./store";
 
 /**
  * Rebuilds a repository's index from the files in its context repo. The files
  * win: an indexed decision takes its file's wording, strength and times, and a
  * file the index has never seen is added. A decision whose vector no longer
- * matches its words is embedded again. Nothing is removed: a decision with no
+ * matches its words is embedded again; when the model cannot be reached it is
+ * left with no vector, for retrieval to embed later. Nothing is removed: a decision with no
  * file stays as it is, and so does every decision's history, which is not in
  * the files.
  *
@@ -44,12 +52,15 @@ export async function reindexDecisions(
     .select()
     .from(schema.decisions)
     .where(eq(schema.decisions.repositoryId, repositoryId));
-  const elsewhere = ids.length
-    ? await deps.db
+  const elsewhere: { id: Decision["id"]; repositoryId: RepositoryId }[] = [];
+  for (const piece of inPieces(ids)) {
+    elsewhere.push(
+      ...(await deps.db
         .select({ id: schema.decisions.id, repositoryId: schema.decisions.repositoryId })
         .from(schema.decisions)
-        .where(inArray(schema.decisions.id, ids))
-    : [];
+        .where(inArray(schema.decisions.id, piece))),
+    );
+  }
   const byId = new Map(indexed.map((row) => [row.id, row]));
   const byPath = new Map(indexed.map((row) => [row.path, row]));
   for (const [id, decision] of parsed) {
@@ -75,24 +86,30 @@ export async function reindexDecisions(
       embeddingText(row) !== embeddingText(decision)
     );
   });
-  const vectors = await embedTexts(
-    deps,
-    model,
-    toEmbed.map(embeddingText),
-    attribution(repositoryId),
+  // The files are what matters here. Without the model a decision is indexed
+  // with no vector, and retrieval embeds it the next time it runs.
+  let vectors: number[][] | null = null;
+  try {
+    vectors = await embedTexts(deps, model, toEmbed.map(embeddingText), attribution(repositoryId));
+  } catch (error) {
+    if (!(error instanceof ModelError)) throw error;
+  }
+  const embedded = new Map(
+    toEmbed.map((decision, index) => [
+      decision.id,
+      { embedding: vectors?.[index] ?? null, embeddingModel: vectors ? model : null },
+    ]),
   );
-  const embedded = new Map(toEmbed.map((decision, index) => [decision.id, vectors[index]]));
 
   for (const decision of decisions) {
     // The file's strength stands; whether that is dormant is the machine's call, not the file's.
     const { status } = applyDecisionEvent(decision, "reshaped");
-    const embedding = embedded.get(decision.id);
     const values = {
       ...decision,
       status,
       repositoryId,
       fileSha: tip,
-      ...(embedding && { embedding, embeddingModel: model }),
+      ...embedded.get(decision.id),
     };
     await deps.db
       .insert(schema.decisions)

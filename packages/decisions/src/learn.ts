@@ -8,6 +8,7 @@ import {
 import { ModelError } from "@gitflare/core/ports";
 import { schema, toDecision } from "@gitflare/db";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { syncDecisionFiles } from "./context-repo";
 import {
   learnFromThreadMessage,
   learnFromThreadSystem,
@@ -50,10 +51,22 @@ async function alreadyLearned(deps: DecisionsDeps, threadId: ThreadId): Promise<
   return null;
 }
 
+/** Marks the thread as considered, whatever was found. */
+async function considered(deps: DecisionsDeps, threadId: ThreadId): Promise<void> {
+  await deps.db
+    .update(schema.threads)
+    .set({ learnedAt: deps.clock.now() })
+    .where(eq(schema.threads.id, threadId));
+}
+
 /**
  * Looks through a settled thread for a decision worth keeping, and records or
  * reinforces it. Returns the decision the thread produced or touched, or null
- * when it decided nothing. Safe to call again: a thread is learned from once.
+ * when it decided nothing. Whatever it finds it sets the thread's `learnedAt`,
+ * and a thread considered since it was last settled or written in is answered
+ * without asking the model again. Safe to call again: a thread is learned
+ * from once, and calling again writes a decision file a failed commit left
+ * behind.
  */
 export async function learnFromThread(
   deps: DecisionsDeps,
@@ -66,10 +79,37 @@ export async function learnFromThread(
     .limit(1);
   if (!thread) throw new ForgeError("not_found", `Thread ${threadId} does not exist.`);
   // Dismissing a comment as a design decision records it there and then.
-  if (thread.dismissal === "design_decision" && thread.decisionId) return null;
+  if (thread.dismissal === "design_decision" && thread.decisionId) {
+    await considered(deps, threadId);
+    return null;
+  }
 
   const learned = await alreadyLearned(deps, threadId);
-  if (learned) return learned;
+  if (learned) {
+    const repository = await requireRepository(deps.db, learned.repositoryId);
+    await syncDecisionFiles(deps, repository, [learned.id], `Record decision: ${learned.title}`);
+    await considered(deps, threadId);
+    return learned;
+  }
+  const { learnedAt } = thread;
+  if (
+    learnedAt !== null &&
+    learnedAt >= (thread.settledAt ?? 0) &&
+    learnedAt >= thread.lastMessageAt
+  ) {
+    return null;
+  }
+  const decision = await learnAnew(deps, thread);
+  await considered(deps, threadId);
+  return decision;
+}
+
+/** Asks the model what the thread decided, and writes it to the record. */
+async function learnAnew(
+  deps: DecisionsDeps,
+  thread: typeof schema.threads.$inferSelect,
+): Promise<Decision | null> {
+  const threadId = thread.id;
 
   const all = await deps.db
     .select()

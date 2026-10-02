@@ -25,22 +25,32 @@ export function similarity(a: number[], b: number[]): number {
   return Math.min(1, Math.max(0, dot));
 }
 
-/** One unit-length vector per text, in order. */
+/**
+ * How many texts one embedding call carries. Workers AI documents no cap per
+ * call; this keeps a rebuild of a large record to calls of a modest size.
+ */
+export const EMBED_BATCH = 64;
+
+/** One unit-length vector per text, in order, in calls of at most `EMBED_BATCH` texts. */
 export async function embedTexts(
   deps: Pick<DecisionsDeps, "models">,
   model: string,
   texts: string[],
   attribution: ModelAttribution,
 ): Promise<number[][]> {
-  if (texts.length === 0) return [];
-  const result = await deps.models.embed({ model, texts, attribution });
-  if (result.vectors.length !== texts.length) {
-    throw new ModelError(
-      "invalid_output",
-      `asked ${model} for ${texts.length} embeddings and got ${result.vectors.length}`,
-    );
+  const vectors: number[][] = [];
+  for (let start = 0; start < texts.length; start += EMBED_BATCH) {
+    const batch = texts.slice(start, start + EMBED_BATCH);
+    const result = await deps.models.embed({ model, texts: batch, attribution });
+    if (result.vectors.length !== batch.length) {
+      throw new ModelError(
+        "invalid_output",
+        `asked ${model} for ${batch.length} embeddings and got ${result.vectors.length}`,
+      );
+    }
+    vectors.push(...result.vectors.map(unit));
   }
-  return result.vectors.map(unit);
+  return vectors;
 }
 
 /**
