@@ -65,6 +65,40 @@ cf -X POST "$API/$NS/tokens" -d '{"repo":"gitflare-spike-a-fork1","scope":"write
 ./git-tests.sh /path/to/env tokens forks events raw   # `tokens` again, now that T_SHORT has expired
 ```
 
+### Run by hand, not part of `git-tests.sh`
+
+These were typed during the first pass and are recorded here as run; the script does not repeat them. `B` is the script's helper: `B() { git -c http.extraHeader="Authorization: Bearer $1" "${@:2}"; }`.
+
+Forks with the flag set each way, then compare the refs with the parent's (each fork's response carries its initial `token`):
+
+```sh
+cf -X POST "$API/$NS/repos/gitflare-spike-a-main/fork" -d '{"name":"gitflare-spike-a-fork2","default_branch_only":false}'
+cf -X POST "$API/$NS/repos/gitflare-spike-a-main/fork" -d '{"name":"gitflare-spike-a-fork3","default_branch_only":true}'
+B "$T_FORK2_INITIAL" ls-remote "$FORK2_REMOTE"
+B "$T_FORK3_INITIAL" ls-remote "$FORK3_REMOTE"
+```
+
+`fork4` and `fork5` are the same check through the binding (`/binding/fork` in step 5, with the flag unset and `true`); mint a token for each over REST and `ls-remote` it.
+
+The same branch pushed with three different tokens, to compare the events: `T_WRITE` (every push in the script), the repository's initial token from the create response, and the tokens the Worker mints through the binding for its own pushes (step 5):
+
+```sh
+git commit --allow-empty -m "pushed with initial token" && B "$T_INITIAL" push "$REMOTE" main
+```
+
+A new branch on a history longer than 20 commits (the "20 of 21" case): after the `events` stage, in the fork clone, `git fetch upstream && git checkout -B ff upstream/main`, commit, `git push origin ff`.
+
+Deleting a parent, and the deleted repository's token:
+
+```sh
+cf -X DELETE "$API/$NS/repos/<parent>"            # 202
+cf "$API/$NS/repos/<parent>"                      # 10200: Repository not found
+B "$T_FORK" clone "$FORK_REMOTE" orphan && git -C orphan fsck
+B "$T_WRITE" ls-remote "$REMOTE"                  # the deleted parent's token: 403
+```
+
+The commit messages `E1` … `E9` in the findings note come from that first, hand-typed pass; the script's `events` stage is the same sequence tidied up.
+
 ## 4. Read the recorded events
 
 Each event starts one Workflow instance whose `params` is the event. List and read them:
@@ -121,7 +155,20 @@ for i in $(seq 1 20); do for j in 1 2 3 4 5; do echo "// change $i.$j" >> pkg0$(
 git -c http.extraHeader="Authorization: Bearer $T_BIG" push "$BIG_REMOTE" main
 ```
 
-Then repeat the step 5 calls with `gitflare-spike-a-big` and a fork of it.
+`gitflare-spike-a-big` is created first like any other repository; `BIG_REMOTE` and `T_BIG` are the `remote` and `token` of that response:
+
+```sh
+cf -X POST "$API/$NS/repos" -d '{"name":"gitflare-spike-a-big"}'
+```
+
+After the push, fork it through the Worker and mint a token for the fork:
+
+```sh
+call /binding/fork '{"repo":"gitflare-spike-a-big","name":"gitflare-spike-a-bigfork"}'
+cf -X POST "$API/$NS/tokens" -d '{"repo":"gitflare-spike-a-bigfork","scope":"write","ttl":86400}'
+```
+
+Then repeat the step 5 calls with `gitflare-spike-a-big` as the parent and `gitflare-spike-a-bigfork` as the fork, pushing the `ff`, `tm` and `relay` branches to the fork from a clone of it (a blobless clone with a sparse checkout of a few files is enough).
 
 ## 7. Storage and operation counts
 
@@ -133,7 +180,8 @@ GraphQL Analytics (`https://api.cloudflare.com/client/v4/graphql`), datasets `ar
 cd worker
 npx wrangler workflows delete gitflare-spike-a-push-events
 npx wrangler delete --name gitflare-spike-a-git --force
-for repo in main ro fork1 big bigfork; do cf -X DELETE "$API/$NS/repos/gitflare-spike-a-$repo"; done
+cf "$API/$NS/repos"   # list what is there, then delete every one of them:
+for repo in main ro fork1 fork2 fork3 fork4 fork5 big bigfork; do cf -X DELETE "$API/$NS/repos/gitflare-spike-a-$repo"; done
 ```
 
-No route deletes a namespace; the empty namespace stays.
+Then, once the namespace is empty, `cf -X DELETE "$API/$NS"` — an undocumented route that returned `204` and removed it.

@@ -8,15 +8,15 @@ Verdicts: `works`, `fails`, `partial`, `not tested`.
 
 ## What this changes
 
-1. **A Worker can write to an existing repository and merge a fork without a container, and the cheap way does not clone.** Committing one file through binding reads plus a hand-built pack costs 17–47 ms CPU whatever the repository size; a fast-forward merge done by relaying the fork's pack to the parent costs 5–15 ms CPU. The container fallback is no longer needed for decision files or for fast-forward merges. A true merge with isomorphic-git works on a 37 MiB repository but takes 7–14 s CPU and holds 75–124 MB in memory, so it is at the edge of a 128 MB isolate: keep the container (or a tree merge built on binding reads) for true merges of anything larger than a few tens of megabytes.
-2. **`read_only` does not stop a push, and the server refuses nothing a write token asks for.** A repository created with `read_only: true` accepted two pushes. Non-fast-forward updates, force pushes and ref deletions are all accepted. The only protection for the main repository is that nobody but gitflare holds a write token for it — the per-session-fork design stands, and `read_only` cannot be part of it.
-3. **A fork copies every ref, and `default_branch_only` / `defaultBranchOnly` changes nothing.** Forks made with the flag unset, `true` and `false`, over REST and through the binding, all contained every branch, tag, note and `refs/entire/*` ref of the parent. A per-session fork is a full copy; fork time grows with size (2 s for a tiny repository, 6.6 s for 37 MiB). A fork of a sibling transcript repository would carry every checkpoint.
+1. **A Worker can write to an existing repository and merge a fork without a container, and the cheap way does not clone.** Committing one file through binding reads plus a hand-built pack cost 17–47 ms CPU over four runs, the same on a 37 MiB repository as on a tiny one; a fast-forward merge done by relaying the fork's pack to the parent cost 5 ms and 15 ms CPU in its two successful runs. For decision files and for small fast-forward merges the container fallback was not needed. A true merge with isomorphic-git on the 37 MiB repository worked once, at 8.9 s CPU with 75 MB held in the in-memory filesystem; the same clone-and-fetch with a checkout held 124 MB. No limit was hit, so where it stops fitting is not measured — but memory held is about twice the pack size, which argues for keeping the container (or a tree merge built on binding reads) for true merges of larger repositories.
+2. **`read_only` does not stop a push, and the server did not refuse any history rewrite a write token asked for.** A repository created with `read_only: true` accepted two pushes. Non-fast-forward updates, force pushes and deletions of non-default refs were all accepted; the one refusal seen was a stale old value (`ng … stale ref`). Deleting the default branch was not tried. The only protection for the main repository is that nobody but gitflare holds a write token for it — the per-session-fork design stands, and `read_only` cannot be part of it.
+3. **A fork copies every ref, and `default_branch_only` / `defaultBranchOnly` changes nothing.** Forks made with the flag unset, `true` and `false`, over REST and through the binding, all contained every branch, tag, note and `refs/entire/*` ref of the parent. A per-session fork carries the full history and is reported as its own repository at nearly the parent's size (41 MB next to 42.7 MB in the storage analytics; whether the bytes are physically shared or billed twice was not observed); fork time grows with size (2 s for a tiny repository, 6.6 s for 37 MiB). A fork of a sibling transcript repository would carry every checkpoint.
 4. **Push events are a "this ref moved" signal and nothing more.** One event per ref, delivered out of order, with no actor or token id. The `commits` array is a first-parent walk capped at 20: a new branch lists the whole history, a merge lists only the merge commit, non-branch refs list nothing, and `totalCommitsCount` stops at 21. Take `ref`, `before`, `after` and the repository name from the event; read everything else from the repository, and treat the event as a prompt to re-read the ref.
 5. **Non-branch refs work end to end.** `refs/entire/checkpoints/*`, `refs/notes/*`, tags and arbitrary namespaces are accepted, listed, fetchable by refspec, and produce push events. The `git-branch` fallback for the capture client is not needed. The binding cannot resolve such a ref by name, but reads it by the commit SHA the event carries.
 6. **Blobless partial clone works** (`--filter=blob:none`, protocol v2 only). The shallow-fetch-only plan can be relaxed; `--filter=tree:0` fails.
 7. **A namespace-only `triggers.events` filter covers forks created after deploy.** The Wrangler shape in `artifacts.md` is right; the shape in Cloudflare's guide is rejected.
 8. **The binding's `log()` takes a short branch or tag name or a full SHA — not `refs/heads/main`, not `HEAD`.** `info()` reports no size, and `lastPushAt` stayed `null` after dozens of pushes.
-9. **Token details differ from the docs.** Tokens are `art_v2_…`, not `art_v1_…`; the `?expires=` suffix is ignored by the server, which enforces expiry from its own record. No atomic push and no push options, so a push cannot carry an actor.
+9. **Token details differ from the docs.** Every token minted in this one `eu` namespace was `art_v2_e_…`, not `art_v1_…` (other namespaces were not tried); the `?expires=` suffix is ignored by the server, which enforces expiry from its own record. No atomic push and no push options, so a push cannot carry an actor.
 
 ## 1. Plain git against Artifacts
 
@@ -133,7 +133,7 @@ Run: `git-tests.sh <env> forks`, the REST fork calls in the README, and `POST /b
 | binding `fork(name)` | all |
 | binding `fork(name, { defaultBranchOnly: true })` | all |
 
-`defaultBranchOnly` — fails (no effect). The fork response adds `objects` (33, 120, 19 in three runs); `info()` on the fork has `source: "artifacts:gitflare-spike-a-eu/gitflare-spike-a-main"`.
+`defaultBranchOnly` — fails (no effect). The fork response carries an initial `token` like a create response: for two forks that token listed the fork's refs, and its `?expires=` suffix was 24 h after creation; its scope and whether it appears in the fork's token list were not checked. The fork response adds `objects` (33, 120, 19 in three runs); `info()` on the fork has `source: "artifacts:gitflare-spike-a-eu/gitflare-spike-a-main"`.
 
 **Timing.** The REST call and the binding call both returned only when the fork was usable: an `info()` immediately afterwards succeeded and the list showed `status: "ready"`. No `FORK_IN_PROGRESS` or 409 was seen. Small repository: 2.0–2.9 s. The 37 MiB repository: 6.6 s. Time growing with size suggests a copy, not a shared object store.
 
@@ -145,7 +145,7 @@ Run: `git-tests.sh <env> forks`, the REST fork calls in the README, and `POST /b
 
 **Deleting the parent — the fork survives.** After `DELETE` on the parent (202), the fork still cloned in full and passed `git fsck`; its `source` still names the deleted parent.
 
-**Size reporting — partial.** Neither `GET …/repos/:name`, the repository list, the namespace record nor the binding's `info()` carries a size. The GraphQL Analytics API has a dataset `artifactsStorageAdaptiveGroups` with `max { repositorySizeBytes }` by `repositoryName` and `repositoryNamespace`. It reports each fork as its own row:
+**Size reporting — partial** (analytics only, 15-minute samples, late). Neither `GET …/repos/:name`, the repository list, the namespace record nor the binding's `info()` carries a size. The GraphQL Analytics API has a dataset `artifactsStorageAdaptiveGroups` with `max { repositorySizeBytes }` by `repositoryName` and `repositoryNamespace`. It reports each fork as its own row:
 
 ```txt
 2026-10-02T16:45:00Z gitflare-spike-a-main  270336
@@ -153,7 +153,16 @@ Run: `git-tests.sh <env> forks`, the REST fork calls in the README, and `POST /b
 2026-10-02T16:45:00Z gitflare-spike-a-fork2 270336
 ```
 
-270,336 bytes is the floor for a repository of a few kilobytes. The dataset is sampled, not live: 25 minutes after the 37 MiB repository and its fork were created, the 16:45 sample was still the only one published, so whether the large fork is charged in full had not been observed when this was written.
+270,336 bytes is the floor for a repository of a few kilobytes. Later samples, for the 36.6 MiB repository and the fork made from it with no pushes of its own beyond three small commits:
+
+```txt
+2026-10-02T17:00:00Z gitflare-spike-a-big     42663936
+2026-10-02T17:00:00Z gitflare-spike-a-bigfork 40992768
+2026-10-02T17:45:00Z gitflare-spike-a-big     42758144
+2026-10-02T17:45:00Z gitflare-spike-a-bigfork 41107456
+```
+
+**A fork is reported as a separate repository at nearly its parent's size**: 41 MB for the fork next to 42.7 MB for its parent. This is one analytics field, `repositorySizeBytes`. It shows what is reported per repository; it does not show whether the two share objects physically, and nothing was billed during the test (billing starts 2026-10-14), so whether a fork is charged in full is still open. Plan as if it is. The dataset has one sample per repository every 15 minutes and is published late (the 17:00 sample was not yet visible at 17:10). Repositories deleted at 17:06 still had rows in the 17:45 sample, so a deletion does not leave the storage figures at once; how long it takes was not observed.
 
 What it means: a per-session fork is a complete, independent repository, counted on its own. Deleting forks after merge or abandonment is required, as decided. Because a fork copies all refs, forking a sibling transcript repository would copy every checkpoint; sessions should fork only the code repository. The pre-import size check has to be done by gitflare (measure the clone), and the analytics dataset is the only way to read stored size afterwards — it is sampled, not live.
 
@@ -265,7 +274,7 @@ Small repository (a few kB, about 60 commits):
 | --- | --- | --- | --- | --- |
 | Commit, checkout | works | 1,100 ms | 141 ms | 3 kB |
 | Commit, plumbing | works | 938 ms | 64 ms | 3 kB |
-| Commit, thin (5 objects, 533-byte pack, 3 binding reads) | works | 451 ms | 24 ms | — |
+| Commit, thin, 2 runs (5 objects / 533-byte pack / 3 binding reads; 3 objects / 351 bytes / 1 read) | works | 451 ms, 396 ms | 24 ms, 17 ms | — |
 | Fast-forward merge of a fork branch, depth 50 | works | 1,060 ms | 114 ms | 21 kB |
 | True merge of a fork branch, depth 50 | works | 1,823 ms | 269 ms | 22 kB |
 | Either merge at depth 1 | fails | 893 ms | 53 ms | `MergeNotSupportedError: Merges with conflicts are not supported yet.` |
@@ -276,7 +285,7 @@ Large repository (3,000 files, 48 MB working tree, 36.6 MiB pack, 21+ commits):
 
 | Operation | Verdict | Wall | CPU | In-memory filesystem |
 | --- | --- | --- | --- | --- |
-| Commit, thin (6 objects, 2 kB pack, 4 binding reads) | works | 601–682 ms | 26–47 ms | — |
+| Commit, thin, 2 runs (6 objects, 2 kB pack, 4 binding reads) | works | 682 ms, 601 ms | 47 ms, 26 ms | — |
 | Commit, plumbing, depth 1 | works | 8,343 ms | 5,092 ms | 36.9 MB |
 | Commit, checkout, depth 1 | works | 9,365 ms | 5,386 ms | 85.7 MB |
 | Fast-forward merge, depth 10, no checkout | works | 16,139 ms | 8,162 ms | 75.2 MB |
@@ -285,14 +294,14 @@ Large repository (3,000 files, 48 MB working tree, 36.6 MiB pack, 21+ commits):
 | Clone with checkout plus fork fetch, depth 10 (branch already merged, so no merge work) | works | 22,952 ms | 14,113 ms | 123.6 MB |
 | Fast-forward by pack relay (7 objects, 26 kB pack) | works | 1,036 ms | 15 ms | — |
 
-Every result was checked from outside with real git: clone, `git log --graph`, `git fsck` clean, merge commits with two parents.
+Each row is a single run unless it says otherwise; nothing was repeated enough to give a spread. Every result was checked from outside with real git: clone, `git log --graph`, `git fsck` clean, merge commits with two parents.
 
 Observations:
 
-- **No limit was hit**, but the clone-based paths sit close to one. Fetching the fork's branch into the parent's clone downloaded a second full pack (75 MB after a 37 MB clone): isomorphic-git's shallow fetch from a second remote did not negotiate away what it already had. With a checkout on top, the filesystem alone held 123.6 MB in an isolate documented at 128 MB. It ran, but there is no headroom, and a repository twice this size would not fit.
+- **No limit was hit**, but the clone-based paths sit close to one. Fetching the fork's branch into the parent's clone downloaded a second full pack (75 MB after a 37 MB clone): isomorphic-git's shallow fetch from a second remote did not negotiate away what it already had. With a checkout on top, the filesystem alone held 123.6 MB in an isolate documented at 128 MB. It ran. Where it stops fitting was not measured; the filesystem held about twice the pack size without a checkout and more than three times with one.
 - **A merge needs history.** At depth 1 isomorphic-git finds no merge base and reports it as a conflict error. The depth has to reach the fork point; depth 10 and 50 were enough here, and how deep is enough is not knowable in advance without the fork point's distance.
-- **The thin commit does not grow with the repository**: its cost is the path depth (one `readTree` per directory) plus one small POST.
-- **The relay does not grow with the repository either**: `want <fork tip>` / `have <parent tip>` to the fork's `git-upload-pack` returned `ACK <parent tip>` and a pack of exactly the missing objects; that pack is sent unchanged to the parent's `git-receive-pack` with `<parent tip> <fork tip> refs/heads/main`. This only fast-forwards. The spike decides "is it a fast-forward" from the binding's first-parent `log()`, which is not a complete ancestry test.
+- **The thin commit cost the same on both repositories**: its work is the path depth (one `readTree` per directory) plus one small POST, and none of it touches the rest of the repository.
+- **The relay's cost followed the change, not the repository**, in the one large run (a 26 kB pack of 7 objects against a 37 MiB repository): `want <fork tip>` / `have <parent tip>` to the fork's `git-upload-pack` returned `ACK <parent tip>` and a pack of exactly the missing objects; that pack is sent unchanged to the parent's `git-receive-pack` with `<parent tip> <fork tip> refs/heads/main`. This only fast-forwards. The spike buffers the whole pack in memory, so a large change would need the two requests streamed into each other; that, and any pack larger than 26 kB, was not tested. The spike decides "is it a fast-forward" by looking for the parent tip in the binding's `log()` of the fork branch; `log()` is documented as following first parents only (not checked live), so that is not a complete ancestry test.
 - **A server quirk the relay had to work around**: without side-band, Artifacts ends the upload-pack reply with a flush-pkt (`0000`) after the pack's SHA-1 trailer. Its own receive-pack answers `500 Internal Server Error` when given those four extra bytes; with them trimmed it answers `unpack ok`.
 - `git-receive-pack` reports a stale old value as `ng refs/heads/main stale ref` (section 1), so the thin commit and the relay are safe against a concurrent writer: retry on `ng`.
 
@@ -300,9 +309,9 @@ Verdicts: commit into an existing repository — **works**. Fast-forward merge �
 
 What it means for the design:
 
-- Decision files in the sibling repository: write them with the thin path. No container, no clone, tens of milliseconds, independent of repository size. The "writer behind a port" stays, but its first implementation can be the Worker one.
-- The merge: if gitflare merges by fast-forward (rebase-and-fast-forward or squash produced elsewhere), the relay does it in a Worker at any repository size. A true merge commit in a Worker is viable only for small repositories; the container fallback from `artifacts.md` is still needed for it beyond a few tens of megabytes, unless a tree-level merge is built on binding reads (not attempted).
-- Whatever performs the merge must check fast-forward-ness itself and pass the expected old value; the server will accept anything else.
+- Decision files in the sibling repository: write them with the thin path. No container, no clone, tens of milliseconds on both repository sizes tested. The "writer behind a port" stays, but its first implementation can be the Worker one.
+- The merge: if gitflare merges by fast-forward (rebase-and-fast-forward or squash produced elsewhere), the relay did it in a Worker without reading the repository; it needs streaming before it can be trusted with a large change. A true merge commit in a Worker worked up to the 37 MiB tested; beyond that it is unmeasured, and because memory held runs at two to three times the pack size, the container fallback from `artifacts.md` should stay for larger repositories unless a tree-level merge is built on binding reads (not attempted).
+- Whatever performs the merge must check fast-forward-ness itself and pass the expected old value; the server accepted a non-descendant commit when the old value was right.
 
 ## 6. Reading through the binding
 
@@ -357,13 +366,18 @@ Run: `POST /binding/shapes` and `POST /binding/diff` on the Worker.
 
 `git diff --stat` on the same range reported the same 108 files. Calls were issued concurrently per directory level; no rate limit or subrequest limit was met.
 
-What it means: the list of changed files and both sides of each can be assembled from the binding without real git, in a couple of seconds for a 100-file change. The cost is one `readTree` per changed directory on each side, so it follows the size of the change, not of the repository. What the binding does not give: the textual hunks (run a diff library over the two blobs in the Worker), rename detection (compare blob hashes of added and deleted paths for exact renames; similarity is up to us), the merge base (walk `parents` from `readCommit`; `log()` is first-parent only), and the list of refs. Non-branch refs must be addressed by SHA — from the push event's `after`, or from gitflare's own index.
+What it means: the list of changed files and both sides of each can be assembled from the binding without real git, in a couple of seconds for a 100-file change. The cost is one `readTree` per changed directory on each side, so it follows the size of the change, not of the repository. What the binding does not give: the textual hunks (run a diff library over the two blobs in the Worker), rename detection (compare blob hashes of added and deleted paths for exact renames; similarity is up to us), the merge base (walk `parents` from `readCommit`; `log()` is documented as first-parent only, which was not checked live), and the list of refs. Non-branch refs must be addressed by SHA — from the push event's `after`, or from gitflare's own index.
 
 ## Other observations
 
-- **Operations counted.** `artifactsEventsAdaptiveGroups` for the namespace over the session: `read` 738, `pull` 55, `push` 48, `token_create` 42, `fork` 6, `create` 3, plus namespace calls and 11 errors — about 900 in total. Binding reads (`readTree`, `readBlob`, …) are counted as `read` events; whether they are billed operations is still not stated anywhere.
+- **Operations counted.** `artifactsEventsAdaptiveGroups` for the namespace over the whole session: `read` 745, `pull` 77, `push` 76, `token_create` 54, `delete` 8, `fork` 7, `create` 5, plus namespace calls and 16 errors — 994 in total. Binding reads (`readTree`, `readBlob`, …) are counted as `read` events; whether they are billed operations is still not stated anywhere.
 - **Repository delete** returns `202` with the repository id; a `GET` straight afterwards is `10200: Repository not found`.
+- **A namespace can be deleted**, though no document lists the route: `DELETE /accounts/<account-id>/artifacts/namespaces/gitflare-spike-a-eu` returned `204` once its repositories were gone, and the namespace list was empty afterwards. Not tried on a namespace that still had repositories.
 - In `wrangler tail`, the Workflow's invocations show `outcome: "canceled"` although every instance completed (`status: "complete"` over REST). Do not alert on that field.
+
+## Cleanup
+
+Everything created for these tests was deleted on 2026-10-02 and checked afterwards through the API: the Worker `gitflare-spike-a-git`, the Workflow `gitflare-spike-a-push-events`, twelve repositories (`gitflare-spike-a-main`, `-ro`, `-fork1` to `-fork5`, `-big`, `-bigfork`, `-rerun`, `-rerun-ro`, `-rerun-fork`) and the namespace `gitflare-spike-a-eu`. The final listing showed no Artifacts namespaces and no Workflows, and one Worker that predates the test. Nothing is left over.
 
 ## Not tested
 
