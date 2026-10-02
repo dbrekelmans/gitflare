@@ -15,7 +15,7 @@ export function FloatingCard({ className, ...props }: ComponentProps<"section">)
   return (
     <section
       className={cn(
-        "flex w-full max-w-card flex-col overflow-clip rounded-card border-[1.5px] border-border bg-ground shadow-floating",
+        "@container flex w-full max-w-card flex-col overflow-clip rounded-card border-[1.5px] border-border bg-ground shadow-floating",
         className,
       )}
       {...props}
@@ -86,9 +86,16 @@ export type FloatingCardClaimsProps = Omit<ComponentProps<"footer">, "children">
 
 /**
  * Footer claims strip: what was checked without you. The claims and the
- * escape hatch share one row. At the card's full width the claims sit on one
- * line and the aside wraps beside them; in a narrower column the claims wrap
- * too, rather than squeezing the aside into a sliver.
+ * escape hatch share one row once the card itself is 880px or wider
+ * (a container query against the `FloatingCard`, not the viewport — the
+ * card can sit in a wide window at a narrow column width). Below that the
+ * aside drops to its own line under the claims, rather than squeezing into
+ * a sliver.
+ *
+ * The breakpoint is 877, not 880: a container query measures the card's
+ * content box, and `FloatingCard`'s 1.5px border (1.5px per side, 3px
+ * total) is already gone from an 880px card's width before this footer
+ * ever sees it.
  */
 export function FloatingCardClaims({
   state,
@@ -100,7 +107,7 @@ export function FloatingCardClaims({
   return (
     <footer
       className={cn(
-        "flex items-center gap-s6 border-t border-border bg-surface px-s8 py-s5",
+        "flex flex-wrap items-center gap-s6 border-t border-border bg-surface px-s8 py-s5 @min-[877px]:flex-nowrap",
         className,
       )}
       {...props}
@@ -114,7 +121,7 @@ export function FloatingCardClaims({
         {children}
       </div>
       {aside != null && (
-        <span className="type-meta min-w-[200px] flex-1 text-right text-pretty text-muted-foreground">
+        <span className="type-meta w-full text-right text-pretty text-muted-foreground @min-[877px]:w-auto @min-[877px]:min-w-[200px] @min-[877px]:flex-1">
           {aside}
         </span>
       )}
