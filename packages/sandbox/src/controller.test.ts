@@ -1,7 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ForgeError } from "@gitflare/core";
-import type { EgressGrant, ProcessStatus, SandboxStartOptions } from "@gitflare/core/ports";
+import {
+  type EgressGrant,
+  EXIT_NOT_LAUNCHED,
+  type ProcessStatus,
+  type SandboxStartOptions,
+} from "@gitflare/core/ports";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { SandboxController, type SandboxControllerOptions } from "./controller";
 import { hasSessions, LocalContainer, localEnvironment, MemoryStorage } from "./local-container";
@@ -271,6 +276,34 @@ describe("exec", () => {
     expect(error.code).toBe("unavailable");
   });
 
+  it("reports a command the runtime cannot launch as a result, not as a lost sandbox", async () => {
+    const { controller, scratch } = await started();
+    // The runtime itself refuses these: there is no shell in between.
+    const missing = await controller.exec(["no-such-command-gitflare", "--version"]);
+    expect(missing.exitCode).toBe(EXIT_NOT_LAUNCHED);
+    expect(missing.stderr).toContain("no-such-command-gitflare");
+
+    for (const timeoutSeconds of [undefined, 5]) {
+      const badCwd = await controller.exec(["true"], {
+        cwd: join(scratch, "no-such-directory"),
+        timeoutSeconds,
+      });
+      expect([timeoutSeconds, badCwd.exitCode]).toEqual([timeoutSeconds, EXIT_NOT_LAUNCHED]);
+    }
+    expect(await controller.isRunning()).toBe(true);
+    expect((await controller.exec(["true"])).exitCode).toBe(0);
+  });
+
+  it("still reports a lost sandbox when the runtime refuses because the container is gone", async () => {
+    const { container, controller } = await started();
+    container.exec = async () => {
+      container.running = false;
+      throw new Error("Container is not running");
+    };
+    expect((await failure(controller.exec(["true"]))).code).toBe("unavailable");
+    expect((await failure(controller.spawn("build", ["true"]))).code).toBe("unavailable");
+  });
+
   it("is unavailable before the container starts", async () => {
     const { controller } = setup();
     expect((await failure(controller.exec(["true"]))).code).toBe("unavailable");
@@ -370,6 +403,37 @@ describe("background processes", () => {
     expect((await controller.readLog("typo", "stderr", 0)).text).toContain(
       "no-such-command-gitflare",
     );
+  });
+
+  it("reports a process the runtime cannot launch as exited with EXIT_NOT_LAUNCHED", async () => {
+    const { controller, scratch, scheduled } = await started();
+    await controller.spawn("build", ["true"], { cwd: join(scratch, "no-such-directory") });
+
+    expect(await controller.processStatus("build")).toEqual({
+      state: "exited",
+      exitCode: EXIT_NOT_LAUNCHED,
+    });
+    expect((await controller.readLog("build", "stderr", 0)).text).toContain("no-such-directory");
+    expect(scheduled).toEqual([]);
+    // The name is free again.
+    await controller.spawn("build", ["true"]);
+    expect(await exited(controller, "build")).toEqual({ state: "exited", exitCode: 0 });
+  });
+
+  it("reports a process whose launcher never recorded itself as not launched, after a grace period", async () => {
+    const { controller, processRoot } = await started({ launchGraceMs: 300 });
+    // The launcher cannot create its directory, so it never writes a file.
+    writeFileSync(processRoot, "in the way");
+
+    await controller.spawn("build", ["sleep", "30"]);
+
+    // Until the grace period is over, it may simply not have got that far.
+    expect(await controller.processStatus("build")).toEqual({ state: "running" });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(await controller.processStatus("build")).toEqual({
+      state: "exited",
+      exitCode: EXIT_NOT_LAUNCHED,
+    });
   });
 
   it("reports a process whose launcher was killed as killed", async () => {
