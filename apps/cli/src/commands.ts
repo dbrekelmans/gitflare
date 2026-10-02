@@ -2,6 +2,7 @@ import { capture } from "./commands/capture.ts";
 import { clone } from "./commands/clone.ts";
 import { credential } from "./commands/credential.ts";
 import { login } from "./commands/login.ts";
+import { logout } from "./commands/logout.ts";
 import { start } from "./commands/start.ts";
 import { status } from "./commands/status.ts";
 import type { CliContext } from "./context.ts";
@@ -23,6 +24,12 @@ export const commands: Command[] = [
     summary: "Sign in to a gitflare deployment through its Access login.",
     usage: "gitflare login [--cloudflared] <forge-url>",
     run: login,
+  },
+  {
+    name: "logout",
+    summary: "Forget the login for a gitflare deployment.",
+    usage: "gitflare logout [forge-url]",
+    run: logout,
   },
   {
     name: "credential",

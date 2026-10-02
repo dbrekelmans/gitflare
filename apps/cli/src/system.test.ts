@@ -45,6 +45,17 @@ describe("the built file", () => {
         body += chunk;
       });
       request.on("end", () => {
+        if (request.method === "GET") {
+          // The repository, for `capture enable`.
+          response.writeHead(200, { "content-type": "application/json" }).end(
+            JSON.stringify({
+              repository: { slug: "atlas-web", defaultBranch: "main" },
+              remote: `${GIT_HOST}/git/ns/atlas-web.git`,
+              contextRemote: `${GIT_HOST}/git/ns/atlas-web.context.git`,
+            }),
+          );
+          return;
+        }
         const { remote } = JSON.parse(body) as { remote: string };
         asked.push({ remote, authorization: request.headers.authorization });
         const name = new URL(remote).pathname
@@ -70,6 +81,12 @@ describe("the built file", () => {
       `#!/bin/sh\nexec "${process.execPath}" "${bundle}" "$@"\n`,
     );
     chmodSync(join(bin, "gitflare"), 0o755);
+    // Entire's CLI, doing what the reviewer saw `entire enable` do: write the agent's settings.
+    writeFileSync(
+      join(bin, "entire"),
+      `#!/bin/sh\nmkdir -p .claude && printf '{"hooks":{}}\\n' > .claude/settings.json\n`,
+    );
+    chmodSync(join(bin, "entire"), 0o755);
     const secrets = join(home, "secrets.json");
     writeFileSync(
       secrets,
@@ -139,6 +156,33 @@ describe("the built file", () => {
       outside,
     );
     expect(filled).toContain("password=token-for-atlas-web\n");
+  });
+
+  it("turns capture on in a repository that does not commit the agent's settings", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "gitflare-cli-capture-"));
+    await git(["init", "--quiet", "--initial-branch=main"], "", repo);
+    mkdirSync(join(repo, ".entire"));
+    writeFileSync(join(repo, ".entire", "settings.json"), "{}\n");
+    await git(["add", "."], "", repo);
+    await git(
+      ["-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "--quiet", "-m", "init"],
+      "",
+      repo,
+    );
+    await git(["config", "gitflare.deployment", forge], "", repo);
+    await git(["config", "gitflare.repository", "atlas-web"], "", repo);
+
+    const enabled = await new Promise<{ code: number; stderr: string }>((resolve) => {
+      execFile(
+        join(home, "bin", "gitflare"),
+        ["capture", "enable"],
+        { cwd: repo, env },
+        (error, _o, stderr) => resolve({ code: error ? Number(error.code ?? 1) : 0, stderr }),
+      );
+    });
+
+    expect(enabled).toEqual({ code: 0, stderr: "" });
+    expect(await git(["status", "--porcelain"], "", repo)).toBe("?? .claude/\n");
   });
 
   it("stays silent for other hosts, even as a helper for every host", async () => {

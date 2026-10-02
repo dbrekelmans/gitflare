@@ -10,11 +10,18 @@ export async function login(ctx: CliContext, args: string[]): Promise<number> {
   if (!target || rest.length > 0) throw new UsageError();
   const forge = forgeOrigin(target);
 
+  let stored = true;
   if (viaCloudflared) await loginWithCloudflared(ctx, forge);
-  else await loginWithOAuth(ctx, forge);
+  else stored = await loginWithOAuth(ctx, forge);
 
   // The login is only worth keeping if the forge accepts it.
-  const me = await forgeRequest<MeView>(ctx, forge, httpRoutes.me);
+  let me: MeView;
+  try {
+    me = await forgeRequest<MeView>(ctx, forge, httpRoutes.me);
+  } catch (error) {
+    if (stored) await ctx.secrets.delete(forge);
+    throw error;
+  }
 
   // The forge a command asks when it runs outside a clone.
   const saved = await runGit(ctx, ["config", "--global", "gitflare.deployment", forge]);

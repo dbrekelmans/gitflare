@@ -3,6 +3,7 @@ import { forkRepoName } from "@gitflare/core";
 import { demo } from "@gitflare/testing/demo";
 import { describe, expect, it } from "vitest";
 import { createPkce } from "./auth.ts";
+import { branchName } from "./commands/start.ts";
 import { run } from "./run.ts";
 import { createFakeCli, type FakeCli } from "./testing/fake-context.ts";
 import { FORGE, GIT_HOST } from "./testing/fake-forge.ts";
@@ -82,13 +83,39 @@ describe("gitflare login", () => {
     expect(cli.secrets.size).toBe(0);
   });
 
-  it("names the fallback when the deployment has no Managed OAuth", async () => {
+  it.each([
+    ["metadata without a registration endpoint (the live spike)", "401"],
+    ["a redirect with no metadata (the documented answer)", "302"],
+  ] as const)(
+    "names the fallback when the deployment has no Managed OAuth: %s",
+    async (_, answer) => {
+      const cli = createFakeCli();
+      cli.forge.managedOAuth = false;
+      cli.forge.withoutManagedOAuth = answer;
+      expect(await run(cli.ctx, ["login", FORGE])).toBe(1);
+      expect(cli.err()).toContain(`gitflare login --cloudflared ${FORGE}`);
+      expect(cli.opened).toEqual([]);
+      expect(cli.secrets.size).toBe(0);
+    },
+  );
+
+  it("names the forge as the resource when it registers", async () => {
+    const cli = await signedIn();
+    expect(cli.forge.registrations).toMatchObject([{ resource: FORGE }]);
+  });
+
+  it("keeps no login the forge refuses", async () => {
     const cli = createFakeCli();
     cli.forge.managedOAuth = false;
-    expect(await run(cli.ctx, ["login", FORGE])).toBe(1);
-    expect(cli.err()).toContain(`gitflare login --cloudflared ${FORGE}`);
-    expect(cli.opened).toEqual([]);
+    cli.forge.cloudflaredToken = "the-forge-wants-this";
+    cli.programs.set("cloudflared", (args) => ({
+      exitCode: 0,
+      stdout: args[1] === "token" ? "cloudflared-has-this\n" : "",
+      stderr: "",
+    }));
+    expect(await run(cli.ctx, ["login", "--cloudflared", FORGE])).toBe(1);
     expect(cli.secrets.size).toBe(0);
+    expect(cli.git.global).toEqual([]);
   });
 
   it("signs in through cloudflared when asked to, and asks it for the token on every call", async () => {
@@ -136,6 +163,25 @@ describe("gitflare login", () => {
     expect(second).not.toBe(first);
 
     // The first refresh token is dead; only the stored replacement can do this.
+    cli.advance(16 * 60_000);
+    expect(await run(cli.ctx, ["status"])).toBe(0);
+  });
+
+  it("lets two helpers refresh at once, though the refresh token rotates", async () => {
+    const cli = await cloned();
+    cli.advance(16 * 60_000);
+    cli.forge.holdRefreshes(2);
+
+    cli.stdin(asks(remote(repo)));
+    const [one, two] = await Promise.all([
+      run(cli.ctx, ["credential", "get"]),
+      run(cli.ctx, ["credential", "get"]),
+    ]);
+
+    expect(cli.err()).toBe("");
+    expect([one, two]).toEqual([0, 0]);
+    expect(cli.out().match(/password=/g)).toHaveLength(2);
+    // What the keychain holds still works.
     cli.advance(16 * 60_000);
     expect(await run(cli.ctx, ["status"])).toBe(0);
   });
@@ -189,7 +235,7 @@ describe("gitflare credential", () => {
     expect(await run(cli.ctx, ["start", "Tidy the invite form"])).toBe(0);
     const fork = cli.git.repos
       .get(CLONE)
-      ?.remotes.get(cli.git.values(CLONE, "branch.main.pushRemote")[0] ?? "");
+      ?.remotes.get(cli.git.values(CLONE, "branch.tidy-the-invite-form.pushRemote")[0] ?? "");
     expect(fork).toMatch(new RegExp(`/${repo}\\.fork\\.`));
 
     const answer = await credentialFor(cli, fork as string);
@@ -314,15 +360,50 @@ describe("gitflare start", () => {
     ]);
     expect(cli.slept).toEqual([2000, 2000, 2000, 2000]);
 
-    const [sessionId] = cli.git.values(CLONE, "branch.main.gitflareSession");
-    const [pushRemote] = cli.git.values(CLONE, "branch.main.pushRemote");
+    const branch = "tidy-the-invite-form";
+    const [sessionId] = cli.git.values(CLONE, `branch.${branch}.gitflareSession`);
+    const [pushRemote] = cli.git.values(CLONE, `branch.${branch}.pushRemote`);
     expect(cli.git.repos.get(CLONE)?.remotes.get(pushRemote as string)).toBe(
       remote(forkRepoName(repo, sessionId as `ses_${string}`)),
     );
     expect(cli.git.repos.get(CLONE)?.remotes.get("origin")).toBe(remote(repo));
     expect(cli.out()).toContain(
-      'Session "Tidy the invite form" is ready. Pushes from main go to its fork',
+      `Session "Tidy the invite form" is ready. Pushes from ${branch} go to its fork`,
     );
+  });
+
+  it("leaves the default branch for a new one, so main keeps following the forge", async () => {
+    const cli = await cloned();
+    const clone = cli.git.repos.get(CLONE);
+    clone?.branches.add("tidy-the-invite-form");
+
+    expect(await run(cli.ctx, ["start", "Tidy the invite form"])).toBe(0);
+
+    expect(clone?.branch).toBe("tidy-the-invite-form-2");
+    expect(cli.err()).toContain("main stays as the forge has it");
+    expect(cli.git.values(CLONE, "branch.main.pushRemote")).toEqual([]);
+    expect(cli.git.values(CLONE, "branch.main.gitflareSession")).toEqual([]);
+    expect(cli.git.values(CLONE, "branch.tidy-the-invite-form-2.pushRemote")).toHaveLength(1);
+  });
+
+  it("stays on a branch that is not the default", async () => {
+    const cli = await cloned();
+    const clone = cli.git.repos.get(CLONE) as { branch: string | null; branches: Set<string> };
+    clone.branch = "invite-form";
+    clone.branches.add("invite-form");
+
+    expect(await run(cli.ctx, ["start", "Tidy the invite form"])).toBe(0);
+
+    expect(clone.branch).toBe("invite-form");
+    expect(clone.branches).not.toContain("tidy-the-invite-form");
+    expect(cli.git.values(CLONE, "branch.invite-form.pushRemote")).toHaveLength(1);
+  });
+
+  it("names a branch from any title", () => {
+    expect(branchName("Tidy the invite form")).toBe("tidy-the-invite-form");
+    expect(branchName("  Réduire l'écart: 2×  ")).toBe("reduire-l-ecart-2");
+    expect(branchName("日本語")).toBe("session");
+    expect(branchName("x".repeat(80))).toHaveLength(48);
   });
 
   it("gives up waiting after five minutes, and a second run waits for the same fork", async () => {
@@ -332,14 +413,14 @@ describe("gitflare start", () => {
     expect(await run(cli.ctx, ["start", "Slow fork"])).toBe(1);
     expect(cli.err()).toContain("Run `gitflare start` again to keep waiting.");
     expect(cli.slept.reduce((sum, ms) => sum + ms, 0)).toBe(5 * 60_000);
-    expect(cli.git.values(CLONE, "branch.main.pushRemote")).toEqual([]);
-    const [sessionId] = cli.git.values(CLONE, "branch.main.gitflareSession");
+    expect(cli.git.values(CLONE, "branch.slow-fork.pushRemote")).toEqual([]);
+    const [sessionId] = cli.git.values(CLONE, "branch.slow-fork.gitflareSession");
     expect(sessionId).toMatch(/^ses_/);
 
     cli.forge.finishForks();
     expect(await run(cli.ctx, ["start"])).toBe(0);
-    expect(cli.git.values(CLONE, "branch.main.gitflareSession")).toEqual([sessionId]);
-    expect(cli.git.values(CLONE, "branch.main.pushRemote")).toHaveLength(1);
+    expect(cli.git.values(CLONE, "branch.slow-fork.gitflareSession")).toEqual([sessionId]);
+    expect(cli.git.values(CLONE, "branch.slow-fork.pushRemote")).toHaveLength(1);
     expect(cli.forge.requests.filter((request) => request.url.endsWith("/sessions"))).toHaveLength(
       1,
     );
@@ -396,6 +477,17 @@ describe("gitflare capture enable", () => {
     expect([...modified].sort()).toEqual([".claude/settings.json", ".entire/settings.json"]);
   });
 
+  it("leaves alone a settings file the repository does not commit and enabling created", async () => {
+    const cli = await cloned();
+    const clone = cli.git.repos.get(CLONE);
+    clone?.committed.delete(".claude/settings.json");
+    entire(cli, () => clone?.untracked.add(".claude/settings.json"));
+
+    expect(await run(cli.ctx, ["capture", "enable"])).toBe(0);
+    expect(cli.err()).toBe("");
+    expect([...(clone?.untracked ?? [])]).toEqual([".claude/settings.json"]);
+  });
+
   it("says where to get the Entire CLI when it is not installed", async () => {
     const cli = await cloned();
     expect(await run(cli.ctx, ["capture", "enable"])).toBe(1);
@@ -428,6 +520,28 @@ describe("gitflare capture enable", () => {
   });
 });
 
+describe("gitflare logout", () => {
+  it("forgets the login and the forge it was for", async () => {
+    const cli = await signedIn();
+    cli.clear();
+    expect(await run(cli.ctx, ["logout"])).toBe(0);
+    expect(cli.out()).toBe(`Signed out of ${FORGE}.\n`);
+    expect(cli.secrets.size).toBe(0);
+    expect(cli.git.global).toEqual([]);
+
+    expect(await run(cli.ctx, ["status"])).toBe(1);
+    expect(cli.err()).toContain("You are not signed in.");
+  });
+
+  it("forgets the clone's forge from inside it, and says so when there was no login", async () => {
+    const cli = await cloned();
+    expect(await run(cli.ctx, ["logout"])).toBe(0);
+    expect(cli.secrets.size).toBe(0);
+    expect(await run(cli.ctx, ["logout", FORGE])).toBe(0);
+    expect(cli.out()).toContain(`You were not signed in to ${FORGE}.`);
+  });
+});
+
 describe("gitflare status", () => {
   it("says who is signed in, outside a clone", async () => {
     const cli = await signedIn();
@@ -455,7 +569,8 @@ describe("gitflare status", () => {
     const before = started.out().length;
     expect(await run(started.ctx, ["status"])).toBe(0);
     expect(started.out().slice(before)).toContain(
-      'Session: "Tidy the invite form" on main (active)\nChange: none yet. Push main to open one.\n',
+      'Session: "Tidy the invite form" on tidy-the-invite-form (active)\n' +
+        "Change: none yet. Push tidy-the-invite-form to open one.\n",
     );
 
     const reviewing = await cloned({ user: jonas });
