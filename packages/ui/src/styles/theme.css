@@ -1,0 +1,326 @@
+/*
+ * Gitflare's own design tokens, as a Tailwind CSS v4 theme. Names and values
+ * are the Paper file's.
+ *
+ * Tailwind's stock spacing, type, radius and breakpoint scales stay as they
+ * are, so `p-4` is 16px and `text-sm` is 14px, exactly as shadcn components
+ * expect. Paper's tokens sit beside them under their own names. Where a Paper
+ * name would have collided with a stock or shadcn one, the stock meaning wins
+ * and the Paper token is renamed:
+ *
+ *   Paper --spacing-7      here --spacing-s7    (`p-s7`, 24px)
+ *   Paper --text-sm        here --text-detail   (13px; `text-sm` is 14px)
+ *   Paper --text-xs        is stock `text-xs`   (12px, same value)
+ *   Paper --tracking-tight here --tracking-heading (-0.01em)
+ *   Paper --breakpoint-xl  here --breakpoint-frame (1440px)
+ *   Paper --color-muted    is shadcn's --color-muted-foreground (`text-muted-foreground`)
+ *   Paper --color-border   is shadcn's --color-border (same role, same value)
+ *
+ * Two stock scales are cleared on purpose. The colour palette: one accent,
+ * warm neutrals, so `bg-blue-500` does not exist. And shadows: there is one,
+ * so `shadow-md` does not exist either.
+ */
+@theme {
+  --color-*: initial;
+  --shadow-*: initial;
+  --inset-shadow-*: initial;
+  --drop-shadow-*: initial;
+  --text-shadow-*: initial;
+
+  /* Warm neutrals. Every one carries a yellow-red bias; none is grey. */
+  --color-ground: #ffffff;
+  --color-surface: #faf9f7;
+  --color-rule: #e5e2de; /* section hairlines on open page */
+  --color-faint: #a8a29b; /* right-rail annotations */
+  --color-faint-inverse: #8c8781; /* the same role on ink */
+  --color-ink: #1d1b19;
+  --color-on-ink: #ffffff;
+  --color-ink-hover: #35322f;
+  --color-ink-press: #000000;
+
+  /* The one accent. */
+  --color-flare: #f5521b;
+  --color-flare-deep: #ce4111;
+  --color-flare-shade: #85240a; /* captions sitting on a flare fill */
+  --color-flare-tint: #ffeee8;
+
+  /* On a flare field, neutrals are replaced by white at alpha. */
+  --color-on-flare: #ffffff;
+  --color-on-flare-body: #fffffff0; /* 94%, body copy */
+  --color-on-flare-border: #ffffff61; /* 38%, pill border */
+  --color-on-flare-fill: #ffffff1f; /* 12%, pill fill */
+
+  /* Status. Semantic, never a second accent. */
+  --color-success: #0f7a5a;
+  --color-success-deep: #0a5c43;
+  --color-success-tint: #e4f1eb;
+  --color-on-success: #ffffff;
+  --color-warning: #96690a;
+  --color-warning-deep: #6e4b04;
+  --color-warning-tint: #faf0d6;
+  --color-on-warning: #ffffff;
+  --color-danger: #be1e3c;
+  --color-danger-deep: #8e1029;
+  --color-danger-tint: #fbe7eb;
+  --color-on-danger: #ffffff;
+
+  /*
+   * State colours. Paper draws these as literal values on its Button, Button
+   * group and Dialog artboards and has no token for them; the names are ours.
+   */
+  --color-press: #efece8; /* neutral pressed fill */
+  --color-border-press: #d8d4cf;
+  --color-border-disabled: #f2f0ed;
+  --color-on-flare-press: #ffd7c6; /* white button, pressed, on flare */
+  --color-on-flare-fill-press: #ffffff3d; /* 24% */
+  --color-on-flare-border-hover: #ffffffa3; /* 64% */
+  --color-on-flare-muted: #ffffff8a; /* 54%, disabled label on flare */
+  --color-success-press: #073f2e;
+  --color-success-tint-press: #d3e7de;
+  --color-warning-press: #4e3502;
+  --color-warning-tint-press: #f1e3be;
+  --color-danger-press: #6b0b1e;
+  --color-danger-tint-press: #f6d5dc;
+  --color-scrim: #1d1b1966; /* ink at 40% behind a dialog, no blur */
+
+  /*
+   * Two families. Mono marks content a machine authored or verified.
+   * The "Variable" names are what the self-hosted font packages register.
+   */
+  --font-display:
+    "Schibsted Grotesk Variable", "Schibsted Grotesk", system-ui, sans-serif;
+  --font-mono:
+    "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
+  --font-sans: var(--font-display);
+
+  --text-mono-xs: 11px;
+  --text-detail: 13px;
+  --text-meta: 14px;
+  --text-ui: 15px;
+  --text-body: 16px;
+  --text-body-m: 17px;
+  --text-title: 19px;
+  --text-body-l: 20px;
+  --text-statement: 22px;
+  --text-lede: 24px;
+  --text-display-s: 44px;
+  --text-display-m: 50px;
+  --text-display-l: 56px;
+  --text-display-xl: 74px;
+
+  --font-weight-regular: 400;
+
+  --tracking-display: -0.03em;
+  --tracking-wordmark: -0.02em;
+  --tracking-lede: -0.015em;
+  --tracking-heading: -0.01em;
+  --tracking-mono: 0.04em;
+  --tracking-status: 0.06em;
+  --tracking-caps: 0.1em;
+
+  --leading-mono-xs: 14px;
+  --leading-xs: 16px;
+  --leading-ui: 18px;
+  --leading-mono: 22px;
+  --leading-body-s: 24px;
+  --leading-body: 26px;
+  --leading-body-m: 28px;
+  --leading-body-l: 31px;
+  --leading-lede: 32px;
+  --leading-display-s: 50px;
+  --leading-display-m: 55px;
+  --leading-display-l: 62px;
+  --leading-display-xl: 78px;
+
+  --breakpoint-frame: 1440px;
+
+  /* Column widths. Claim left, evidence right; the right is narrower. */
+  --container-control: 18px; /* checkbox and radio */
+  --container-lane: 160px;
+  --container-label: 260px;
+  --container-annotation: 284px;
+  --container-aside: 400px;
+  --container-support: 520px;
+  --container-body: 660px;
+  --container-claim: 680px;
+  --container-opener: 800px;
+  --container-card: 880px;
+  --container-content: 1312px;
+  --container-hero: 1392px;
+  --container-frame: 1440px;
+
+  /*
+   * Paper's spacing steps. Hand-tuned and off-grid on purpose, so they are
+   * named, not numbered: `p-s7` is 24px, while `p-7` is Tailwind's 28px.
+   */
+  --spacing-s1: 4px;
+  --spacing-s2: 8px;
+  --spacing-s3: 10px;
+  --spacing-s4: 12px;
+  --spacing-s5: 16px;
+  --spacing-s6: 20px;
+  --spacing-s7: 24px;
+  --spacing-s8: 30px;
+  --spacing-s9: 34px;
+  --spacing-s10: 44px;
+  --spacing-s11: 48px;
+  --spacing-s12: 56px;
+  --spacing-s13: 64px; /* page gutter */
+  --spacing-s14: 88px;
+  --spacing-s15: 96px;
+  --spacing-s16: 104px;
+  --spacing-s17: 112px;
+  --spacing-s18: 132px;
+
+  --radius-control: 5px; /* checkbox */
+  --radius-chip: 12px; /* evidence chips, framed inputs */
+  --radius-panel: 16px; /* popovers, menus, insets */
+  --radius-card: 24px; /* floating card, dialog, flare field */
+  --radius-pill: 999px; /* buttons, badges */
+
+  /*
+   * The one shadow: long, soft, fully offset downward, ink at 25%. In page
+   * flow it belongs to the floating card alone; transient overlays (popover,
+   * menu, dialog) carry it too. Paper has no shadow token; the value is read
+   * off the floating card.
+   */
+  --shadow-floating: 0 24px 48px -24px #1d1b1940;
+}
+
+/*
+ * The type scale, one utility per step: family, size, line-height, weight and
+ * tracking together, as the Typography section of the system states them.
+ */
+@utility type-display-xl {
+  font-family: var(--font-display);
+  font-size: var(--text-display-xl);
+  line-height: var(--leading-display-xl);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--tracking-display);
+}
+@utility type-display-l {
+  font-family: var(--font-display);
+  font-size: var(--text-display-l);
+  line-height: var(--leading-display-l);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--tracking-display);
+}
+@utility type-display-m {
+  font-family: var(--font-display);
+  font-size: var(--text-display-m);
+  line-height: var(--leading-display-m);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--tracking-display);
+}
+@utility type-display-s {
+  font-family: var(--font-display);
+  font-size: var(--text-display-s);
+  line-height: var(--leading-display-s);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--tracking-display);
+}
+@utility type-lede {
+  font-family: var(--font-display);
+  font-size: var(--text-lede);
+  line-height: var(--leading-lede);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-lede);
+}
+@utility type-statement {
+  font-family: var(--font-display);
+  font-size: var(--text-statement);
+  line-height: var(--leading-lede);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-heading);
+}
+@utility type-title {
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+  line-height: var(--leading-body);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-heading);
+}
+@utility type-body-l {
+  font-family: var(--font-display);
+  font-size: var(--text-body-l);
+  line-height: var(--leading-body-l);
+  font-weight: var(--font-weight-regular);
+  letter-spacing: 0em;
+}
+@utility type-body-m {
+  font-family: var(--font-display);
+  font-size: var(--text-body-m);
+  line-height: var(--leading-body-m);
+  font-weight: var(--font-weight-regular);
+  letter-spacing: 0em;
+}
+@utility type-body {
+  font-family: var(--font-display);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  font-weight: var(--font-weight-regular);
+  letter-spacing: 0em;
+}
+@utility type-body-s {
+  font-family: var(--font-display);
+  font-size: var(--text-ui);
+  line-height: var(--leading-body-s);
+  font-weight: var(--font-weight-regular);
+  letter-spacing: 0em;
+}
+@utility type-detail {
+  font-family: var(--font-display);
+  font-size: var(--text-detail);
+  line-height: var(--leading-body-s);
+  font-weight: var(--font-weight-regular);
+  letter-spacing: 0em;
+}
+@utility type-ui {
+  font-family: var(--font-display);
+  font-size: var(--text-ui);
+  line-height: var(--leading-ui);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0em;
+}
+@utility type-meta {
+  font-family: var(--font-display);
+  font-size: var(--text-meta);
+  line-height: var(--leading-ui);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0em;
+}
+@utility type-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-detail);
+  line-height: var(--leading-mono);
+  font-weight: var(--font-weight-regular);
+  letter-spacing: 0em;
+}
+@utility type-mono-sm {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: var(--leading-mono);
+  font-weight: var(--font-weight-regular);
+  letter-spacing: 0em;
+}
+@utility type-mono-xs {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono-xs);
+  line-height: var(--leading-mono-xs);
+  font-weight: var(--font-weight-regular);
+  letter-spacing: var(--tracking-mono);
+}
+
+/* The hero field: flare, with the single warm lift under it. */
+@utility bg-flare-field {
+  background-color: var(--color-flare);
+  background-image: radial-gradient(
+    ellipse 52% 42% at 50% 104% in oklab,
+    oklab(87.1% 0.024 0.114 / 55%) 0%,
+    oklab(87.1% 0.024 0.114 / 0%) 72%
+  );
+}
+
+/* Primitives restyle themselves inside a flare field or an ink row. */
+@custom-variant on-flare (.on-flare &);
+@custom-variant on-ink (.on-ink &);
