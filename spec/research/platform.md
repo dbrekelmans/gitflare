@@ -29,7 +29,7 @@ Package versions read (npm `latest` on 2026-10-02):
 - **Do not adopt `cloudflare.config.ts` yet; use `wrangler.jsonc`.** It is open beta and only usable through the beta `cf` CLI; Wrangler commands do not read it, and running `cf dev/build/deploy` in a Wrangler project rewrites project files.
 - **Durable Object `migrations` is now the legacy path.** New Workers declare classes in an `exports` map. The two are mutually exclusive per Worker and the switch to `exports` is one-way, so pick before the first deploy. Agents SDK and Drizzle docs still show `migrations`.
 - **`WorkflowInstance.subscribe()` is a Worker-side RPC stream, not a browser transport.** A browser needs a Worker or Durable Object in between. The documented browser-facing primitive is a Durable Object with hibernatable WebSockets (one object per change); the subscription is best used for catch-up from a cursor.
-- **Relational records belong in D1; Durable Object SQLite is for per-object state.** Limits and SQL pricing are identical, but only D1 has migration tooling, an HTTP API, cross-entity queries and test helpers. See the D1 section for the full trade-off.
+- **Relational records belong in D1; Durable Object SQLite is for per-object state.** Cloudflare says SQL query pricing and limits are "intended to be identical" (storage is priced differently: $0.75 vs $0.20 per GB-month), but only D1 has migration tooling, an HTTP API, cross-entity queries and test helpers. See the D1 section for the full trade-off.
 - **The Agents SDK fits the per-comment conversation and is heavier than a plain DO.** `AIChatAgent` supplies persistence, resumable streaming, multi-client sync, tools and approvals; the cost is a pre-1.0 package (0.25.0, published 2026-10-02), its own WebSocket protocol and `/agents/:agent/:name` URL convention, and a large peer set. Keep it behind an interface.
 - **Everything asynchronous is at-least-once.** Queue batches are retried whole unless messages are acked individually; Workflow steps and DO alarms re-run on failure. Every handler in the push pipeline must be idempotent.
 - **Event subscriptions are not declared in Wrangler config.** They are created per queue with `wrangler queues subscription create` (or the dashboard), so an installer must create them as a separate step.
@@ -245,9 +245,32 @@ declare abstract class WorkflowInstance {
 }
 ```
 
-- Binding methods: `create(options?: WorkflowInstanceCreateOptions)`, `createBatch(batch)` (up to 100, idempotent — existing IDs are skipped), `deleteBatch(instanceIds)` (1–100), `get(id)` (throws if unknown).
+- Binding methods: `create(options?: WorkflowInstanceCreateOptions<PARAMS>): Promise<WorkflowInstance>`, `get(id: string): Promise<WorkflowInstance>` (throws if unknown), `deleteBatch(instanceIds: string[]): Promise<WorkflowBatchDeleteResult>` (1–100 IDs), and `createBatch`.
+- **`createBatch`: docs and typings differ.** The docs page describes only the array form, `createBatch(batch: WorkflowInstanceCreateOptions[]): Promise<WorkflowInstance[]>` (up to 100; idempotent, instances whose ID already exists are skipped and left out of the result). The typings mark that form `@deprecated` ("Use the object form of `createBatch` instead of the array form") and give the current form, which reports per-instance errors:
+
+```ts
+public createBatch(
+  options: WorkflowBatchCreateOptions<PARAMS>,
+): Promise<WorkflowBatchCreateResult>;
+
+type WorkflowBatchCreateOptions<PARAMS = unknown> =
+  | { count: number; params?: PARAMS; retention?: {...}; locationHint?: WorkflowInstanceLocationHint; instances?: never }
+  | { instances: WorkflowInstanceCreateOptions<PARAMS>[]; count?: never; params?: never; /* … */ };
+
+type WorkflowBatchCreateResult = {
+  created: WorkflowInstance[];
+  errors: {
+    index: number;
+    id?: string;
+    code: number;
+    message: string;
+  }[];
+};
+```
+
+  (`WorkflowBatchCreateOptions` abridged.) Typings: limited to 100 instances per call or the 1 MiB RPC limit.
 - `create({ id })` throws if the ID is already used by an instance still inside its retention period; `restart()` re-runs an existing instance, optionally `restart({ from: { name, count?, type? } })` to reuse earlier step results.
-- `InstanceStatus.status`: `"queued" | "running" | "paused" | "errored" | "terminated" | "complete" | "waiting" | "waitingForPause" | "unknown"`.
+- `InstanceStatus.status` (typings): `"queued" | "running" | "paused" | "errored" | "terminated" | "complete" | "waiting" | "waitingForPause" | "rollingBack" | "unknown"`. The docs page omits `"rollingBack"` and says the Workers API keeps reporting `"running"` during a rollback "for compatibility"; handle both.
 
 **Config and `ctx.exports`.** Sources: https://developers.cloudflare.com/workflows/build/workers-api/#declare-workflows-in-exports · https://developers.cloudflare.com/workers/runtime-apis/context/#exports
 
@@ -383,7 +406,7 @@ Legacy (still supported, used by Agents SDK and Drizzle docs):
 - Durable Object entries in `exports` and `migrations` are mutually exclusive in one Worker. "Once a Worker has been deployed with `exports`, subsequent deploys cannot return to the legacy `migrations` array."
 - Lifecycle changes apply only through `wrangler deploy`. `wrangler versions upload` fails when the config has `exports` entries; gradual deployments are not supported with `exports`; rollbacks cannot cross a lifecycle change.
 - A `deleted` tombstone removes the namespace and all its data permanently. Storage backend is immutable once provisioned.
-- New key-value-backed namespaces can no longer be created (2026-07-09); SQLite is the only backend for new classes.
+- New key-value-backed namespaces can no longer be created for accounts without an existing one; SQLite is the only backend for new classes. Announced 2026-07-09: https://developers.cloudflare.com/changelog/post/2026-07-09-restrict-new-kv-backed-namespaces/ (title and date read from the Durable Objects changelog index; the post body was not read).
 - A binding is only needed for `env` access; a live class is also reachable as `ctx.exports.ClassName` (`idFromName`, `get`, …).
 - `config-schema.json` in Wrangler 4.147.0 contains `exports`; the docs give no minimum Wrangler version for Durable Object entries.
 
@@ -687,20 +710,48 @@ export default {
 
 Type the body with `Queue<T>` on the producer and `satisfies ExportedHandler<Env, T>` on the consumer; untyped, `message.body` is `unknown`.
 
+Typings (`@cloudflare/workers-types` 5.20261002.1):
+
 ```ts
-interface MessageBatch<Body = unknown> {
-  readonly queue: string;
-  readonly messages: readonly Message<Body>[];
-  ackAll(): void;
-  retryAll(options?: QueueRetryOptions): void;
-}
-// Message: id, timestamp, body, attempts, ack(), retry(options?)
 interface Queue<Body = unknown> {
-  send(body: Body, options?: QueueSendOptions): Promise<QueueSendResult>;
-  sendBatch(messages: Iterable<MessageSendRequest<Body>>, options?: QueueSendBatchOptions): Promise<QueueSendResult>;
   metrics(): Promise<QueueMetrics>;
+  send(message: Body, options?: QueueSendOptions): Promise<QueueSendResponse>;
+  sendBatch(
+    messages: Iterable<MessageSendRequest<Body>>,
+    options?: QueueSendBatchOptions,
+  ): Promise<QueueSendBatchResponse>;
+}
+interface QueueSendResponse {
+  metadata: QueueSendMetadata; // { metrics: { backlogCount: number; backlogBytes: number; oldestMessageTimestamp?: Date } }
+}
+interface QueueSendOptions {
+  contentType?: QueueContentType;
+  delaySeconds?: number;
+}
+interface QueueSendBatchOptions {
+  delaySeconds?: number;
+}
+interface QueueRetryOptions {
+  delaySeconds?: number;
+}
+interface Message<Body = unknown> {
+  readonly id: string;
+  readonly timestamp: Date;
+  readonly body: Body;
+  readonly attempts: number;
+  retry(options?: QueueRetryOptions): void;
+  ack(): void;
+}
+interface MessageBatch<Body = unknown> {
+  readonly messages: readonly Message<Body>[];
+  readonly queue: string;
+  readonly metadata: MessageBatchMetadata; // { metrics: { backlogCount, backlogBytes, oldestMessageTimestamp? } }
+  retryAll(options?: QueueRetryOptions): void;
+  ackAll(): void;
 }
 ```
+
+The trailing comments are mine, summarising the nested metadata interfaces. **Docs and typings differ here:** the docs page names the return type `QueueSendResult` for both `send` and `sendBatch`, types `oldestMessageTimestamp` as a required `number`, and does not list `MessageBatch.metadata`. `QueueSendResult` does not exist in the typings package; use the typings names.
 
 - The batch is acknowledged when `queue()` returns, its promise resolves and all `waitUntil()` promises resolve. If the handler throws, **the whole batch is retried** except messages already `ack()`ed. First call wins between `ack()` and `retry()` on a message; per-message calls take precedence over `ackAll()`/`retryAll()`.
 - `msg.retry({ delaySeconds })` and `batch.retryAll({ delaySeconds })`; delays up to 24 hours (also `send(body, { delaySeconds })`). `msg.attempts` supports backoff.
@@ -830,13 +881,21 @@ Local persistence: local D1 is a separate, initially empty database under `.wran
 
 **Drizzle.** Sources: https://orm.drizzle.team/docs/get-started/d1-new · https://orm.drizzle.team/docs/get-started/do-new (read from the docs repository, `drizzle-team/drizzle-orm-docs`, `main`)
 
-D1 (`drizzle-orm` 0.45.3, `drizzle-kit` 0.31.11):
+D1 (`drizzle-orm` 0.45.3, `drizzle-kit` 0.31.11), as in the guide (`<BINDING_NAME>` is the guide's placeholder; `env` only exists inside the handler):
 
 ```typescript
 import { drizzle } from 'drizzle-orm/d1';
 
-const db = drizzle(env.<BINDING_NAME>);
-const result = await db.select().from(users).all()
+export interface Env {
+  <BINDING_NAME>: D1Database;
+}
+export default {
+  async fetch(request: Request, env: Env) {
+    const db = drizzle(env.<BINDING_NAME>);
+    const result = await db.select().from(users).all()
+    return Response.json(result);
+  },
+};
 ```
 
 ```typescript
@@ -856,7 +915,9 @@ export default defineConfig({
 });
 ```
 
-- The Drizzle guide points Wrangler at Drizzle's output with `migrations_dir = "drizzle"`, so the workflow is `npx drizzle-kit generate` → `wrangler d1 migrations apply <DATABASE> --local|--remote`. The `d1-http` credentials are for drizzle-kit commands that talk to the remote database.
+- What the Drizzle guide documents for applying changes: `npx drizzle-kit push` (apply the schema directly, for quick local iteration), or `npx drizzle-kit generate` followed by `npx drizzle-kit migrate`. It never mentions `wrangler d1 migrations apply`.
+- The guide's `wrangler.toml` does set `migrations_dir = "drizzle"` on the D1 binding, the same directory as drizzle-kit's `out`.
+- **Inference, not documented by either side:** generate SQL with `npx drizzle-kit generate` and apply it with `wrangler d1 migrations apply <DATABASE> --local|--remote`. It is the only route that also covers the local database and the Vitest helpers (`readD1Migrations`), and it follows from the shared directory plus Cloudflare's `migrations_pattern` note, but no primary source shows the two commands used together and it was not run (see Could not verify). The purpose of the `d1-http` credentials — letting drizzle-kit commands reach the remote database over the D1 HTTP API — is likewise my reading of the config, not a quoted statement.
 
 Durable Object SQLite:
 
@@ -891,7 +952,7 @@ export class MyDurableObject extends DurableObject {
 
 - drizzle-kit config for it: `dialect: 'sqlite', driver: 'durable-sqlite'`. Migrations are bundled into the Worker and run inside each object ("You can apply migrations only from Cloudflare Workers"). The Drizzle guide adds a Wrangler `[[rules]] type = "Text" globs = ["**/*.sql"]` block; under the Vite plugin `rules` is ignored and `.sql` already imports as a string.
 
-**D1 or SQLite-in-Durable-Objects for the forge's relational records.** Use **D1** for records that are queried across entities — changes, sections, comments, approvals, the decision index. Cloudflare's own comparison (https://developers.cloudflare.com/workers/platform/storage-options/#sql-in-durable-objects-vs-d1) states that query pricing and limits are intended to be identical, and that the difference is tooling and topology:
+**D1 or SQLite-in-Durable-Objects for the forge's relational records.** Use **D1** for records that are queried across entities — changes, sections, comments, approvals, the decision index. Cloudflare's own comparison (https://developers.cloudflare.com/workers/platform/storage-options/#sql-in-durable-objects-vs-d1) says "SQL query pricing and limits are intended to be identical" — that covers rows read and written, not storage, which the two pricing pages price differently — and that the difference is tooling and topology:
 
 | | D1 | SQLite in a Durable Object |
 | --- | --- | --- |
@@ -908,9 +969,9 @@ The cost of D1 is a network hop per query (1,000 per invocation), `batch()`-only
 
 ### Testing
 
-Sources: https://developers.cloudflare.com/workers/testing/ · https://developers.cloudflare.com/workers/testing/vitest-integration/ · https://developers.cloudflare.com/workers/testing/vitest-integration/migration-guides/migrate-to-vitest-plugin/ · https://developers.cloudflare.com/workers/testing/vitest-integration/configuration/ · https://developers.cloudflare.com/workers/testing/vitest-integration/test-apis/ · https://developers.cloudflare.com/workers/testing/vitest-integration/known-issues/ · https://developers.cloudflare.com/workers/testing/test-harness/
+Sources: https://developers.cloudflare.com/workers/testing/ · https://developers.cloudflare.com/workers/testing/vitest-integration/ · https://developers.cloudflare.com/workers/testing/vitest-integration/migration-guides/migrate-to-vitest-plugin/ · https://developers.cloudflare.com/workers/testing/vitest-integration/configuration/ · https://developers.cloudflare.com/workers/testing/vitest-integration/test-apis/ · https://developers.cloudflare.com/workers/testing/vitest-integration/known-issues/ · https://developers.cloudflare.com/workers/testing/vitest-integration/write-your-first-test/ (install command, Vitest config, test `tsconfig.json`) · https://developers.cloudflare.com/workers/testing/vitest-integration/isolation-and-concurrency/ (storage isolation, injected `nodejs_compat`) · https://developers.cloudflare.com/workers/testing/test-harness/ · https://developers.cloudflare.com/workers/testing/test-harness/get-started/ (lifecycle example) · https://developers.cloudflare.com/workers/testing/test-harness/configure/ (Vite build output, `vars`/`secrets`/`env`, `reset()`, `debug()`) · https://developers.cloudflare.com/workers/testing/test-harness/interact-with-workers/ (`getWorker`, `scheduled`, logs, Workflow introspection)
 
-- "`@cloudflare/vitest-plugin` replaces `@cloudflare/vitest-pool-workers`. The package API and Vitest configuration are unchanged." `@cloudflare/vitest-pool-workers` is still on npm at 0.22.0 (last published 2026-09-18) and is not marked deprecated there. Codemod: `npx @cloudflare/codemods vitest:pool-workers-to-vitest-plugin`.
+- "`@cloudflare/vitest-plugin` replaces `@cloudflare/vitest-pool-workers`. The package API and Vitest configuration are unchanged." `@cloudflare/vitest-pool-workers` is still on npm at 0.22.0 (published 2026-08-18; the registry entry was last modified 2026-09-18) and is not marked deprecated there. Codemod: `npx @cloudflare/codemods vitest:pool-workers-to-vitest-plugin`.
 - Install: `npm i -D vitest@^4.1.0 @cloudflare/vitest-plugin`.
 
 ```ts
@@ -1036,9 +1097,11 @@ Compatibility settings for a project created today:
 
 ## Local development and tests
 
+Sources: https://developers.cloudflare.com/workers/local-development/ (local simulation defaults, AI always remote, remote-binding rules, Browser Run) · https://developers.cloudflare.com/workflows/build/local-development/ (`--local` commands, Local Explorer, "emulated version", no remote mode) · https://developers.cloudflare.com/queues/configuration/local-development/ (local queues, no consumer concurrency, no `--remote`) · https://developers.cloudflare.com/d1/best-practices/local-development/ · https://developers.cloudflare.com/workers/vite-plugin/reference/api/ (`.wrangler/state`) · https://developers.cloudflare.com/durable-objects/best-practices/websockets/ (local hibernation) · https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/ (no local PITR) · https://developers.cloudflare.com/workers/wrangler/configuration/#limits (limits not enforced locally) · https://developers.cloudflare.com/workers/configuration/cloudflare-access/ (`access.dev`) · the testing pages cited above.
+
 Works locally under `vite dev` / `wrangler dev` (Miniflare 5, `workerd`), no account needed:
 
-- Worker code, static asset routing (the Vite plugin applies `assets` routing in dev as in production), D1, Durable Objects including SQLite storage, alarms and hibernatable WebSocket handlers, Queues (producer and consumer in one process), Workflows (emulated), `ctx.exports`.
+- Worker code, static asset routing (the Vite plugin applies `assets` routing in dev as in production), D1, Durable Objects including SQLite storage, alarms and hibernatable WebSocket handlers, Queues, Workflows (emulated), `ctx.exports`. (That a producer and consumer in the same Worker run in one local process is my reading of the Queues page, which documents the multi-config command only for separate Workers.)
 - State persists under `.wrangler/state` between runs.
 - `wrangler workflows … --local` (Wrangler >= 4.79.0) and the Local Explorer at `/cdn-cgi/local/explorer` (Wrangler >= 4.82.1 or Vite plugin >= 1.32.0) inspect, trigger, pause and send events to local Workflow instances.
 - `ctx.access` can be simulated with the `access.dev` config block.
@@ -1052,8 +1115,8 @@ Needs Docker: nothing in this note. (Containers and Sandbox do; they are covered
 
 Cannot run locally — put behind a port and fake it:
 
-- **Workers AI / AI bindings** always execute remotely, so they need credentials and network. Source: https://developers.cloudflare.com/workers/local-development/
-- **Cloudflare Access enforcement** — only the simulated identity block exists locally.
+- **Workers AI / AI bindings** — "AI models always run remotely". That this requires credentials and network in tests is my inference.
+- **Cloudflare Access enforcement** — the docs describe only the simulated identity block for local use; that nothing else enforces Access locally is an inference from that.
 - **Event-subscription delivery** — no local emitter is documented. Tests build the documented envelope and pass it to the queue handler.
 - **Durable Object point-in-time recovery** — "not supported in local development".
 - **`limits` (CPU, subrequests)** are not enforced locally; **queue consumer concurrency** is not supported locally.
@@ -1076,7 +1139,7 @@ Differences to remember: local Workflows are "an emulated version of Workflows c
 - **Agents limits.** The Agents page says 1 GB state per agent; the Durable Objects page says 10 GB per SQLite object. The `AgentWorkflow` page lists "State size 10 MB per workflow" and "30 minutes per step", which do not match the Workflows limits page (1 GB, unlimited wall time).
 - **`routeAgentRequest` return value.** Docs say `Promise<Response | undefined>`; `agents` 0.25.0 typings say `Promise<Response | null>`. Treat as falsy.
 - **`@cloudflare/vitest-plugin/config` subpath.** The docs say `readD1Migrations` and `buildPagesASSETSBinding` are exported from it, but their own examples import from the package root, and the 1.3.6 `package.json` exports only `.` and `./types`. Import from the root.
-- **Drizzle migration layout with Wrangler.** The Drizzle D1 guide implies flat `.sql` files in `./drizzle` consumed via `migrations_dir`; Cloudflare's D1 docs describe a nested Drizzle layout needing `migrations_pattern`. Which one `drizzle-kit` 0.31.11 emits (versus the 1.0 release candidates) was not run. Also not confirmed from a primary source: that `drizzle-kit generate` works for D1 with no `driver`/credentials. The Drizzle "connect" reference pages were not retrievable as source; only the two get-started guides were read.
+- **Drizzle migration layout with Wrangler.** The Drizzle D1 guide implies flat `.sql` files in `./drizzle` consumed via `migrations_dir`; Cloudflare's D1 docs describe a nested Drizzle layout needing `migrations_pattern`. Which one `drizzle-kit` 0.31.11 emits (versus the 1.0 release candidates) was not run. The combined workflow this note suggests (`drizzle-kit generate`, then `wrangler d1 migrations apply`) appears in neither project's docs: Drizzle documents `drizzle-kit push` or `generate` + `drizzle-kit migrate`. Also not confirmed from a primary source: that `drizzle-kit generate` works for D1 with no `driver`/credentials, and that `drizzle-kit migrate` and Wrangler's `d1_migrations` table do not conflict if both are used. The Drizzle "connect" reference pages were not retrievable as source; only the two get-started guides were read.
 - **`sensitive: "output"` step config.** Present in the typings and referenced in the subscribe docs; no dedicated documentation was found.
 - **Local emission of event-subscription messages.** No documentation either way.
 - **Vitest 5 support.** The plugin's peer range is `^4.1.0`; no statement on Vitest 5 was found.
