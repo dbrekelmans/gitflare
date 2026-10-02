@@ -146,14 +146,27 @@ export async function changeThreads(db: Db, changeId: ChangeId): Promise<Thread[
     .orderBy(asc(schema.threads.createdAt), asc(schema.threads.id));
 }
 
+/** D1 binds at most 100 parameters to one statement; a list in `inArray` is cut to fit. */
+const MAX_LIST = 90;
+
+function inPieces<T>(items: readonly T[]): T[][] {
+  const pieces: T[][] = [];
+  for (let i = 0; i < items.length; i += MAX_LIST) pieces.push(items.slice(i, i + MAX_LIST));
+  return pieces;
+}
+
+/** The messages of these threads, thread by thread in the order given, each in its own order. */
 export async function messagesOf(db: Db, threadIds: ThreadId[]): Promise<ThreadMessage[]> {
-  if (threadIds.length === 0) return [];
-  const rows = await db
-    .select()
-    .from(schema.threadMessages)
-    .where(inArray(schema.threadMessages.threadId, threadIds))
-    .orderBy(asc(schema.threadMessages.threadId), asc(schema.threadMessages.seq));
-  return rows.map(toThreadMessage);
+  const messages: ThreadMessage[] = [];
+  for (const ids of inPieces(threadIds)) {
+    const rows = await db
+      .select()
+      .from(schema.threadMessages)
+      .where(inArray(schema.threadMessages.threadId, ids))
+      .orderBy(asc(schema.threadMessages.threadId), asc(schema.threadMessages.seq));
+    messages.push(...rows.map(toThreadMessage));
+  }
+  return messages;
 }
 
 /** The people who wrote these messages, by id. */
@@ -168,17 +181,20 @@ export async function authorsOf(
       ...also,
     ]),
   ];
-  if (ids.length === 0) return new Map();
-  const rows = await db
-    .select({
-      id: schema.users.id,
-      name: schema.users.name,
-      email: schema.users.email,
-      role: schema.users.role,
-    })
-    .from(schema.users)
-    .where(inArray(schema.users.id, ids));
-  return new Map(rows.map((user) => [user.id, user]));
+  const people = new Map<UserId, Pick<User, "id" | "name" | "email" | "role">>();
+  for (const piece of inPieces(ids)) {
+    const rows = await db
+      .select({
+        id: schema.users.id,
+        name: schema.users.name,
+        email: schema.users.email,
+        role: schema.users.role,
+      })
+      .from(schema.users)
+      .where(inArray(schema.users.id, piece));
+    for (const user of rows) people.set(user.id, user);
+  }
+  return people;
 }
 
 /** The sections a change currently has, in reading order. */

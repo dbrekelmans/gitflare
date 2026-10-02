@@ -21,7 +21,7 @@ import {
   threadTurnSystem,
   turnSchema,
 } from "./prompts/thread-turn";
-import { applyThreadAction, recordDismissalDecision } from "./settle";
+import { applyThreadAction, catching, recordDismissalDecision } from "./settle";
 import {
   agentAuthor,
   authorsOf,
@@ -162,36 +162,41 @@ async function act(
         { userId: asker },
       );
       // Someone settled it while the agent was writing: the reply still stands as a message.
+      // What settled it may be a rule worth keeping; the thread's writer learns that after the turn.
       if (!settled) return say(reply.body);
-      const message = await say(
+      return say(
         reply.body,
         reply.action === "resolve"
           ? { type: "resolved" }
           : { type: "dismissed", classification: "not_a_problem" },
       );
-      // What a person said to settle a comment may be a rule worth keeping.
-      // Learning it is the decision record's own work and never undoes the settling.
-      await deps.decisions.learnFromThread(thread.id).catch(() => null);
-      return message;
     }
 
     case "dismiss_as_decision": {
-      const decision = thread.decisionId
+      const recording = thread.decisionId
         ? null
-        : await recordDismissalDecision(deps, {
-            thread,
-            change,
-            wording: reply.decision,
-            userId: asker,
-          });
+        : catching(() =>
+            recordDismissalDecision(deps, {
+              thread,
+              change,
+              wording: reply.decision,
+              userId: asker,
+            }),
+          );
       const settled = await applyThreadAction(
         deps,
         thread,
         { type: "dismiss", classification: "design_decision" },
-        { userId: asker, decisionId: decision?.id },
+        { userId: asker, decide: recording?.decide },
       );
       if (!settled) return say(reply.body);
-      return say(reply.body, { type: "dismissed", classification: "design_decision" });
+      const message = await say(reply.body, {
+        type: "dismissed",
+        classification: "design_decision",
+      });
+      // The dismissal stands; learning from the thread after the turn records what it decided.
+      if (recording?.failure) throw recording.failure.error;
+      return message;
     }
 
     case "fix": {
@@ -227,6 +232,26 @@ const failureWords: Record<ModelError["code"], string> = {
   unavailable: "the model is unavailable right now",
 };
 
+/** What a turn answers: the person's message, when the agent owes one. */
+async function awaitedAnswer(deps: Pick<ReviewDeps, "db">, threadId: ThreadId) {
+  const thread = await requireThread(deps.db, threadId);
+  if (thread.status !== "open") return null;
+  if (thread.kind !== "chat" && thread.origin !== "review") return null;
+  const all = await messagesOf(deps.db, [threadId]);
+  const last = all.at(-1);
+  if (last?.author.kind !== "user") return null;
+  const change = await requireChange(deps.db, thread.changeId);
+  if (change.status === "merged" || change.status === "closed") return null;
+  return { thread, all, asker: last.author.userId, change };
+}
+
+/** Tells whoever is watching to drop the reply being typed. Best effort, like the draft itself. */
+async function discardDraft(deps: Pick<ReviewDeps, "live">, thread: Thread): Promise<void> {
+  await deps.live
+    .signal(thread.changeId, { type: "thread.draft_discarded", threadId: thread.id })
+    .catch(() => {});
+}
+
 /**
  * The agent's turn on a thread, run after a person's message. Streams its
  * reply as `thread.delta` signals, then appends it with whatever action it
@@ -235,24 +260,38 @@ const failureWords: Record<ModelError["code"], string> = {
  * The agent takes part in the comments its own review raised and in chats; a
  * comment a person opened is between people. It answers a person: a thread
  * whose last message is its own, or that is settled, has nothing to answer,
- * which is also what makes running a finished turn again harmless. When the
- * model cannot answer, the turn says so in the thread rather than leave the
- * person waiting; they can write again to have it retried.
+ * which is also what makes running a finished turn again harmless.
+ *
+ * The agent never falls silent. When the model cannot answer, the turn says
+ * so in the thread; when anything else fails, it says so too and then throws,
+ * so the failure is seen and the caller's retry finds nothing left to answer.
+ * Either way the person can write again to have it retried, and a draft the
+ * browser was shown is discarded.
  */
 export async function runAgentTurn(
   deps: ReviewDeps,
   threadId: ThreadId,
 ): Promise<ThreadMessage | null> {
+  try {
+    return await takeTurn(deps, threadId);
+  } catch (error) {
+    const owed = await awaitedAnswer(deps, threadId).catch(() => null);
+    if (owed) {
+      await discardDraft(deps, owed.thread);
+      await appendMessage(deps, threadId, {
+        author: { kind: "agent" },
+        body: "I could not answer: something went wrong on my side. Write again to have me retry.",
+      }).catch(() => null);
+    }
+    throw error;
+  }
+}
+
+async function takeTurn(deps: ReviewDeps, threadId: ThreadId): Promise<ThreadMessage | null> {
   for (let restarts = 0; ; restarts++) {
-    const thread = await requireThread(deps.db, threadId);
-    if (thread.status !== "open") return null;
-    if (thread.kind !== "chat" && thread.origin !== "review") return null;
-    const all = await messagesOf(deps.db, [threadId]);
-    const last = all.at(-1);
-    if (last?.author.kind !== "user") return null;
-    const asker = last.author.userId;
-    const change = await requireChange(deps.db, thread.changeId);
-    if (change.status === "merged" || change.status === "closed") return null;
+    const owed = await awaitedAnswer(deps, threadId);
+    if (!owed) return null;
+    const { thread, all, asker, change } = owed;
 
     const repository = await requireRepository(deps.db, change.repositoryId);
     const session = await requireSession(deps.db, change.sessionId);
@@ -295,6 +334,8 @@ export async function runAgentTurn(
           .join("\n")
           .slice(0, MAX_QUERY_CHARS),
         limit: DECISIONS,
+        // Without the fork's tip the change's files are unknown, and every decision is a candidate.
+        ...(tip && { paths: diff.map((file) => file.path) }),
       }),
     ]);
 
@@ -302,9 +343,9 @@ export async function runAgentTurn(
       appendMessage(deps, threadId, { author: { kind: "agent" }, body });
     const schema = turnSchema(options);
     let reply: TurnReply;
+    let shown = "";
     try {
       let arriving = "";
-      let shown = "";
       let result: GenerateResult<TurnReply> | undefined;
       const stream = deps.models.stream({
         model: settings.thread,
@@ -351,14 +392,22 @@ export async function runAgentTurn(
       if (!parsed.success) throw new ModelError("invalid_output", parsed.error.message);
       reply = parsed.data;
     } catch (error) {
+      if (shown) await discardDraft(deps, thread);
       if (!(error instanceof ModelError)) throw error;
       return say(`I could not answer: ${failureWords[error.code]}. Write again to have me retry.`);
     }
 
     // A person wrote while this reply was being written: it answers a thread
-    // that has moved on, so it is thrown away and the turn starts over.
+    // that has moved on, so it is thrown away and the turn starts over. After
+    // a few restarts the turn stops without a word: posting a stale reply would
+    // leave the newest message unanswered, and that message has asked the
+    // thread's writer for a turn of its own.
     const now = await requireThread(deps.db, threadId);
-    if (now.messageCount !== thread.messageCount && restarts < MAX_RESTARTS) continue;
+    if (now.messageCount !== thread.messageCount) {
+      await discardDraft(deps, thread);
+      if (restarts < MAX_RESTARTS) continue;
+      return null;
+    }
 
     try {
       return await act(deps, { thread, change, session, asker, tip, files }, reply);

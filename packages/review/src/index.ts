@@ -7,7 +7,7 @@
 // The three prompts are in `./prompts`, one file each.
 
 export { appendMessage } from "./messages";
-export { settleThread } from "./settle";
+export { learnFromSettledThread, settleThread } from "./settle";
 export { runReviewStage } from "./stage";
 export type { DismissalTally, ReviewDeps, SettleAction } from "./store";
 export { dismissalTally, heldBackCategories } from "./tally";

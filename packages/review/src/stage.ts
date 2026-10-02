@@ -1,6 +1,7 @@
 import {
   type ChangeId,
   type DecisionId,
+  type RevisionId,
   type StageHandler,
   sectionForAnchor,
   type Thread,
@@ -55,15 +56,26 @@ async function announce(
   }
 }
 
+/** Whether a review of the revision has finished, with or without findings. */
+async function reviewed(deps: Pick<ReviewDeps, "db">, revisionId: RevisionId): Promise<boolean> {
+  const [row] = await deps.db
+    .select({ attempt: schema.revisionReviews.attempt })
+    .from(schema.revisionReviews)
+    .where(eq(schema.revisionReviews.revisionId, revisionId))
+    .limit(1);
+  return row !== undefined;
+}
+
 /**
  * The review stage. Opens one comment thread per finding, anchored to a file
  * and lines; a thread's section is filled in with `sectionForAnchor` once
  * sections exist. Running it again for the same revision does not duplicate
  * threads.
  *
- * A revision counts as reviewed once it has a finding: the threads and their
- * first messages are written in one batch, so they are all there or none is.
- * A revision reviewed with no findings is reviewed again when asked.
+ * A finished review writes its threads, their first messages and a
+ * `revision_reviews` row in one batch, so they are all there or none is. A
+ * revision with that row is reviewed: a retry, or a re-run, finds it and
+ * calls no model, even when the review found nothing.
  */
 export const runReviewStage: StageHandler<ReviewDeps> = async (deps, input) => {
   const change = await requireChange(deps.db, input.changeId);
@@ -72,7 +84,8 @@ export const runReviewStage: StageHandler<ReviewDeps> = async (deps, input) => {
   const mine = existing.filter(
     (thread) => thread.origin === "review" && thread.anchorRevisionId === revision.id,
   );
-  if (mine.length > 0) {
+  // A revision reviewed before `revision_reviews` existed is known by its threads.
+  if (mine.length > 0 || (await reviewed(deps, revision.id))) {
     await announce(deps, change.id, mine);
     return { status: "succeeded" };
   }
@@ -103,6 +116,7 @@ export const runReviewStage: StageHandler<ReviewDeps> = async (deps, input) => {
       .slice(0, MAX_QUERY_CHARS),
     limit: DECISIONS,
     changeId: change.id,
+    paths,
   });
   const decisions = retrieved.map((found) => found.decision);
   const heldBack = heldBackCategories(tally);
@@ -224,13 +238,22 @@ export const runReviewStage: StageHandler<ReviewDeps> = async (deps, input) => {
     await deps.decisions.link({ changeId: change.id, decisionId, relation: "followed" });
   }
 
-  const [first, ...rest] = [
+  await deps.db.batch([
+    deps.db
+      .insert(schema.revisionReviews)
+      .values({
+        revisionId: revision.id,
+        attempt: input.attempt,
+        changeId: change.id,
+        findings: threads.length,
+        createdAt: now,
+      })
+      .onConflictDoNothing(),
     ...threads.map((thread) => deps.db.insert(schema.threads).values(thread)),
     ...messages.map((message) =>
       deps.db.insert(schema.threadMessages).values(fromThreadMessage(message)),
     ),
-  ];
-  if (first) await deps.db.batch([first, ...rest]);
+  ]);
   for (const thread of threads) {
     await appendChangeEvent(deps, change.id, { type: "thread.opened", threadId: thread.id });
   }
