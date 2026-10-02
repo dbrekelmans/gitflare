@@ -15,7 +15,7 @@ Sources were read directly: the Artifacts docs as markdown (`developers.cloudfla
 - **The binding reads content now** (`readFile`, `readBlob`, `readTree`, `readCommit`, `log`), so a file browser and commit list need neither REST nor a container. Still absent everywhere: diff, compare, merge, ref/branch listing, search, and any write to repo contents.
 - **`fork()` copies only the default branch by default** (`defaultBranchOnly` defaults to `true`) and takes no target namespace. A fork is an independent repo: there is no sync or merge-back API, only git with two remotes.
 - **Jurisdiction must be set by explicitly creating the namespace before the first repo exists.** Creating a repo in an unknown namespace creates that namespace implicitly and unrestricted. The only documented way to pass a jurisdiction is the REST call; Wrangler has no `namespaces create` command, and the dashboard can create namespaces but whether it offers a jurisdiction there is undocumented.
-- **Partial clone may not work.** The git protocol page lists `filter` among unsupported capabilities, while the ArtifactFS page says it starts with a blobless clone of an Artifacts remote. Until tested, plan on a shallow fetch (`--depth=1` of a SHA, which is what Cloudflare's CI does), not `--filter=blob:none`.
+- **Partial clone may not work.** The git protocol page lists `filter` among unsupported capabilities, while the ArtifactFS page says it starts with a blobless clone of an Artifacts remote. Until tested, plan on a shallow fetch (`--depth=1` of a SHA, which is what Cloudflare's CI does), not `--filter=blob:none`. Observed live 2026-10-02 (`live/entire-on-artifacts.md`): protocol v2 advertises `fetch=shallow filter sideband-all` and `git clone --filter=blob:none` produced a blobless clone, so partial clone does work.
 
 ## Verified facts
 
@@ -251,6 +251,7 @@ Complete documented route list, relative to `/accounts/$ACCOUNT_ID`:
 | POST | `/artifacts/namespaces` | body `namespace`, optional `jurisdiction` |
 | GET | `/artifacts/namespaces?limit=&cursor=` | |
 | GET | `/artifacts/namespaces/:namespace` | |
+| DELETE | `/artifacts/namespaces/:namespace` | not on the docs page; listed in Cloudflare's OpenAPI description. Observed live 2026-10-02 (`live/entire-on-artifacts.md`): returned `204` for an empty namespace |
 | POST | `/artifacts/namespaces/:namespace/repos` | body `name`, `description?`, `default_branch?`, `read_only?` |
 | GET | `/artifacts/namespaces/:namespace/repos?limit=&cursor=&search=&sort=&direction=` | `limit` default 50, max 200; `sort` is `created_at` \| `updated_at` \| `last_push_at` \| `name` |
 | GET | `/artifacts/namespaces/:namespace/repos/:name` | |
@@ -317,7 +318,7 @@ Source: https://developers.cloudflare.com/artifacts/api/git-protocol/
 
 - Remote: `https://<ACCOUNT_ID>.artifacts.cloudflare.net/git/<namespace>/<repo>.git`. "Use the exact hostname from the repo `remote` returned by the Workers binding or REST API." (The 2026-04-16 changelog entry shows an older host form; do not build the URL by hand.)
 - HTTPS smart protocol only. No SSH endpoint is documented anywhere in the docset.
-- Token format: `art_v1_<40 hex>?expires=<unix_seconds>`.
+- Token format: `art_v1_<40 hex>?expires=<unix_seconds>`. Observed live 2026-10-02 (`live/entire-on-artifacts.md`): tokens issued by `wrangler artifacts repos create` are `art_v2_x_<40 hex>?expires=<unix_seconds>`; do not match on the `art_v1_` prefix.
 - Two ways to present it:
 
 ```sh
@@ -329,7 +330,7 @@ export ARTIFACTS_TOKEN_SECRET="${ARTIFACTS_TOKEN%%\?expires=*}"
 export ARTIFACTS_AUTH_REMOTE="https://x:${ARTIFACTS_TOKEN_SECRET}@${ARTIFACTS_REMOTE#https://}"
 ```
 
-- "Use any non-empty username in the URL. Artifacts accepts that username but does not otherwise use or log it." A credential helper therefore returns any username plus the stripped secret as the password.
+- "Use any non-empty username in the URL. Artifacts accepts that username but does not otherwise use or log it." A credential helper therefore returns any username plus the stripped secret as the password. Observed live 2026-10-02 (`live/entire-on-artifacts.md`): stripping is not required — the token with or without its `?expires=` suffix was accepted in both the Bearer and the Basic form. A token for another repository, and any token against a repository that does not exist, both get `remote: Invalid or expired token` with HTTP 403.
 - Scopes: `read` allows clone, fetch, pull; `write` adds push. Tokens are repo-scoped. The docs list only these two scopes; no per-branch or per-ref restriction is documented anywhere (an absence, not a stated guarantee).
 - TTL: minimum 60 s, maximum 31,536,000 s (1 year), default 86,400 s (24 h). Out of range is `INVALID_TTL`.
 - Minting: `repo.createToken(scope?, ttl?)`, `POST …/tokens`, `wrangler artifacts repos issue-token <REPO> --namespace --scope --ttl`, or the dashboard. Listing: `repo.listTokens()` or `GET …/repos/:name/tokens`. Revoking: `repo.revokeToken(tokenOrId)` (plaintext or id) or `DELETE …/tokens/:id`.
@@ -560,12 +561,12 @@ const push = await git.push({
 
 - **Fork storage accounting.** No page says whether a fork shares objects with its parent or counts in full against the 1 GB repo and 1 TB account limits. The fork response's `objects` count and "diverges independently" suggest a copy, but that is inference. Tried: the Artifacts docset, the two Artifacts blog posts (2026-04 beta, 2026-10 open beta), the pricing and limits pages. Needs a measurement on a real account.
 - **Cross-namespace forks.** The `repo.forked` example event shows different source and target namespaces, but no API accepts a target namespace. Possibly dashboard-only or an example artefact.
-- **Whether `--filter=blob:none` works.** The protocol page says `filter` is unsupported (worded as a v1 capability); the ArtifactFS page describes a blobless clone against Artifacts. No capability advertisement could be inspected without a repo.
+- **Whether `--filter=blob:none` works.** The protocol page says `filter` is unsupported (worded as a v1 capability); the ArtifactFS page describes a blobless clone against Artifacts. No capability advertisement could be inspected without a repo. **Resolved** — Observed live 2026-10-02 (`live/entire-on-artifacts.md`): it works over protocol v2 with git 2.55.
 - **How to scope a Queue subscription to one repo.** The guide says the `artifacts.repo` source takes `namespace` and `repo_name`; Wrangler 4.147.0 sends neither, and the Queues REST reference (https://developers.cloudflare.com/api/resources/queues/subresources/subscriptions/methods/create/) lists no Artifacts source at all. Also unknown: whether `--events` takes `pushed` or `cf.artifacts.repo.pushed`, and whether an unscoped `artifacts.repo` subscription is accepted.
 - **What a Workflow receives from `triggers.events`.** `cloudflare/ci` parses the same `{ type, source, payload }` shape (plus an optional `id`), but the Workflow `event.payload` contract is not documented. Delivery guarantees, ordering and latency are not documented for either route.
 - **Undocumented fields on the push event.** Absence of an actor or token id is established from the documented example and Cloudflare's own parser, not from a captured live event.
 - **REST JSON for `log`, `commit/:hash`, `tree/:hash`.** The REST page gives routes and curl only. The binding types give the camelCase shapes; the REST field names (probably snake_case) are not published. The Cloudflare API reference has no Artifacts section (`/api/resources/artifacts/` is 404 and absent from `/api/llms.txt`).
-- **The initial token from `create()` / `fork()` / `import()`.** A getting-started comment calls it a write token; its TTL is not stated (parse `?expires=`). Whether it appears in `listTokens()` was not checked.
+- **The initial token from `create()` / `fork()` / `import()`.** A getting-started comment calls it a write token; its TTL is not stated (parse `?expires=`). Whether it appears in `listTokens()` was not checked. Observed live 2026-10-02 (`live/entire-on-artifacts.md`): the token returned by `wrangler artifacts repos create` (the REST create route) pushed successfully and expired exactly 24 hours after creation.
 - **`read_only` enforcement.** Not stated whether a push with a write token to a read-only repo is rejected, with what error, or whether the flag can ever be changed.
 - **isomorphic-git `clone` / `fetch` against Artifacts.** Cloudflare's example only pushes into a new empty repo. Committing into an existing repo from a Worker needs a clone or fetch first; that is mentioned in prose, not demonstrated, and the protocol page says some optional v1 capabilities are unsupported. Whether isomorphic-git's fetch negotiation works against Artifacts was not tested. Until it is, writing to an existing repo without a container is unproven.
 - **One event per ref, and events for refs outside `refs/heads/` and `refs/tags/`.** Inferred from the single `ref` field in the example payload and from a guard in `cloudflare/ci`; neither source states it.
