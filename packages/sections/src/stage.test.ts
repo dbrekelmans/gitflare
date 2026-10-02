@@ -5,7 +5,7 @@ import { demoFiles, demoUsers } from "@gitflare/testing/demo";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { runSectionsStage } from "./stage";
+import { runSectionsStage, type SectionsDeps } from "./stage";
 import {
   type DemoWorld,
   demoAtFirstPush,
@@ -401,6 +401,156 @@ describe("running the stage twice for one revision", () => {
     expect(await world.snapshot()).toEqual(snapshot);
     expect(world.ports.live.events).toHaveLength(published);
     expect(world.ports.models.calls).toHaveLength(2);
+  });
+});
+
+describe("a push that lands while the model is answering", () => {
+  /** Runs `during` inside the stage's next call to the model, before the model replies. */
+  function whileTheModelAnswers(world: DemoWorld, during: () => Promise<unknown>): SectionsDeps {
+    const { models } = world.ports;
+    let ran = false;
+    return {
+      ...world.deps,
+      models: {
+        embed: (request) => models.embed(request),
+        stream: (request) => models.stream(request),
+        generate: async (request) => {
+          if (!ran) {
+            ran = true;
+            await during();
+          }
+          return models.generate(request);
+        },
+      },
+    };
+  }
+
+  it("leaves the sections to the later revision's run, and writes nothing of its own", async () => {
+    const world = await demoAtFirstPush();
+    const first = await world.diffAt(review.first);
+    const second = await world.diffAt(review.second);
+    // The later revision's run asks first, so its reply is first in the queue.
+    world.ports.models
+      .reply("sections", { output: divisionReply(second, review.sections) })
+      .reply("sections", { output: divisionReply(first, review.sections) });
+    const deps = whileTheModelAnswers(world, async () => {
+      await world.head(review.second);
+      await runSectionsStage(world.deps, world.input(review.second));
+    });
+
+    const outcome = await runSectionsStage(deps, world.input(review.first));
+
+    expect(outcome).toEqual({ status: "skipped", reason: "A later push replaced this revision." });
+    const sections = await world.sections();
+    expect(sections).toHaveLength(4);
+    expect(
+      sectionsByFile(
+        second.map((file) => file.path),
+        sections,
+      ),
+    ).toEqual(Object.fromEntries(second.map((file) => [file.path, 1])));
+    for (const section of sections) {
+      expect(section.contentHash).toBe(sectionContentHash(second, section.files));
+    }
+    // No removed leftovers either: these four and the merged change's one are every row.
+    expect((await world.snapshot()).sections).toHaveLength(5);
+    expect(await world.events()).toEqual([{ type: "sections.updated" }]);
+  });
+
+  it("withdraws no approval for a revision that is no longer the head", async () => {
+    const world = await demoAtFirstPush();
+    const before = await firstPushSectioned(world);
+    const approval = await world.approve(fixtureSection(before, "sec_demo12limit"), priya);
+    await world.head(review.second);
+    world.ports.models.reply(
+      "sections",
+      revisionReply({
+        s1: { title: "Limit invites per workspace", explanation: "Per workspace." },
+        s3: { title: "Tests for the limit", explanation: "Three tests." },
+      }),
+    );
+    const snapshot = await world.snapshot();
+    const deps = whileTheModelAnswers(world, () => world.push({ "notes.md": "later\n" }));
+
+    const outcome = await runSectionsStage(deps, world.input(review.second));
+
+    expect(outcome).toEqual({ status: "skipped", reason: "A later push replaced this revision." });
+    expect(await world.snapshot()).toEqual(snapshot);
+    expect((await world.approvals()).find((a) => a.id === approval.id)).toEqual(approval);
+  });
+
+  /** Runs `during` after the stage's last look at the change and before its writes commit. */
+  function whileCommitting(world: DemoWorld, during: () => Promise<unknown>): SectionsDeps {
+    let ran = false;
+    const db = new Proxy(world.db, {
+      get(target, property) {
+        if (property === "batch") {
+          return async (...args: Parameters<typeof target.batch>) => {
+            if (!ran) {
+              ran = true;
+              await during();
+            }
+            return target.batch(...args);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    return { ...world.deps, db };
+  }
+
+  it("commits no section when the push lands just as it writes", async () => {
+    const world = await demoAtFirstPush();
+    const diff = await world.diffAt(review.first);
+    world.ports.models.reply("sections", { output: divisionReply(diff, review.sections) });
+    const snapshot = await world.snapshot();
+    const deps = whileCommitting(world, () => world.head(review.second));
+
+    const outcome = await runSectionsStage(deps, world.input(review.first));
+
+    expect(outcome).toEqual({ status: "skipped", reason: "A later push replaced this revision." });
+    expect(await world.snapshot()).toEqual(snapshot);
+  });
+
+  it("commits no fold and no withdrawal when the push lands just as it writes", async () => {
+    const world = await demoAtFirstPush();
+    const before = await firstPushSectioned(world);
+    await world.approve(fixtureSection(before, "sec_demo12limit"), priya);
+    await world.head(review.second);
+    world.ports.models.reply(
+      "sections",
+      revisionReply({
+        s1: { title: "Limit invites per workspace", explanation: "Per workspace." },
+        s3: { title: "Tests for the limit", explanation: "Three tests." },
+      }),
+    );
+    const deps = whileCommitting(world, () => world.push({ "notes.md": "later\n" }));
+    const snapshot = await world.snapshot();
+
+    const outcome = await runSectionsStage(deps, world.input(review.second));
+
+    expect(outcome).toEqual({ status: "skipped", reason: "A later push replaced this revision." });
+    // The later push's own revision row is the only thing that changed.
+    expect(await world.snapshot()).toEqual(snapshot);
+  });
+
+  it("fails rather than add to sections another run of the same revision wrote", async () => {
+    const world = await demoAtFirstPush();
+    const diff = await world.diffAt(review.first);
+    world.ports.models
+      .reply("sections", { output: divisionReply(diff, review.sections) })
+      .reply("sections", { output: divisionReply(diff, review.sections) });
+    const deps = whileTheModelAnswers(world, () =>
+      runSectionsStage(world.deps, world.input(review.first)),
+    );
+
+    await expect(runSectionsStage(deps, world.input(review.first))).rejects.toThrow(
+      /changed by another run of this stage/,
+    );
+
+    expect(await world.sections()).toHaveLength(4);
+    expect(await world.events()).toEqual([{ type: "sections.updated" }]);
   });
 });
 

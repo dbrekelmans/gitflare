@@ -1,5 +1,6 @@
 import {
   approvalsWithdrawnByPush,
+  type ChangeId,
   defaultModelSettings,
   type FileDiff,
   ForgeError,
@@ -23,7 +24,7 @@ import {
   type ModelGateway,
 } from "@gitflare/core/ports";
 import { appendChangeEvent, type Db, schema, toSection } from "@gitflare/db";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, not, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { z } from "zod";
 import { type FoldResult, foldRevision } from "./fold";
@@ -213,9 +214,11 @@ function present(
   });
 }
 
-function describe(section: Section, label: string): SectionMaterial {
+/** A section as a prompt shows it: with the files it presents now, not the ones a push took away. */
+function describe(section: Section, label: string, diff: readonly FileDiff[]): SectionMaterial {
   const { kind, title, explanation } = section;
-  return { label, kind, title, explanation, paths: section.files.map((file) => file.path) };
+  const paths = selectDiff(diff, section.files).map((file) => file.path);
+  return { label, kind, title, explanation, paths };
 }
 
 /**
@@ -246,7 +249,7 @@ async function refold(
       system: placeSystem,
       message: placeMessage({
         change: await run.material(),
-        sections: after.map((section) => describe(section, label(section))),
+        sections: after.map((section) => describe(section, label(section), diff)),
         files: fileMaterial(run.deps.diffs, folded.unplaced),
       }),
       maxOutputTokens: PLACE_OUTPUT_TOKENS,
@@ -284,7 +287,7 @@ async function refold(
     message: reviseMessage({
       change: await run.material(),
       changed: changed.map((section) => ({
-        ...describe(section, label(section)),
+        ...describe(section, label(section), diff),
         files: fileMaterial(run.deps.diffs, selectDiff(diff, section.files)),
       })),
       others: after.filter((section) => !changed.includes(section)),
@@ -297,36 +300,54 @@ async function refold(
   });
 }
 
+function liveSections(db: Db, changeId: ChangeId): Promise<Section[]> {
+  return db
+    .select()
+    .from(sections)
+    .where(and(eq(sections.changeId, changeId), isNull(sections.removedAt)))
+    .orderBy(asc(sections.position))
+    .then((rows) => rows.map(toSection));
+}
+
 /**
  * Writes what the run changed, in one batch, then says so. A run that changed
  * nothing writes nothing and emits nothing, which is what makes the stage
  * safe to run twice: the second run finds the sections already as it would
  * leave them. For the same reason a run that dies between the batch and the
  * events never sends them.
+ *
+ * A model call takes seconds, and a push can land in them. So nothing is
+ * written unless the revision is still the change's head when the batch
+ * commits: every write carries that condition, and the batch reads the head
+ * back. Returns false when a later push won, and the run wrote nothing.
  */
 async function persist(
   deps: SectionsDeps,
   input: StageInput,
   before: readonly Section[],
   after: readonly Section[],
-): Promise<void> {
+): Promise<boolean> {
   const { db } = deps;
+  const { changeId, revisionId } = input;
   const now = deps.clock.now();
   const known = new Map(before.map((section) => [section.id, section]));
   const kept = new Set(after.map((section) => section.id));
+  const stillHead = sql`(select ${changes.headRevisionId} from ${changes} where ${changes.id} = ${changeId}) = ${revisionId}`;
 
   const writes: BatchItem<"sqlite">[] = [];
+  const inserted: SectionId[] = [];
   for (const section of after) {
     const was = known.get(section.id);
     if (!was) {
       writes.push(db.insert(sections).values(section));
+      inserted.push(section.id);
     } else if (was !== section && JSON.stringify(was) !== JSON.stringify(section)) {
-      const { position, title, explanation, files, contentHash, updatedRevisionId } = section;
+      const { position, title, kind, explanation, files, contentHash, updatedRevisionId } = section;
       writes.push(
         db
           .update(sections)
-          .set({ position, title, explanation, files, contentHash, updatedRevisionId })
-          .where(eq(sections.id, section.id)),
+          .set({ position, title, kind, explanation, files, contentHash, updatedRevisionId })
+          .where(and(eq(sections.id, section.id), stillHead)),
       );
     }
   }
@@ -336,39 +357,65 @@ async function persist(
       db
         .update(sections)
         .set({ removedAt: now })
-        .where(and(eq(sections.id, section.id), isNull(sections.removedAt))),
+        .where(and(eq(sections.id, section.id), isNull(sections.removedAt), stillHead)),
     );
+  }
+  // An insert cannot carry the condition, so a batch that lost the race takes its rows back out.
+  if (inserted.length > 0) {
+    writes.push(db.delete(sections).where(and(inArray(sections.id, inserted), not(stillHead))));
   }
   const sectionsChanged = writes.length > 0;
 
   const standing = await db
     .select()
     .from(approvals)
-    .where(and(eq(approvals.changeId, input.changeId), isNull(approvals.withdrawnAt)));
+    .where(and(eq(approvals.changeId, changeId), isNull(approvals.withdrawnAt)));
   const withdrawals = approvalsWithdrawnByPush(after, standing);
   for (const withdrawal of withdrawals) {
     writes.push(
       db
         .update(approvals)
         .set({ withdrawnAt: now, withdrawnReason: withdrawal.reason })
-        .where(and(eq(approvals.id, withdrawal.approvalId), isNull(approvals.withdrawnAt))),
+        .where(
+          and(eq(approvals.id, withdrawal.approvalId), isNull(approvals.withdrawnAt), stillHead),
+        ),
+    );
+  }
+  const [first, ...rest] = writes;
+  if (!first) return true;
+
+  // What the run decided was decided about `before`. If the sections are no
+  // longer that, another run got there first and these writes would add to its.
+  const [current] = await db
+    .select({ head: changes.headRevisionId })
+    .from(changes)
+    .where(eq(changes.id, changeId));
+  if (current?.head !== revisionId) return false;
+  if (JSON.stringify(await liveSections(db, changeId)) !== JSON.stringify(before)) {
+    throw new Error(
+      "The change's sections were changed by another run of this stage while this one was working. Re-run the stage.",
     );
   }
 
-  const [first, ...rest] = writes;
-  if (!first) return;
-  await db.batch([first, ...rest]);
+  const headAfter = db
+    .select({ head: changes.headRevisionId })
+    .from(changes)
+    .where(eq(changes.id, changeId));
+  const results: unknown[] = await db.batch([first, ...rest, headAfter]);
+  const [committed] = results.at(-1) as { head: string }[];
+  if (committed?.head !== revisionId) return false;
 
   for (const withdrawal of withdrawals) {
     const approval = standing.find((candidate) => candidate.id === withdrawal.approvalId);
     if (!approval) continue;
-    await appendChangeEvent(deps, input.changeId, {
+    await appendChangeEvent(deps, changeId, {
       type: "section.approval_withdrawn",
       sectionId: withdrawal.sectionId,
       userId: approval.userId,
     });
   }
-  if (sectionsChanged) await appendChangeEvent(deps, input.changeId, { type: "sections.updated" });
+  if (sectionsChanged) await appendChangeEvent(deps, changeId, { type: "sections.updated" });
+  return true;
 }
 
 /**
@@ -379,18 +426,12 @@ async function persist(
  */
 export const runSectionsStage: StageHandler<SectionsDeps> = async (deps, input) => {
   const { change, revision, session, repository } = await startRun(deps, input);
+  const superseded = { status: "skipped", reason: "A later push replaced this revision." } as const;
   // Folding an older revision over a newer one would move the sections backwards.
-  if (change.headRevisionId !== input.revisionId) {
-    return { status: "skipped", reason: "A later push replaced this revision." };
-  }
+  if (change.headRevisionId !== input.revisionId) return superseded;
 
   const diff = await deps.diffs.between(session.forkRepo, revision.baseSha, revision.headSha);
-  const rows = await deps.db
-    .select()
-    .from(sections)
-    .where(and(eq(sections.changeId, change.id), isNull(sections.removedAt)))
-    .orderBy(asc(sections.position));
-  const before = rows.map(toSection);
+  const before = await liveSections(deps.db, change.id);
   if (before.length === 0 && diff.length === 0) {
     return {
       status: "skipped",
@@ -425,6 +466,5 @@ export const runSectionsStage: StageHandler<SectionsDeps> = async (deps, input) 
       : diff.length > 0
         ? await divide(run)
         : [];
-  await persist(deps, input, before, after);
-  return { status: "succeeded" };
+  return (await persist(deps, input, before, after)) ? { status: "succeeded" } : superseded;
 };
