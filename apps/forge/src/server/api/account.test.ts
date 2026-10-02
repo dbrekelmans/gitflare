@@ -98,6 +98,25 @@ describe("account slice", () => {
     ).rejects.toMatchObject({ code: "conflict" });
   });
 
+  it("keeps one administrator when two demote each other at the same time", async () => {
+    const { services, admin, member } = await setup();
+    const api = accountApi(services as Services);
+    await api.setMemberRole(ctxFor(admin), { userId: member.id, role: "admin" });
+    const second = { ...member, role: "admin" } as const;
+
+    const results = await Promise.allSettled([
+      api.setMemberRole(ctxFor(admin), { userId: second.id, role: "member" }),
+      api.setMemberRole(ctxFor(second), { userId: admin.id, role: "member" }),
+    ]);
+
+    expect(results.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(results.find((result) => result.status === "rejected")).toMatchObject({
+      reason: { code: "conflict" },
+    });
+    const admins = (await api.listMembers()).filter((user) => user.role === "admin");
+    expect(admins).toHaveLength(1);
+  });
+
   it("allows demoting an administrator when another one remains", async () => {
     const { services, admin, member } = await setup();
     const api = accountApi(services as Services);

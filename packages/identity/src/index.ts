@@ -3,7 +3,7 @@ import type { Clock, IdentityProvider, IdGenerator } from "@gitflare/core/ports"
 import type { Db } from "@gitflare/db";
 import { schema } from "@gitflare/db";
 import { eq } from "drizzle-orm";
-import { createRemoteJWKSet, customFetch, jwtVerify } from "jose";
+import { createRemoteJWKSet, customFetch, errors, jwtVerify } from "jose";
 
 // @gitflare/identity — who a request is from, and the user record that
 // identity maps to. Production validates the Cloudflare Access JWT itself
@@ -66,8 +66,15 @@ export function createAccessIdentity(options: AccessOptions): IdentityProvider {
       } catch (error) {
         // Never throws for a bad token, but a key-set fetch failure or a
         // misconfigured `teamDomain` looks identical to a forged token
-        // without this: worth a log line to tell them apart.
-        console.error("@gitflare/identity: token did not validate", error);
+        // without this: worth a log line to tell them apart. Only the code:
+        // jose's claim errors carry the token's payload, `email` included.
+        const reason =
+          error instanceof errors.JOSEError
+            ? error.code
+            : error instanceof Error
+              ? error.name
+              : typeof error;
+        console.error(`@gitflare/identity: token did not validate: ${reason}`);
         return null;
       }
     },
