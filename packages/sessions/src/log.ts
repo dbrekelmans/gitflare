@@ -7,7 +7,10 @@ import type { SessionEventDraft } from "./events";
 // A hosted session's event log, in `cloud_session_events`. Every event has a
 // place in it that never changes: an event a sandbox reports is stored at a
 // number derived from the prompt that started its turn, so reading the same
-// sandbox twice, or from two requests at once, stores it once.
+// sandbox twice, or from two requests at once, stores it once. A read of a
+// sandbox that is stopped and rebuilt before the read stores its events could
+// take a number the new workspace's `starting` already holds; the event read
+// then is dropped, and the rest of that turn lands after it.
 
 const { cloudSessionEvents: events } = schema;
 
