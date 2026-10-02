@@ -1,3 +1,4 @@
 # Private working notes (gitignored) that agents need in every bb worktree.
-CONTEXT.md
-docs/
+# Anchored to the repo root, like the matching .gitignore entries.
+/CONTEXT.md
+/docs/

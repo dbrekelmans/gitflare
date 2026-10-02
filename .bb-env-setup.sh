@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Runs in each new bb worktree. Every step is optional: never fail provisioning.
+# Runs in each new bb worktree. Every step is optional: never fail provisioning,
+# and never wait on input (a hang fails provisioning just like a non-zero exit).
 export PATH="$HOME/Library/pnpm/bin:$HOME/Library/pnpm:$HOME/.vite-plus/bin:$PATH"
+export CI=true
 if [ -f pnpm-lock.yaml ] && command -v pnpm >/dev/null 2>&1; then
-  pnpm install --frozen-lockfile --prefer-offline || echo "pnpm install failed; run it manually"
+  pnpm install --frozen-lockfile --prefer-offline --ignore-scripts </dev/null \
+    || echo "pnpm install failed; run it manually"
 fi
 exit 0
