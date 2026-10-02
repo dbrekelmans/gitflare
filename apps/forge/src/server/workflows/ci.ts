@@ -1,12 +1,6 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
-import {
-  closeCiRun,
-  finishCiRun,
-  pollCiStep,
-  startCiRun,
-  startCiStep,
-} from "@gitflare/ci";
+import { closeCiRun, finishCiRun, pollCiStep, startCiRun, startCiStep } from "@gitflare/ci";
 import {
   CI_FINISHED_EVENT,
   type CiFinishedPayload,
