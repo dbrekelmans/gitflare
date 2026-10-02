@@ -4,7 +4,19 @@ Throwaway code behind [`spec/research/live/gateway-access.md`](../../spec/resear
 
 - `ai/` — Worker `gitflare-spike-g-ai`: a generic executor over the `AI` binding (`/run`, `/run-and-log`, `/log`, `/gateway-run`, `/concurrent`, `/url`), guarded by a shared secret.
 - `app/` — Worker `gitflare-spike-g-app`: static assets, `/api/whoami`, and `/ws/*` to a Durable Object, to sit behind Access.
-- `scripts/` — the calls that were made.
+- `scripts/` — the calls that were made:
+
+| Script | What it answers | Run live |
+| --- | --- | --- |
+| `call.sh <op> '<json>'` | one request to the AI Worker | yes |
+| `slugs.sh` | which model slugs and malformed bodies are rejected before billing | yes |
+| `validation-matrix.sh` | which Anthropic body fields each of five models accepts | yes |
+| `metadata.sh` | what the gateway keeps of the metadata sent (count, types, `null`, reserved keys) | yes |
+| `log-filters.sh` | filtering logs by metadata over REST | no — the same requests were made through the Cloudflare MCP tool; this `curl` form was not executed |
+| `spend-limit.sh <user> <calls> [pause]` | status of repeated tiny calls for one user | yes |
+| `spend-window.sh <user> <pause> <polls>` | one ~$0.003 call, then how the rule bites and clears | yes |
+| `access.sh` | Access in front of the app Worker: unauthenticated, service token, cookie, WebSocket, forged header, discovery | yes |
+| `access-ws.sh` | WebSocket upgrade with controls showing the application is enforcing | yes |
 
 Needs: `wrangler@4.147.0` logged in (`npx wrangler@4.147.0 whoami`), `curl`, `python3`, and a Cloudflare API token (or the Cloudflare MCP tools) with **AI Gateway Write** and **Access: Apps and Policies Write** + **Access: Service Tokens Write** — wrangler's own login has neither. Below, `$CF_API` is `https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID` and `$AUTH` is `Authorization: Bearer $CLOUDFLARE_API_TOKEN`. Keep both, and everything minted below, out of git.
 
@@ -29,6 +41,7 @@ scripts/call.sh run '{"model":"anthropic/claude-haiku-4.5","body":{"max_tokens":
 scripts/call.sh run '{"model":"anthropic/claude-haiku-4.5","body":{"max_tokens":40,"stream":true,"messages":[{"role":"user","content":"pong"}]}}'
 scripts/call.sh run '{"model":"anthropic/claude-haiku-4.5","body":{"max_tokens":16,"messages":[{"role":"user","content":"pong"}]},"options":{"returnRawResponse":true}}'
 scripts/call.sh gateway-run '{"provider":"anthropic","endpoint":"v1/messages","headers":{"anthropic-version":"2023-06-01","content-type":"application/json"},"query":{"model":"claude-haiku-4-5","max_tokens":16,"messages":[{"role":"user","content":"pong"}]}}'
+bash scripts/slugs.sh                        # slug sweep, missing max_tokens, bogus_field, non-array messages, thrown vs raw form
 bash scripts/validation-matrix.sh            # which body fields each model's validation accepts
 ```
 
@@ -39,11 +52,19 @@ scripts/call.sh run-and-log '{"model":"@cf/meta/llama-3.2-3b-instruct","body":{"
 scripts/call.sh run-and-log '{"model":"@cf/meta/llama-3.2-3b-instruct","body":{"max_tokens":40,"stream":true,"messages":[{"role":"user","content":"Count from 1 to 5"}]},"gateway":{"skipCache":true,"metadata":{"user":"u-bob","change":"c-102","agent":"derive"}},"waitMs":20000}'
 scripts/call.sh concurrent '{"model":"@cf/meta/llama-3.2-3b-instruct"}'
 scripts/call.sh run '{"model":"@cf/baai/bge-m3","body":{"text":["decision: use hairlines not boxes","decision: one accent colour"]},"gateway":{"metadata":{"user":"u-alice","agent":"embed"}}}'
-curl -G "$CF_API/ai-gateway/gateways/gitflare-spike-g-gw/logs" -H "$AUTH" \
-  --data-urlencode 'filters=[{"key":"metadata.value","operator":"eq","value":["u-alice"]}]'
+bash scripts/metadata.sh                     # null / object / reserved / >5 entries, read back from the log
+CF_API=$CF_API bash scripts/log-filters.sh   # needs CLOUDFLARE_API_TOKEN; run after the calls above
 ```
 
-Leave `skipCache` out of a repeated call to see the cache: the response header `cf-aig-cache-status` (with `"options":{"returnRawResponse":true}`) goes from `MISS` to `HIT`.
+Leave `skipCache` out of a repeated call to see the cache: the response header `cf-aig-cache-status` goes from `MISS` to `HIT`, and back to `MISS` about five minutes later. (This snippet is the tidied form of commands that were run inline, not a script that was executed as written.)
+
+```sh
+P="Reply with the single word: cache-probe-$(date +%s)"
+probe() { date -u +%H:%M:%S; scripts/call.sh run "{\"model\":\"@cf/meta/llama-3.2-3b-instruct\",\"body\":{\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"$P\"}]},\"gateway\":$1,\"options\":{\"returnRawResponse\":true}}" | python3 -c 'import sys,json; print(json.load(sys.stdin)["response"]["headers"].get("cf-aig-cache-status"))'; }
+probe '{"metadata":{"user":"u-a"}}'; probe '{"metadata":{"user":"u-b"}}'      # MISS, then HIT for another user
+probe '{"cacheTtl":0}'; probe '{"skipCache":true}'                            # HIT, MISS
+sleep 230; for i in $(seq 1 14); do probe '{}'; sleep 9; done                 # HIT … MISS near 300 s
+```
 
 Question 4 (about $0.003 per `spend-window.sh` run). `PUT` replaces the gateway config, so send the required fields again:
 
@@ -55,6 +76,7 @@ curl -X PUT "$CF_API/ai-gateway/gateways/gitflare-spike-g-gw" -H "$AUTH" --json 
     { "id": "fixed60", "limitType": "cost", "limit": 0.002, "window": 60, "technique": "fixed",
       "metadata": { "user": { "mode": "partition" } } } ] } }'
 bash scripts/spend-window.sh u-hank 2 45     # one ~$0.003 call, then a status every ~2 s
+START_AT_SEC=48 bash scripts/spend-window.sh u-x1 2 32   # same, with the call crossing a minute boundary
 bash scripts/spend-limit.sh u-dave 1         # another user is not blocked
 ```
 
@@ -81,15 +103,16 @@ printf 'https://<team>.cloudflareaccess.com' | npx wrangler@4.147.0 secret put T
 printf '<aud>' | npx wrangler@4.147.0 secret put POLICY_AUD
 cd ..
 export APP_URL=https://gitflare-spike-g-app.<subdomain>.workers.dev CF_ACCESS_CLIENT_ID=… CF_ACCESS_CLIENT_SECRET=…
-bash scripts/access.sh
+bash scripts/access.sh        # steps 1–7; step 6 is the forged/replayed JWT header, step 7 the X-Requested-With 401
+bash scripts/access-ws.sh     # WebSocket upgrade with unauthenticated controls
 ```
 
 Create the Access application before the first deploy so the Worker is never public. Variants that were run:
 
 - Without static assets (`ctx.access` appears): `npx wrangler@4.147.0 deploy -c wrangler.noassets.jsonc`.
 - `run_worker_first: true`: edit `app/wrangler.jsonc` accordingly and deploy.
-- Worker-level destination: `PUT $CF_API/access/apps/<app id>` with the same body but `"destinations": [{ "type": "worker", "worker_id": "<id>" }]`, where `<id>` is the `id` of the Worker in `GET $CF_API/workers/workers`. Wait ~20 s before re-running `scripts/access.sh`.
-- Service-token policy only: leave out the second policy; unauthenticated requests then get `403` instead of `302`.
+- Worker-level destination: `PUT $CF_API/access/apps/<app id>` with the same body but `"destinations": [{ "type": "worker", "worker_id": "<id>" }]`, where `<id>` is the `id` of the Worker in `GET $CF_API/workers/workers`. Confirm with `GET $CF_API/access/apps/<app id>` that it is the only destination, wait ~60 s, then run `scripts/access-ws.sh` (and `scripts/access.sh`).
+- Service-token policy only: leave out the second policy; unauthenticated requests then get `403` instead of `302`, and the JWT Access issued cannot be replayed on its own (step 6).
 
 ## 3. Clean up
 
@@ -101,4 +124,4 @@ npx wrangler@4.147.0 delete --name gitflare-spike-g-app --force
 npx wrangler@4.147.0 delete --name gitflare-spike-g-ai --force
 ```
 
-The live run used the Cloudflare MCP tools for the `$CF_API` calls instead of `curl` with a token; the request bodies are the ones shown here.
+The live run used the Cloudflare MCP tools for the `$CF_API` calls instead of `curl` with a token; the request bodies are the ones shown here. Afterwards, list gateways, Worker scripts, Durable Object namespaces, Access applications, service tokens and reusable policies and check that none starts with `gitflare-spike-g-`.
