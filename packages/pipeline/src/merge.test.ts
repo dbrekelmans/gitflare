@@ -128,6 +128,15 @@ describe("mergeChange", () => {
 
     expect(refusal).toMatchObject({ code: "not_ready" });
     expect(refusal.message).toMatch(/a push that is not part of the change yet/);
+    // Its event may have been lost: the merge raises the push itself.
+    expect(world.ports.pipeline.pushes).toEqual([
+      {
+        repoName: world.session.forkRepo,
+        ref: unseen.ref,
+        before: expect.any(String),
+        after: unseen.after,
+      },
+    ]);
     expect(await git.resolveRef("app", "main")).toBe(world.base);
     expect(await git.getRepo(world.session.forkRepo)).not.toBeNull();
     expect(await world.change(changeId)).toMatchObject({ status: "ready", mergedAt: null });
@@ -328,6 +337,35 @@ describe("endSession", () => {
     await expect(endSession(world.deps, "ses_missing", "abandoned")).rejects.toMatchObject({
       code: "not_found",
     });
+  });
+
+  it("stops a hosted session's sandbox before its fork goes", async () => {
+    const world = await createWorld();
+    const { cloudSessions, git } = world.ports;
+    await world.db
+      .update(schema.sessions)
+      .set({ kind: "cloud" })
+      .where(eq(schema.sessions.id, world.session.id));
+    await cloudSessions.launch(world.session.id, "Add b");
+    const stopped = vi.spyOn(cloudSessions, "stop").mockImplementation(async (sessionId) => {
+      expect(await git.getRepo(world.session.forkRepo)).not.toBeNull();
+      cloudSessions.setState(sessionId, "asleep");
+    });
+
+    await endSession(world.deps, world.session.id, "abandoned");
+
+    expect(stopped).toHaveBeenCalledExactlyOnceWith(world.session.id);
+    expect((await cloudSessions.status(world.session.id)).state).toBe("asleep");
+    expect(await git.getRepo(world.session.forkRepo)).toBeNull();
+    await endSession(world.deps, world.session.id, "abandoned");
+    expect(stopped).toHaveBeenCalledOnce();
+  });
+
+  it("leaves a local session's agent alone", async () => {
+    const world = await createWorld();
+    const stopped = vi.spyOn(world.ports.cloudSessions, "stop");
+    await endSession(world.deps, world.session.id, "merged");
+    expect(stopped).not.toHaveBeenCalled();
   });
 
   it("finishes deleting a fork when an earlier call ended the session and then failed", async () => {

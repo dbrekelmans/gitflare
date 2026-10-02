@@ -99,15 +99,22 @@ export async function mergeChange(
     if (!repository) throw new ForgeError("not_found", "Repository not found.");
 
     // What merges is what was reviewed. A push the change has not taken in yet would be
-    // deleted with the fork, so the merge waits for it to become a revision.
+    // deleted with the fork, so the merge waits for it to become a revision. Its event
+    // may have been lost: raising the push again is what makes the wait end.
     const tip = await deps.git.resolveRef(
       session.forkRepo,
       change.headRef.replace(/^refs\/heads\//, ""),
     );
     if (tip && tip !== change.headSha) {
+      await deps.pipeline.handlePush({
+        repoName: session.forkRepo,
+        ref: change.headRef,
+        before: change.headSha,
+        after: tip,
+      });
       throw new ForgeError(
         "not_ready",
-        `Change #${change.number} cannot merge yet: its branch has a push that is not part of the change yet.`,
+        `Change #${change.number} cannot merge yet: its branch has a push that is not part of the change yet. It is being taken in now.`,
       );
     }
     const result = await deps.gitWriter.merge({
@@ -187,12 +194,13 @@ export async function closeChange(
 
 /**
  * Ends a session, in the one place that does: marks it merged or abandoned,
- * deletes its fork from the git host (which revokes the fork's tokens) and
- * records that the fork is gone. `mergeChange` and `closeChange` call it; so
- * does abandoning a session that never opened a change. Safe to call twice.
+ * stops a hosted session's sandbox, deletes its fork from the git host (which
+ * revokes the fork's tokens) and records that the fork is gone. `mergeChange`
+ * and `closeChange` call it; so does abandoning a session that never opened a
+ * change. Safe to call twice.
  */
 export async function endSession(
-  deps: Pick<PipelineDeps, "db" | "git" | "clock">,
+  deps: Pick<PipelineDeps, "db" | "git" | "cloudSessions" | "clock">,
   sessionId: SessionId,
   outcome: "merged" | "abandoned",
 ): Promise<Session> {
@@ -206,6 +214,9 @@ export async function endSession(
       .where(and(eq(sessions.id, sessionId), eq(sessions.status, "active")));
   }
   if (session.forkDeletedAt === null) {
+    // Before the fork goes, so the agent is not left pushing to a repository that is gone.
+    // A sandbox stops more than once without complaint, which keeps this safe to repeat.
+    if (session.kind === "cloud") await deps.cloudSessions.stop(sessionId);
     await deps.git.deleteRepo(session.forkRepo);
     const now = deps.clock.now();
     await db.batch([

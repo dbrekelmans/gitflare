@@ -15,12 +15,13 @@ import {
 import { createIdGenerator } from "@gitflare/core/ports";
 import { changeEventsAfter, schema } from "@gitflare/db";
 import { createD1Db } from "@gitflare/db/d1";
+import { queueStageRerun } from "@gitflare/pipeline";
 import { createFakePorts } from "@gitflare/testing";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterEach, expect, it, vi } from "vitest";
 import { ensureDevDatabase } from "../dev";
 import type { Services } from "../services";
-import { type PipelineRuntime, pipelineRuntime } from "./change-pipeline";
+import { type PipelineRuntime, pipelineRuntime, stageRunnerId } from "./change-pipeline";
 
 // The real Workflow in workerd, with local D1, on fake ports and fake stages.
 
@@ -125,6 +126,7 @@ async function world(ci: CiFinishedPayload | null = { status: "succeeded" }) {
   return {
     db,
     ports,
+    services,
     runtime,
     slug,
     session,
@@ -194,8 +196,8 @@ it("runs each stage once when the same push is delivered twice at the same time"
   const { run, push, change, stages, calls } = await world();
   const delivery: PipelineParams = { kind: "push", push: push({ "src/b.ts": "b\n" }) };
 
-  // Two deliveries, and the one instance they both hand the stages to.
-  expect(await run([delivery, delivery])).toBe(3);
+  // Two deliveries, and the one runner per stage they both hand the stages to.
+  expect(await run([delivery, delivery])).toBe(6);
 
   expect([...calls].sort()).toEqual(["ci", "intent", "review", "sections"]);
   const opened = await change();
@@ -204,7 +206,7 @@ it("runs each stage once when the same push is delivered twice at the same time"
 });
 
 it("runs a re-run once when it is asked for twice at the same time", async () => {
-  const { run, push, change, stages, calls, runtime } = await world();
+  const { run, push, change, stages, calls, runtime, services } = await world();
   await run({ kind: "push", push: push({ "src/b.ts": "b\n" }) });
   const opened = await change();
   runtime.stages.review = async () => {
@@ -212,14 +214,95 @@ it("runs a re-run once when it is asked for twice at the same time", async () =>
     return { status: "succeeded" };
   };
   const before = calls.length;
+  const queued = await queueStageRerun(services, opened.id, "review");
   const rerun: PipelineParams = { kind: "rerun", changeId: opened.id, stage: "review", attempt: 2 };
 
   await run([rerun, rerun]);
 
+  expect(queued.attempt).toBe(2);
   expect(calls.slice(before)).toEqual(["review"]);
   expect((await stages(opened.id)).filter(([stage]) => stage === "review")).toEqual([
     ["review", 1, "failed", "the model is unavailable"],
     ["review", 2, "succeeded", null],
+  ]);
+});
+
+it("runs the attempt it was given and never queues another", async () => {
+  const { run, push, change, stages, calls, runtime, services } = await world();
+  await run({ kind: "push", push: push({ "src/b.ts": "b\n" }) });
+  const opened = await change();
+  runtime.stages.review = succeed;
+  const rerun: PipelineParams = { kind: "rerun", changeId: opened.id, stage: "review", attempt: 2 };
+
+  // Asked for before the request queued it: there is nothing to run.
+  await run(rerun);
+  expect(await stages(opened.id)).toHaveLength(4);
+
+  await queueStageRerun(services, opened.id, "review");
+  await run(rerun);
+  const ran = calls.length;
+  // The second request arrives after the first has settled.
+  await run(rerun);
+
+  expect(calls).toHaveLength(ran);
+  expect((await stages(opened.id)).filter(([stage]) => stage === "review")).toEqual([
+    ["review", 1, "failed", "the model is unavailable"],
+    ["review", 2, "succeeded", null],
+  ]);
+  expect(await change()).toMatchObject({ status: "ready" });
+});
+
+/** Polls an instance until it reaches a status: an introspector treats `errored` as final, and a restart is not. */
+async function reaches(id: string, status: InstanceStatus["status"]): Promise<void> {
+  const instance = await env.CHANGE_PIPELINE.get(id);
+  for (let polls = 0; (await instance.status()).status !== status; polls++) {
+    if (polls === 100) throw new Error(`instance ${id} never reached ${status}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+it("restarts a runner that errored when its stage is handed over again", async () => {
+  const { push, change, stages, runtime, db } = await world();
+  // The delivery starts; the four runners it starts die before their first step.
+  let started = 0;
+  pipelineRuntime.create = () => {
+    started++;
+    if (started > 1 && started <= 5) throw new Error("the runner died");
+    return runtime;
+  };
+  await using all = await introspectWorkflow(env.CHANGE_PIPELINE);
+  await all.modifyAll((modifier) => modifier.disableSleeps());
+
+  await env.CHANGE_PIPELINE.create({
+    params: { kind: "push", push: push({ "src/b.ts": "b\n" }) },
+  });
+  const [delivery] = await all.get();
+  await delivery?.waitForStatus("complete");
+  const opened = await change();
+  const [intent] = await db
+    .select()
+    .from(schema.stageRuns)
+    .where(and(eq(schema.stageRuns.changeId, opened.id), eq(schema.stageRuns.stage, "intent")));
+  if (!intent) throw new Error("the push queued no intent stage");
+  await reaches(stageRunnerId(intent), "errored");
+  expect((await stages(opened.id)).map(([, , status]) => status)).toEqual([
+    "queued",
+    "queued",
+    "queued",
+    "queued",
+  ]);
+
+  // A person asks for the stuck stage again: the request hands it to the same runner.
+  await env.CHANGE_PIPELINE.create({
+    params: { kind: "rerun", changeId: opened.id, stage: "intent", attempt: 1 },
+  });
+  await reaches(stageRunnerId(intent), "complete");
+
+  expect((await stages(opened.id)).find(([stage]) => stage === "intent")).toEqual([
+    "intent",
+    1,
+    "succeeded",
+    null,
   ]);
 });
 
@@ -240,10 +323,11 @@ it("waits a bounded time for the checkpoints the commits name, then goes on", as
 });
 
 it("re-runs one stage and brings the change back to ready", async () => {
-  const { run, push, change, stages, runtime } = await world();
+  const { run, push, change, stages, runtime, services } = await world();
   await run({ kind: "push", push: push({ "src/b.ts": "b\n" }) });
   const opened = await change();
   runtime.stages.review = succeed;
+  await queueStageRerun(services, opened.id, "review");
 
   await run({ kind: "rerun", changeId: opened.id, stage: "review", attempt: 2 });
 

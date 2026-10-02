@@ -13,11 +13,13 @@ export { handlePush, type PushResult } from "./push";
 export {
   CHECKPOINT_POLL_MS,
   CHECKPOINT_WAIT_MS,
+  findStageRun,
   missingCheckpoints,
   queueStageRerun,
   recordStageOutcome,
   runStage,
   settleChange,
+  stageAttempt,
   startStage,
 } from "./stages";
 export { changeDetail, ciView, listChanges, sectionDiff } from "./views";

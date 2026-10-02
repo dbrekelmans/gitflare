@@ -1,3 +1,4 @@
+import { schema } from "@gitflare/db";
 import { describe, expect, it, vi } from "vitest";
 import {
   approveSection,
@@ -103,6 +104,27 @@ describe("the change views", () => {
     await expect(sectionDiff(world.deps, changeId, "sec_missing")).rejects.toMatchObject({
       code: "not_found",
     });
+  });
+
+  it("reads each section's size as the sectioning stage stored it, not from the diff", async () => {
+    const world = await createWorld();
+    const { changeId } = await readyChange(world, { "src/b.ts": "one\ntwo\n" });
+    const read = vi.spyOn(world.ports.diffs, "between");
+
+    const detail = await changeDetail(world.deps, changeId);
+
+    expect(detail.sections.map((s) => [s.filesChanged, s.insertions, s.deletions])).toEqual([
+      [1, 2, 0],
+    ]);
+    expect(read).not.toHaveBeenCalled();
+
+    // A section written before sizes were stored is measured from the diff.
+    await world.db.update(schema.sections).set({ stats: null });
+    const measured = await changeDetail(world.deps, changeId);
+    expect(measured.sections.map((s) => [s.filesChanged, s.insertions, s.deletions])).toEqual([
+      [1, 2, 0],
+    ]);
+    expect(read).toHaveBeenCalledOnce();
   });
 
   it("lists what waits on the caller in their inbox, and their own work under mine", async () => {

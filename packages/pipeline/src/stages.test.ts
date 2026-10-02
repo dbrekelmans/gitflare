@@ -3,6 +3,7 @@ import { schema } from "@gitflare/db";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import {
+  findStageRun,
   handlePush,
   type PipelineDeps,
   queueStageRerun,
@@ -10,6 +11,7 @@ import {
   rerunStage,
   runStage,
   settleChange,
+  stageAttempt,
   startStage,
 } from "./index";
 import { createWorld, findingOn, runStages, sectionPerFile, succeed, type World } from "./world";
@@ -270,7 +272,22 @@ describe("re-running a stage", () => {
     await expect(rerunStage(world.deps, world.reviewer, changeId, "review")).rejects.toMatchObject({
       code: "conflict",
     });
-    expect(world.ports.pipeline.reruns).toEqual([]);
+    // Handed over all the same, which is what starts it again if its runner died.
+    expect(world.ports.pipeline.reruns).toEqual([{ changeId, stage: "review", attempt: 1 }]);
+    expect(await world.stageRuns(changeId)).toHaveLength(4);
+  });
+
+  it("finds the attempt a re-run names on the head revision, and nothing else", async () => {
+    const { world, changeId } = await withFailedReview();
+    const queued = await queueStageRerun(world.deps, changeId, "review");
+
+    expect(await stageAttempt(world.deps, changeId, "review", 2)).toEqual(queued);
+    expect(await stageAttempt(world.deps, changeId, "review", 3)).toBeNull();
+    expect(await stageAttempt(world.deps, changeId, "intent", 2)).toBeNull();
+    expect(await findStageRun(world.deps, queued.id)).toEqual(queued);
+    expect(await findStageRun(world.deps, "stg_missing")).toBeNull();
+    // Reading is all it does: still one queued attempt.
+    expect(await world.stageRuns(changeId)).toHaveLength(5);
   });
 
   it("queues at once for a person and hands the run to the pipeline", async () => {

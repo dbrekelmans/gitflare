@@ -1,4 +1,4 @@
-import { type Section, sectionContentHash } from "@gitflare/core";
+import { type Section, sectionContentHash, sectionStats } from "@gitflare/core";
 import { schema } from "@gitflare/db";
 import { placeholderResponder } from "@gitflare/testing";
 import { demoFiles, demoUsers } from "@gitflare/testing/demo";
@@ -87,6 +87,22 @@ describe("the first revision", () => {
       expect(section.updatedRevisionId).toBe(review.first.id);
     }
     expect(await world.events()).toEqual([{ type: "sections.updated" }]);
+  });
+
+  it("stores each section's size with its hash", async () => {
+    const world = await demoAtFirstPush();
+    const diff = await world.diffAt(review.first);
+
+    await firstPushSectioned(world);
+
+    const rows = (await world.snapshot()).sections.filter(
+      (row) => row.changeId === review.change.id,
+    );
+    expect(rows).toHaveLength(4);
+    for (const row of rows) {
+      expect(row.stats).toEqual(sectionStats(diff, row.files));
+      expect(row.stats?.filesChanged).toBe(row.files.length);
+    }
   });
 
   it("orders sections by kind, behaviour first, whatever order the model gave", async () => {
@@ -377,6 +393,25 @@ describe("running the stage twice for one revision", () => {
     expect(world.ports.models.calls).toHaveLength(1);
   });
 
+  it("gives a section stored without its size the size, and says nothing changed", async () => {
+    const world = await demoAtFirstPush();
+    const diff = await world.diffAt(review.first);
+    await firstPushSectioned(world);
+    await world.db.update(schema.sections).set({ stats: null });
+    const published = world.ports.live.events.length;
+
+    const outcome = await runSectionsStage(world.deps, world.input(review.first));
+
+    expect(outcome).toEqual({ status: "succeeded" });
+    for (const row of (await world.snapshot()).sections) {
+      if (row.changeId === review.change.id) {
+        expect(row.stats).toEqual(sectionStats(diff, row.files));
+      }
+    }
+    expect(world.ports.live.events).toHaveLength(published);
+    expect(await world.events()).toEqual([{ type: "sections.updated" }]);
+  });
+
   it("changes nothing the second time, on a later revision", async () => {
     const world = await demoAtFirstPush();
     const before = await firstPushSectioned(world);
@@ -535,6 +570,27 @@ describe("a push that lands while the model is answering", () => {
     expect(await world.snapshot()).toEqual(snapshot);
   });
 
+  it("commits nothing when another run of the same revision writes just before it does", async () => {
+    const world = await demoAtFirstPush();
+    const diff = await world.diffAt(review.first);
+    world.ports.models
+      .reply("sections", { output: divisionReply(diff, review.sections) })
+      .reply("sections", { output: divisionReply(diff, review.sections) });
+    let other: Promise<unknown> | undefined;
+    const deps = whileCommitting(world, () => {
+      other = runSectionsStage(world.deps, world.input(review.first));
+      return other;
+    });
+
+    await expect(runSectionsStage(deps, world.input(review.first))).rejects.toThrow(
+      /changed by another run of this stage/,
+    );
+
+    await expect(other).resolves.toEqual({ status: "succeeded" });
+    expect(await world.sections()).toHaveLength(4);
+    expect(await world.events()).toEqual([{ type: "sections.updated" }]);
+  });
+
   it("fails rather than add to sections another run of the same revision wrote", async () => {
     const world = await demoAtFirstPush();
     const diff = await world.diffAt(review.first);
@@ -686,6 +742,8 @@ describe("a push that takes a section's files back out", () => {
 
     expect(outcome).toEqual({ status: "succeeded" });
     expect((await world.sections()).map((section) => section.id)).not.toContain(route.id);
+    // The sections that remain are numbered without the gap the removed one left.
+    expect((await world.sections()).map((section) => section.position)).toEqual([0, 1, 2]);
     const [row] = await world.db
       .select()
       .from(schema.sections)
@@ -703,6 +761,67 @@ describe("a push that takes a section's files back out", () => {
     ]);
     // Taking a section away needs nothing from the model: no call beyond the two pushes'.
     expect(world.ports.models.calls).toHaveLength(2);
+  });
+});
+
+describe("a push that takes one of a section's files back out", () => {
+  it("stops listing the file, and stores the section's new size", async () => {
+    const world = await demoAtFirstPush();
+    const before = await secondPushSectioned(world);
+    const config = fixtureSection(before, "sec_demo12config");
+    expect(config.files.map((file) => file.path)).toEqual(["src/env.ts", "wrangler.jsonc"]);
+    const third = await world.push({ "wrangler.jsonc": demoFiles.base["wrangler.jsonc"] ?? "" });
+    world.ports.models.reply(
+      "sections",
+      revisionReply({ s4: { title: "The binding's type", explanation: "Declares it." } }),
+    );
+
+    await runSectionsStage(world.deps, world.input(third));
+
+    const after = fixtureSection(await world.sections(), "sec_demo12config");
+    expect(after.files).toEqual([{ path: "src/env.ts", hunkHashes: [] }]);
+    const [row] = await world.db
+      .select()
+      .from(schema.sections)
+      .where(eq(schema.sections.id, after.id));
+    expect(row?.stats).toEqual(sectionStats(await world.diffAt(third), after.files));
+    expect(row?.stats?.filesChanged).toBe(1);
+  });
+});
+
+describe("a run that dies after it writes", () => {
+  it("has already recorded its events with its writes", async () => {
+    const world = await demoAtFirstPush();
+    const before = await secondPushSectioned(world);
+    const route = fixtureSection(before, "sec_demo12route");
+    await world.approve(route, maya);
+    const third = await world.push({
+      "src/routes/invites.ts": demoFiles.base["src/routes/invites.ts"] ?? "",
+    });
+    const eventsBefore = (await world.events()).length;
+    // After its first batch commits, the database is gone for this run.
+    let committed = false;
+    const db = new Proxy(world.db, {
+      get(target, property) {
+        if (committed) throw new Error("the run died");
+        const value = Reflect.get(target, property, target);
+        if (property === "batch") {
+          return async (...args: Parameters<typeof target.batch>) => {
+            const results = await target.batch(...args);
+            committed = true;
+            return results;
+          };
+        }
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    await runSectionsStage({ ...world.deps, db }, world.input(third)).catch(() => {});
+
+    expect((await world.events()).slice(eventsBefore)).toEqual([
+      { type: "section.approval_withdrawn", sectionId: route.id, userId: maya.id },
+      { type: "sections.updated" },
+    ]);
   });
 });
 
