@@ -51,12 +51,14 @@ echo "$code" >"$dir/exit-code.tmp" && mv "$dir/exit-code.tmp" "$dir/exit-code"`;
 
 /**
  * Prints the state of the process in directory `$1`: `exited <code>`,
- * `running`, or `lost` when its launcher is gone and left no exit code. The
- * boot id guards against a process id that was reused after a restore.
+ * `running`, `lost` when its launcher is gone and left no exit code, or
+ * `unstarted` when the launcher never recorded itself: not yet, or never,
+ * which only the caller's clock can tell apart. The boot id guards against a
+ * process id that was reused after a restore.
  */
 export const STATUS_SCRIPT = `dir=$1
 if [ -f "$dir/exit-code" ]; then echo "exited $(cat "$dir/exit-code")"; exit 0; fi
-if ! read -r pid boot 2>/dev/null <"$dir/launcher"; then echo running; exit 0; fi
+if ! read -r pid boot 2>/dev/null <"$dir/launcher"; then echo unstarted; exit 0; fi
 if [ "$boot" = "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" ] && kill -0 "$pid" 2>/dev/null; then
 	echo running
 	exit 0

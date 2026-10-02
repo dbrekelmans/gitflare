@@ -51,6 +51,17 @@ export interface EgressDecision {
   credential?: EgressCredential;
 }
 
+/** Where every deployment's AI gateway answers. */
+export const MODEL_GATEWAY_HOST = "gateway.ai.cloudflare.com";
+
+/**
+ * The hosts of the forge's own services, as host patterns: the git host
+ * (`<account>.artifacts.cloudflare.net`) and the AI gateway. A request for one
+ * is decided by its own grant; a host grant never reaches them, even when no
+ * repository is granted and so the git host is not among the targets.
+ */
+const FORGE_HOSTS = ["*.artifacts.cloudflare.net", MODEL_GATEWAY_HOST];
+
 const GIT_SERVICES = ["git-upload-pack", "git-receive-pack"];
 
 /** Headers a container may have set to authenticate itself; none of them is forwarded. */
@@ -60,13 +71,15 @@ function deny(reason: string): EgressDecision {
   return { allow: false, reason };
 }
 
+/**
+ * `checkStartOptions` refuses every pattern but a name and `*.<name>`. Only
+ * that leading `*.` is read as a glob here too, so a pattern that reached this
+ * some other way matches at most its own name.
+ */
 function matchesHost(pattern: string, host: string): boolean {
-  const expression = pattern
-    .toLowerCase()
-    .split("*")
-    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
-    .join(".*");
-  return new RegExp(`^${expression}$`).test(host);
+  const name = pattern.toLowerCase();
+  if (name.startsWith("*.")) return host.endsWith(name.slice(1));
+  return host === name;
 }
 
 /** The git remote without a trailing slash, or null when it is not an HTTPS URL. */
@@ -171,6 +184,9 @@ export function decideEgress(
     return decideModels(grants, { method, url }, targets.models.gatewayId);
   }
 
+  if (FORGE_HOSTS.some((pattern) => matchesHost(pattern, url.hostname))) {
+    return deny("gitflare's own services are reached through their own grants only");
+  }
   if (method !== "GET" && method !== "HEAD") return deny("a host grant allows GET and HEAD only");
   const granted = grants.some(
     (grant) => grant.kind === "host" && url.port === "" && matchesHost(grant.host, url.hostname),
@@ -229,7 +245,7 @@ function refuse(status: number, message: string): Response {
 /**
  * Handles one intercepted request: refuses it with `403`, or forwards it with
  * the credential its grant calls for. A git body is passed through unread, so
- * a pack of any size streams.
+ * a pack of any size streams. A redirect is answered, never followed.
  */
 export async function forwardEgress(
   deps: EgressDeps,
@@ -260,7 +276,10 @@ export async function forwardEgress(
       const token = await deps.gitToken(credential.repo, credential.scope);
       headers.set("Authorization", `Bearer ${token}`);
     }
-    return await deps.fetch(new Request(request, { headers }));
+    // A followed redirect would skip the policy and carry the git token to
+    // wherever it points. Returned instead, it is the container's to follow,
+    // and that request is intercepted and decided like any other.
+    return await deps.fetch(new Request(request, { headers, redirect: "manual" }));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return refuse(502, `gitflare could not forward the request: ${message}`);

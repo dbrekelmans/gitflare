@@ -61,6 +61,11 @@ describe("setup.sh", () => {
   it("pins what it installs", () => {
     expect(setupScript).toMatch(/^CLAUDE_CODE_VERSION=\d+\.\d+\.\d+$/m);
     expect(setupScript).toMatch(/^ENTIRE_VERSION=\d+\.\d+\.\d+$/m);
+    expect(setupScript).toMatch(/^PNPM_VERSION=\d+\.\d+\.\d+$/m);
+    // Every version it names is exact, not only the ones listed here.
+    for (const [line] of setupScript.matchAll(/^\w+_VERSION=.*$/gm)) {
+      expect(line).toMatch(/^\w+_VERSION=\d+\.\d+\.\d+$/);
+    }
     expect(setupScript).not.toContain("@latest");
   });
 
