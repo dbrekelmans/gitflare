@@ -10,7 +10,7 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Decisions } from "./decisions-list";
 
@@ -73,10 +73,15 @@ describe("the decision record, against the demo", () => {
     expect(Array.from(activeSection.querySelectorAll("a")).map((a) => a.textContent)).not.toContain(
       "Use moment for date handling",
     );
+    // A plain count, not a claim about where each one came from.
+    expect(within(activeSection).getByText("4 decisions")).toBeTruthy();
+    expect(within(dormantSection).getByText("1 decision")).toBeTruthy();
+    // The section heading already says "Dormant"; a row shouldn't repeat it.
+    expect(within(dormantSection).queryByText("dormant")).toBeNull();
   });
 
-  it("adds a decision and takes the author to its page", async () => {
-    await renderList();
+  it("adds a decision as whoever is signed in, and takes them to its page", async () => {
+    await renderList({ as: demoUsers.priya });
     fireEvent.click(screen.getByRole("button", { name: "Add decision" }));
 
     fireEvent.change(screen.getByLabelText("Title"), {
@@ -88,5 +93,38 @@ describe("the decision record, against the demo", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add decision" }));
 
     await waitFor(() => expect(screen.getByRole("heading").textContent).toMatch(/^dec_/));
+  });
+
+  it("will not submit an empty title or statement, and says why", async () => {
+    await renderList();
+    fireEvent.click(screen.getByRole("button", { name: "Add decision" }));
+
+    fireEvent.blur(screen.getByLabelText("Title"));
+    fireEvent.blur(screen.getByLabelText("Statement"));
+    fireEvent.click(screen.getByRole("button", { name: "Add decision" }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Title").getAttribute("aria-invalid")).toBe("true"),
+    );
+    expect(screen.getByLabelText("Statement").getAttribute("aria-invalid")).toBe("true");
+    // Still on the form: an invalid submit never reached the server.
+    expect(screen.getByRole("button", { name: "Add decision" })).toBeTruthy();
+  });
+
+  it("shows the server's refusal when adding a decision fails", async () => {
+    await renderList();
+    server.api.decisions.create = () => {
+      throw new Error("Could not save the decision.");
+    };
+    fireEvent.click(screen.getByRole("button", { name: "Add decision" }));
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "A new rule" } });
+    fireEvent.change(screen.getByLabelText("Statement"), {
+      target: { value: "State the rule in one sentence." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add decision" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toBe("Could not save the decision."),
+    );
   });
 });

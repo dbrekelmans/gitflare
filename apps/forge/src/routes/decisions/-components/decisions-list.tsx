@@ -1,6 +1,5 @@
 import { Row, SectionHead } from "@gitflare/ui/components/row";
-import { StatusPill } from "@gitflare/ui/components/status";
-import { Evidence } from "@gitflare/ui/components/typography";
+import { Evidence, Text } from "@gitflare/ui/components/typography";
 import { Button } from "@gitflare/ui/components/ui/button";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -9,6 +8,10 @@ import { RouteLink } from "@/components/shell/link";
 import { PageHead } from "@/components/shell/page";
 import { decisionQueries } from "@/data/decisions.queries";
 import { AddDecisionForm } from "./decision-form";
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
 
 /** The repository's decision record: what is still retrieved, and what has gone dormant. */
 export function Decisions({ repoSlug }: { repoSlug: string }) {
@@ -44,11 +47,11 @@ export function Decisions({ repoSlug }: { repoSlug: string }) {
         </>
       )}
       <section aria-label="Active">
-        <SectionHead title="Active" aside={`${active.length} followed by review`} />
+        <SectionHead title="Active" aside={plural(active.length, "decision")} />
         {active.length === 0 ? (
-          <Evidence size="sm" kind="note">
-            no active decisions yet
-          </Evidence>
+          <Text size="body-s" tone="muted">
+            No active decisions yet.
+          </Text>
         ) : (
           active.map((decision) => (
             <Row
@@ -70,14 +73,11 @@ export function Decisions({ repoSlug }: { repoSlug: string }) {
         )}
       </section>
       <section aria-label="Dormant">
-        <SectionHead
-          title="Dormant"
-          aside={`${dormant.length} too weak to be retrieved by a review`}
-        />
+        <SectionHead title="Dormant" aside={plural(dormant.length, "decision")} />
         {dormant.length === 0 ? (
-          <Evidence size="sm" kind="note">
-            no dormant decisions
-          </Evidence>
+          <Text size="body-s" tone="muted">
+            No dormant decisions.
+          </Text>
         ) : (
           dormant.map((decision) => (
             <Row
@@ -94,9 +94,6 @@ export function Decisions({ repoSlug }: { repoSlug: string }) {
               }
             >
               {decision.statement}
-              <StatusPill tone="neutral" className="ml-s4">
-                dormant
-              </StatusPill>
             </Row>
           ))
         )}

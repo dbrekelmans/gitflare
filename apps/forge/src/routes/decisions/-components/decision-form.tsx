@@ -14,6 +14,70 @@ import { Textarea } from "@gitflare/ui/components/ui/textarea";
 import { useForm } from "@tanstack/react-form";
 import { useCreateDecision, useEditDecision } from "@/data/decisions.queries";
 
+type Wording = { title: string; statement: string; rationale: string };
+
+type FieldState = {
+  value: string;
+  invalid: boolean;
+  onChange: (value: string) => void;
+  onBlur: () => void;
+  errors: Array<{ message?: string } | undefined>;
+};
+
+/** The three fields every decision has, shared between adding one and editing one. */
+function WordingFields({
+  title,
+  statement,
+  rationale,
+}: {
+  title: FieldState;
+  statement: FieldState;
+  rationale: FieldState;
+}) {
+  return (
+    <FieldGroup>
+      <Field data-invalid={title.invalid}>
+        <FieldLabel htmlFor="decision-title">Title</FieldLabel>
+        <Input
+          id="decision-title"
+          name="title"
+          value={title.value}
+          onBlur={title.onBlur}
+          onChange={(event) => title.onChange(event.target.value)}
+          aria-invalid={title.invalid}
+        />
+        {title.invalid && <FieldError errors={title.errors} />}
+      </Field>
+      <Field data-invalid={statement.invalid}>
+        <FieldLabel htmlFor="decision-statement">Statement</FieldLabel>
+        <Textarea
+          id="decision-statement"
+          name="statement"
+          value={statement.value}
+          onBlur={statement.onBlur}
+          onChange={(event) => statement.onChange(event.target.value)}
+          aria-invalid={statement.invalid}
+        />
+        <FieldDescription>The rule, as one or two sentences.</FieldDescription>
+        {statement.invalid && <FieldError errors={statement.errors} />}
+      </Field>
+      <Field data-invalid={rationale.invalid}>
+        <FieldLabel htmlFor="decision-rationale">Rationale</FieldLabel>
+        <Textarea
+          id="decision-rationale"
+          name="rationale"
+          value={rationale.value}
+          onBlur={rationale.onBlur}
+          onChange={(event) => rationale.onChange(event.target.value)}
+          aria-invalid={rationale.invalid}
+        />
+        <FieldDescription>Why, so a later review knows what it would undo.</FieldDescription>
+        {rationale.invalid && <FieldError errors={rationale.errors} />}
+      </Field>
+    </FieldGroup>
+  );
+}
+
 /** Adds a decision by hand, rather than one gitflare recorded from a review. */
 export function AddDecisionForm({
   repoSlug,
@@ -35,8 +99,14 @@ export function AddDecisionForm({
       },
     },
     onSubmit: async ({ value }) => {
-      const detail = await create.mutateAsync({ repoSlug, ...value });
-      onAdded(detail.decision.id);
+      // mutateAsync rejects on failure; the mutation's own `error` state (read
+      // below) is what the form shows, so a rejection here only needs catching.
+      try {
+        const detail = await create.mutateAsync({ repoSlug, ...value });
+        onAdded(detail.decision.id);
+      } catch {
+        // handled by `create.error`
+      }
     },
   });
 
@@ -48,62 +118,41 @@ export function AddDecisionForm({
         void form.handleSubmit();
       }}
     >
-      <FieldGroup>
-        <form.Field name="title">
-          {(field) => {
-            const invalid = field.state.meta.isTouched && !field.state.meta.isValid;
-            return (
-              <Field data-invalid={invalid}>
-                <FieldLabel htmlFor={field.name}>Title</FieldLabel>
-                <Input
-                  id={field.name}
-                  name={field.name}
-                  value={field.state.value}
-                  onBlur={field.handleBlur}
-                  onChange={(event) => field.handleChange(event.target.value)}
-                  aria-invalid={invalid}
-                />
-                {invalid && <FieldError errors={field.state.meta.errors} />}
-              </Field>
-            );
-          }}
-        </form.Field>
-        <form.Field name="statement">
-          {(field) => {
-            const invalid = field.state.meta.isTouched && !field.state.meta.isValid;
-            return (
-              <Field data-invalid={invalid}>
-                <FieldLabel htmlFor={field.name}>Statement</FieldLabel>
-                <Textarea
-                  id={field.name}
-                  name={field.name}
-                  value={field.state.value}
-                  onBlur={field.handleBlur}
-                  onChange={(event) => field.handleChange(event.target.value)}
-                  aria-invalid={invalid}
-                />
-                <FieldDescription>The rule, as one or two sentences.</FieldDescription>
-                {invalid && <FieldError errors={field.state.meta.errors} />}
-              </Field>
-            );
-          }}
-        </form.Field>
-        <form.Field name="rationale">
-          {(field) => (
-            <Field>
-              <FieldLabel htmlFor={field.name}>Rationale</FieldLabel>
-              <Textarea
-                id={field.name}
-                name={field.name}
-                value={field.state.value}
-                onBlur={field.handleBlur}
-                onChange={(event) => field.handleChange(event.target.value)}
-              />
-              <FieldDescription>Why, so a later review knows what it would undo.</FieldDescription>
-            </Field>
-          )}
-        </form.Field>
-      </FieldGroup>
+      <form.Field name="title">
+        {(title) => (
+          <form.Field name="statement">
+            {(statement) => (
+              <form.Field name="rationale">
+                {(rationale) => (
+                  <WordingFields
+                    title={{
+                      value: title.state.value,
+                      invalid: title.state.meta.isTouched && !title.state.meta.isValid,
+                      onChange: title.handleChange,
+                      onBlur: title.handleBlur,
+                      errors: title.state.meta.errors,
+                    }}
+                    statement={{
+                      value: statement.state.value,
+                      invalid: statement.state.meta.isTouched && !statement.state.meta.isValid,
+                      onChange: statement.handleChange,
+                      onBlur: statement.handleBlur,
+                      errors: statement.state.meta.errors,
+                    }}
+                    rationale={{
+                      value: rationale.state.value,
+                      invalid: rationale.state.meta.isTouched && !rationale.state.meta.isValid,
+                      onChange: rationale.handleChange,
+                      onBlur: rationale.handleBlur,
+                      errors: rationale.state.meta.errors,
+                    }}
+                  />
+                )}
+              </form.Field>
+            )}
+          </form.Field>
+        )}
+      </form.Field>
       <div className="mt-s8 flex items-center gap-s6">
         <form.Subscribe selector={(state) => state.isSubmitting}>
           {(submitting) => (
@@ -133,7 +182,7 @@ export function EditDecisionForm({
   onCancel,
 }: {
   decisionId: DecisionId;
-  wording: { title: string; statement: string; rationale: string };
+  wording: Wording;
   onDone: () => void;
   onCancel: () => void;
 }) {
@@ -148,8 +197,12 @@ export function EditDecisionForm({
       },
     },
     onSubmit: async ({ value }) => {
-      await edit.mutateAsync({ decisionId, ...value });
-      onDone();
+      try {
+        await edit.mutateAsync({ decisionId, ...value });
+        onDone();
+      } catch {
+        // handled by `edit.error`
+      }
     },
   });
 
@@ -161,62 +214,41 @@ export function EditDecisionForm({
         void form.handleSubmit();
       }}
     >
-      <FieldGroup>
-        <form.Field name="title">
-          {(field) => {
-            const invalid = field.state.meta.isTouched && !field.state.meta.isValid;
-            return (
-              <Field data-invalid={invalid}>
-                <FieldLabel htmlFor={field.name}>Title</FieldLabel>
-                <Input
-                  id={field.name}
-                  name={field.name}
-                  value={field.state.value}
-                  onBlur={field.handleBlur}
-                  onChange={(event) => field.handleChange(event.target.value)}
-                  aria-invalid={invalid}
-                />
-                {invalid && <FieldError errors={field.state.meta.errors} />}
-              </Field>
-            );
-          }}
-        </form.Field>
-        <form.Field name="statement">
-          {(field) => {
-            const invalid = field.state.meta.isTouched && !field.state.meta.isValid;
-            return (
-              <Field data-invalid={invalid}>
-                <FieldLabel htmlFor={field.name}>Statement</FieldLabel>
-                <Textarea
-                  id={field.name}
-                  name={field.name}
-                  value={field.state.value}
-                  onBlur={field.handleBlur}
-                  onChange={(event) => field.handleChange(event.target.value)}
-                  aria-invalid={invalid}
-                />
-                <FieldDescription>The rule, as one or two sentences.</FieldDescription>
-                {invalid && <FieldError errors={field.state.meta.errors} />}
-              </Field>
-            );
-          }}
-        </form.Field>
-        <form.Field name="rationale">
-          {(field) => (
-            <Field>
-              <FieldLabel htmlFor={field.name}>Rationale</FieldLabel>
-              <Textarea
-                id={field.name}
-                name={field.name}
-                value={field.state.value}
-                onBlur={field.handleBlur}
-                onChange={(event) => field.handleChange(event.target.value)}
-              />
-              <FieldDescription>Why, so a later review knows what it would undo.</FieldDescription>
-            </Field>
-          )}
-        </form.Field>
-      </FieldGroup>
+      <form.Field name="title">
+        {(title) => (
+          <form.Field name="statement">
+            {(statement) => (
+              <form.Field name="rationale">
+                {(rationale) => (
+                  <WordingFields
+                    title={{
+                      value: title.state.value,
+                      invalid: title.state.meta.isTouched && !title.state.meta.isValid,
+                      onChange: title.handleChange,
+                      onBlur: title.handleBlur,
+                      errors: title.state.meta.errors,
+                    }}
+                    statement={{
+                      value: statement.state.value,
+                      invalid: statement.state.meta.isTouched && !statement.state.meta.isValid,
+                      onChange: statement.handleChange,
+                      onBlur: statement.handleBlur,
+                      errors: statement.state.meta.errors,
+                    }}
+                    rationale={{
+                      value: rationale.state.value,
+                      invalid: rationale.state.meta.isTouched && !rationale.state.meta.isValid,
+                      onChange: rationale.handleChange,
+                      onBlur: rationale.handleBlur,
+                      errors: rationale.state.meta.errors,
+                    }}
+                  />
+                )}
+              </form.Field>
+            )}
+          </form.Field>
+        )}
+      </form.Field>
       <div className="mt-s8 flex items-center gap-s6">
         <form.Subscribe selector={(state) => state.isSubmitting}>
           {(submitting) => (
