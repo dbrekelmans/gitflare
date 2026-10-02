@@ -1,4 +1,4 @@
-import { httpRoutes, type SessionView } from "@gitflare/core/api";
+import { httpRoutes, type RepositoryDetail, type SessionView } from "@gitflare/core/api";
 import { type CliContext, CliError, UsageError } from "../context.ts";
 import { forgeRequest } from "../forge.ts";
 import {
@@ -52,9 +52,40 @@ async function waitForFork(ctx: CliContext, clone: Clone, started: SessionView) 
   return view;
 }
 
+/** A branch name from a session's title: `Tidy the invite form` is `tidy-the-invite-form`. */
+export function branchName(title: string): string {
+  const slug = title
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .slice(0, 48)
+    .replace(/^-+|-+$/g, "");
+  return slug || "session";
+}
+
+/**
+ * Leaves the default branch for a new one named after the session, taking
+ * along any uncommitted work. The default branch is the main repository's,
+ * which only gitflare writes: kept as it is, it can still be pulled after the
+ * change merges, and it never points its pushes at a fork that is deleted then.
+ */
+async function leaveDefaultBranch(ctx: CliContext, from: string, title: string): Promise<string> {
+  const base = branchName(title);
+  let branch = base;
+  for (let n = 2; ; n++) {
+    const taken = await runGit(ctx, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+    if (taken.exitCode !== 0) break;
+    branch = `${base}-${n}`;
+  }
+  await git(ctx, ["switch", "--create", branch]);
+  ctx.stderr(`${from} stays as the forge has it. Switched to a new branch, ${branch}.\n`);
+  return branch;
+}
+
 export async function start(ctx: CliContext, args: string[]): Promise<number> {
   const clone = await requireClone(ctx);
-  const branch = await currentBranch(ctx);
+  let branch = await currentBranch(ctx);
   if (!branch) throw new CliError("Check out a branch first: a session's pushes come from one.");
 
   // The session is recorded before its fork is ready, so running this again
@@ -63,6 +94,14 @@ export async function start(ctx: CliContext, args: string[]): Promise<number> {
   if (!view) {
     const title = args.join(" ").trim();
     if (!title) throw new UsageError();
+    const { repository } = await forgeRequest<RepositoryDetail>(
+      ctx,
+      clone.forge,
+      httpRoutes.repository(clone.repoSlug),
+    );
+    if (branch === repository.defaultBranch) {
+      branch = await leaveDefaultBranch(ctx, branch, title);
+    }
     view = await forgeRequest<SessionView>(
       ctx,
       clone.forge,

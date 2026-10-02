@@ -13,6 +13,19 @@ export function formatPlan(steps: InstallStep[]): string {
     .join("\n");
 }
 
+/** A step failed in a way no dashboard visit fixes. Its message names the step. */
+export class StepFailedError extends Error {
+  readonly step: InstallStep;
+
+  constructor(step: InstallStep, cause: unknown) {
+    super(`"${step.title}" failed: ${cause instanceof Error ? cause.message : String(cause)}`, {
+      cause,
+    });
+    this.name = "StepFailedError";
+    this.step = step;
+  }
+}
+
 export interface InstallOutcome {
   /** One entry per step that ran, in order. A blocked step is the last. */
   results: { step: InstallStep; result: StepResult }[];
@@ -39,7 +52,7 @@ export async function runInstall(
         !(error instanceof CloudflareApiError) ||
         (error.status !== 401 && error.status !== 403)
       ) {
-        throw error;
+        throw new StepFailedError(step, error);
       }
       result = {
         status: "blocked",

@@ -11,6 +11,10 @@ interface FakeRepo {
   committed: Set<string>;
   /** Committed paths whose working copy differs. */
   modified: Set<string>;
+  /** Paths in the working copy that HEAD does not have. */
+  untracked: Set<string>;
+  /** Local branches. */
+  branches: Set<string>;
 }
 
 const ok = (stdout = ""): ExecOutput => ({ exitCode: 0, stdout, stderr: "" });
@@ -36,6 +40,8 @@ export class FakeGit {
       remotes: new Map(),
       committed: new Set(this.committed),
       modified: new Set(),
+      untracked: new Set(),
+      branches: new Set(branch ? [branch] : []),
     };
     this.repos.set(directory, repo);
     return repo;
@@ -96,11 +102,39 @@ export class FakeGit {
       return repo.committed.has(argv[1].slice("HEAD:".length)) ? ok() : fail(128);
     }
     if (command === "status" && line.startsWith("--porcelain -- ")) {
-      const dirty = argv.slice(2).filter((path) => repo.modified.has(path));
-      return ok(dirty.map((path) => ` M ${path}\n`).join(""));
+      return ok(
+        argv
+          .slice(2)
+          .map((path) =>
+            repo.modified.has(path)
+              ? ` M ${path}\n`
+              : repo.untracked.has(path)
+                ? `?? ${path}\n`
+                : "",
+          )
+          .join(""),
+      );
     }
     if (command === "checkout" && line.startsWith("HEAD -- ")) {
-      for (const path of argv.slice(2)) repo.modified.delete(path);
+      const paths = argv.slice(2);
+      // Git checks every pathspec before it touches any.
+      const missing = paths.find((path) => !repo.committed.has(path));
+      if (missing)
+        return fail(1, `error: pathspec '${missing}' did not match any file(s) known to git`);
+      for (const path of paths) repo.modified.delete(path);
+      return ok();
+    }
+    if (command === "rev-parse" && line.startsWith("--verify --quiet refs/heads/")) {
+      return repo.branches.has(line.slice("--verify --quiet refs/heads/".length))
+        ? ok("0\n")
+        : fail(1);
+    }
+    if (command === "switch" && argv[0] === "--create" && argv[1]) {
+      if (repo.branches.has(argv[1])) {
+        return fail(128, `fatal: a branch named '${argv[1]}' already exists`);
+      }
+      repo.branches.add(argv[1]);
+      repo.branch = argv[1];
       return ok();
     }
     throw new Error(`FakeGit does not know: git ${args.join(" ")}`);
@@ -126,7 +160,9 @@ export class FakeGit {
     // Later wins: global, then the repository, then the command line.
     const readable = local
       ? (repo?.config ?? [])
-      : [...this.global, ...(repo?.config ?? []), ...inline];
+      : flags.includes("--global")
+        ? this.global
+        : [...this.global, ...(repo?.config ?? []), ...inline];
 
     if (flags.includes("--get-urlmatch")) {
       const [section, variable] = key.split(".") as [string, string];
@@ -152,6 +188,14 @@ export class FakeGit {
       return found ? ok(`${found[1]}\n`) : fail(1);
     }
 
+    if (flags.includes("--unset")) {
+      if (!scope) return fail(128, "fatal: not in a git directory");
+      const kept = scope.filter(([candidate]) => candidate !== key);
+      if (kept.length === scope.length) return fail(5);
+      scope.length = 0;
+      scope.push(...kept);
+      return ok();
+    }
     if (value === undefined) throw new Error(`FakeGit does not know: git config ${argv.join(" ")}`);
     if (!scope) return fail(128, "fatal: not in a git directory");
     if (!flags.includes("--add")) {

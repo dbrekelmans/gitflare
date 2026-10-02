@@ -99,23 +99,45 @@ async function readJson<S extends z.ZodType>(
   schema: S,
   what: string,
 ): Promise<z.output<S>> {
-  const body: unknown = response.ok ? await response.json().catch(() => undefined) : undefined;
-  const parsed = schema.safeParse(body);
-  if (!parsed.success) {
+  const parsed = await parseJson(response, schema);
+  if (!parsed) {
     throw new CliError(`${what} did not answer as expected (HTTP ${response.status}).`);
   }
-  return parsed.data;
+  return parsed;
+}
+
+async function parseJson<S extends z.ZodType>(
+  response: Response,
+  schema: S,
+): Promise<z.output<S> | null> {
+  const body: unknown = response.ok ? await response.json().catch(() => undefined) : undefined;
+  const parsed = schema.safeParse(body);
+  return parsed.success ? parsed.data : null;
+}
+
+function noManagedOAuth(forge: string): CliError {
+  return new CliError(
+    `Managed OAuth is not turned on for ${forge}'s Access application. ` +
+      `Ask its administrator to enable it, or sign in with \`gitflare login --cloudflared ${forge}\`.`,
+  );
 }
 
 /**
  * Where the forge's Access application takes logins, found from the forge
  * itself. Null when the forge answers without a login, as it does in local
  * development.
+ *
+ * Without Managed OAuth, Access is documented to answer a non-browser client
+ * with a `302` and no metadata (spec/research/ai-identity.md); the live spike
+ * saw a `401` pointing at metadata that has no `registration_endpoint`
+ * (spec/research/live/gateway-access.md). Both, and any discovery document
+ * that cannot be read, end in the same advice: the `--cloudflared` fallback.
+ * Neither answer has been seen with Managed OAuth turned on (live test #12).
  */
 async function discover(
   ctx: CliContext,
   forge: string,
-): Promise<z.infer<typeof ServerMetadata> | null> {
+): Promise<(z.infer<typeof ServerMetadata> & { registration_endpoint: string }) | null> {
   const probe = await ctx.fetch(`${forge}${httpRoutes.me}`, {
     redirect: "manual",
     headers: { accept: "application/json", "x-requested-with": "XMLHttpRequest" },
@@ -126,22 +148,26 @@ async function discover(
   }
 
   const pointer = /resource_metadata="([^"]+)"/.exec(probe.headers.get("www-authenticate") ?? "");
+  // A redirect to Access's login page, with nothing to discover from.
+  if (!pointer?.[1] && probe.status !== 401) throw noManagedOAuth(forge);
   let server = forge;
   if (pointer?.[1]) {
-    const resource = await readJson(
+    const resource = await parseJson(
       await ctx.fetch(pointer[1], { headers: { accept: "application/json" } }),
       ResourceMetadata,
-      `${forge}'s Access application`,
     );
+    if (!resource) throw noManagedOAuth(forge);
     server = (resource.authorization_servers[0] as string).replace(/\/+$/, "");
   }
-  return readJson(
+  const metadata = await parseJson(
     await ctx.fetch(`${server}/.well-known/oauth-authorization-server`, {
       headers: { accept: "application/json" },
+      redirect: "manual",
     }),
     ServerMetadata,
-    `${forge}'s login`,
   );
+  if (!metadata?.registration_endpoint) throw noManagedOAuth(forge);
+  return { ...metadata, registration_endpoint: metadata.registration_endpoint };
 }
 
 async function requestToken(
@@ -163,12 +189,6 @@ async function requestToken(
 export async function loginWithOAuth(ctx: CliContext, forge: string): Promise<boolean> {
   const server = await discover(ctx, forge);
   if (!server) return false;
-  if (!server.registration_endpoint) {
-    throw new CliError(
-      `Managed OAuth is not turned on for ${forge}'s Access application. ` +
-        `Ask its administrator to enable it, or sign in with \`gitflare login --cloudflared ${forge}\`.`,
-    );
-  }
 
   const listener = await ctx.listenForRedirect();
   try {
@@ -182,6 +202,11 @@ export async function loginWithOAuth(ctx: CliContext, forge: string): Promise<bo
           grant_types: ["authorization_code", "refresh_token"],
           response_types: ["code"],
           token_endpoint_auth_method: "none",
+          // RFC 8707's resource, as the research note's flow sends it at
+          // registration too. Unverified: whether Access needs it here or
+          // ignores it, as RFC 7591 lets a server do with metadata it does not
+          // know (live test #12).
+          resource: forge,
         }),
       }),
       Registration,
@@ -273,24 +298,69 @@ export async function accessHeaders(
     return { "cf-access-token": token };
   }
 
-  if (!options.refresh && login.expiresAt - EXPIRY_MARGIN_MS > ctx.now()) {
+  if (!options.refresh && fresh(ctx, login)) {
     return { authorization: `Bearer ${login.accessToken}` };
   }
+  return { authorization: `Bearer ${await refreshLogin(ctx, forge, login)}` };
+}
+
+const fresh = (ctx: CliContext, login: OAuthLogin) =>
+  login.expiresAt - EXPIRY_MARGIN_MS > ctx.now();
+
+type OAuthLogin = Extract<Login, { kind: "oauth" }>;
+
+/** How long a refused refresh waits for another helper's rotated login to reach the keychain. */
+const ROTATION_WAIT_MS = 2_000;
+const ROTATION_POLL_MS = 100;
+
+/**
+ * Trades the refresh token for a new access token, and returns it. Refresh
+ * tokens rotate, and git runs helpers side by side (a push to a fork also
+ * pushes checkpoints to the context repository), so two may spend the same
+ * refresh token at once. Access refuses the second; the loser then waits for
+ * the winner's login to reach the keychain and goes on with that, rather than
+ * reporting the sign-in as ended.
+ */
+async function refreshLogin(ctx: CliContext, forge: string, used: OAuthLogin): Promise<string> {
+  const token = await spendRefreshToken(ctx, forge, used);
+  if (token) return token;
+
+  for (let waited = 0; ; waited += ROTATION_POLL_MS) {
+    const stored = await readLogin(ctx, forge);
+    if (stored?.kind !== "oauth") throw signInAgain(forge);
+    if (stored.refreshToken !== used.refreshToken) {
+      if (fresh(ctx, stored) && stored.accessToken !== used.accessToken) {
+        return stored.accessToken;
+      }
+      // Rotated, but the access token that came with it will not do either.
+      const rotated = await spendRefreshToken(ctx, forge, stored);
+      if (rotated) return rotated;
+      throw signInAgain(forge);
+    }
+    if (waited >= ROTATION_WAIT_MS) throw signInAgain(forge);
+    await ctx.sleep(ROTATION_POLL_MS);
+  }
+}
+
+/** The new access token, stored with the refresh token that replaces this one; null if refused. */
+async function spendRefreshToken(
+  ctx: CliContext,
+  forge: string,
+  login: OAuthLogin,
+): Promise<string | null> {
   const response = await requestToken(ctx, login.tokenEndpoint, {
     grant_type: "refresh_token",
     refresh_token: login.refreshToken,
     client_id: login.clientId,
     resource: forge,
   });
-  const token = TokenResponse.safeParse(
-    response.ok ? await response.json().catch(() => undefined) : undefined,
-  );
-  if (!token.success) throw signInAgain(forge);
+  const token = await parseJson(response, TokenResponse);
+  if (!token) return null;
   await writeLogin(ctx, forge, {
     ...login,
-    accessToken: token.data.access_token,
-    refreshToken: token.data.refresh_token ?? login.refreshToken,
-    expiresAt: ctx.now() + token.data.expires_in * 1000,
+    accessToken: token.access_token,
+    refreshToken: token.refresh_token ?? login.refreshToken,
+    expiresAt: ctx.now() + token.expires_in * 1000,
   });
-  return { authorization: `Bearer ${token.data.access_token}` };
+  return token.access_token;
 }

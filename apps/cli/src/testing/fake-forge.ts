@@ -38,6 +38,14 @@ export class FakeForge {
   /** False for a forge that asks for no login, like `pnpm dev`. */
   protected = true;
   managedOAuth = true;
+  /**
+   * How Access answers a client without a token when Managed OAuth is off:
+   * the live spike's `401` pointing at metadata that has no
+   * `registration_endpoint`, or the documented `302` with no metadata.
+   */
+  withoutManagedOAuth: "401" | "302" = "401";
+  /** Every client registration body the CLI sent. */
+  readonly registrations: Record<string, unknown>[] = [];
   /** How the next browser visit to the login ends. */
   browser: "approve" | "deny" = "approve";
   /** A token `cloudflared` holds, accepted in the `cf-access-token` header. */
@@ -55,6 +63,7 @@ export class FakeForge {
   private readonly refreshTokens = new Map<string, string>();
   private readonly pendingForks = new Map<string, number>();
   private counter = 0;
+  private refreshHold: { count: number; waiting: (() => void)[] } | null = null;
 
   constructor(
     readonly user: User,
@@ -65,6 +74,14 @@ export class FakeForge {
   revokeEverything(): void {
     this.accessTokens.clear();
     this.refreshTokens.clear();
+  }
+
+  /**
+   * Holds refresh requests until this many have arrived, then answers them in
+   * the order they came: two helpers refreshing at once.
+   */
+  holdRefreshes(count: number): void {
+    this.refreshHold = { count, waiting: [] };
   }
 
   /** The copies still running finish. */
@@ -114,10 +131,24 @@ export class FakeForge {
       headers: request.headers,
       body,
     });
-    if (url.origin === TEAM) return this.access(url, request, body);
+    if (url.origin === TEAM) {
+      if (new URLSearchParams(body).get("grant_type") === "refresh_token") await this.held();
+      return this.access(url, request, body);
+    }
     if (url.origin === FORGE) return this.forge(url, request, body);
     throw new Error(`Nothing in this test answers ${request.url}`);
   };
+
+  private async held(): Promise<void> {
+    const hold = this.refreshHold;
+    if (!hold) return;
+    await new Promise<void>((resolve) => {
+      hold.waiting.push(resolve);
+      if (hold.waiting.length < hold.count) return;
+      this.refreshHold = null;
+      for (const release of hold.waiting) release();
+    });
+  }
 
   private issue(clientId: string): Response {
     const access = `oauth:access-${++this.counter}`;
@@ -151,6 +182,7 @@ export class FakeForge {
         redirect_uris?: string[];
         token_endpoint_auth_method?: string;
       };
+      this.registrations.push(asked);
       const loopback = (asked.redirect_uris ?? []).every((uri) =>
         ["127.0.0.1", "localhost"].includes(new URL(uri).hostname),
       );
@@ -212,6 +244,12 @@ export class FakeForge {
       return json({ resource: FORGE, protected: true, authorization_servers: [TEAM] });
     }
     if (!this.authenticated(request.headers)) {
+      if (!this.managedOAuth && this.withoutManagedOAuth === "302") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: `${TEAM}/cdn-cgi/access/login/forge.example.test` },
+        });
+      }
       return new Response("<title>401 Unauthorized</title>", {
         status: 401,
         headers: {

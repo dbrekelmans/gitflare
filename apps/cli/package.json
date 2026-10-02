@@ -1,5 +1,5 @@
 {
-  "name": "gitflare",
+  "name": "@gitflare/cli",
   "version": "0.0.0",
   "private": true,
   "description": "The gitflare command line: log in, git credentials, sessions and capture.",

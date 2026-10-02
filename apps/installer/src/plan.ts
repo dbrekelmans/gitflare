@@ -90,6 +90,10 @@ export interface AnswerStore {
 export interface ReleaseFiles {
   read(name: string): Promise<string | null>;
   write(name: string, text: string): Promise<void>;
+  /** Deletes a file or a directory and what is in it; nothing if it is not there. */
+  remove(name: string): Promise<void>;
+  /** A hash of every file under a directory, names included. */
+  digest(directory: string): Promise<string>;
 }
 
 /**
@@ -110,7 +114,9 @@ export function planInstall(answers: InstallAnswers): InstallStep[] {
     artifactsNamespace(answers),
     database(answers),
     oneTimePin(answers),
-    // Access before the deploy: the forge is never reachable unprotected.
+    // Access before the deploy, so the forge's hostname is protected from its
+    // first request. The config turns off the hostnames Access does not
+    // cover (workers.dev beside a custom domain, preview URLs).
     accessApplication(answers),
     deployConfig(answers),
     migrations(answers),

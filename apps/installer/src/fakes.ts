@@ -32,6 +32,13 @@ export class FakeAccount {
   providerKeys: { gateway: string; provider_slug: string; alias: string }[] = [];
   /** Paths the token may not touch. */
   forbidden: RegExp | null = null;
+  /** Paths that answer with this status instead: a bad token, a rate limit, an outage. */
+  failing: { path: RegExp; status: number } | null = null;
+  /**
+   * Where `wrangler deploy --message` is recorded. The docs say both; a real
+   * account has not been read back, so tests try the version alone too.
+   */
+  messageOn: "deployment-and-version" | "version" = "deployment-and-version";
 
   // What the installer creates.
   namespaces: Json[] = [];
@@ -41,6 +48,7 @@ export class FakeAccount {
   apps: Json[] = [];
   /** Newest first, as the API lists them. */
   deployments: Json[] = [];
+  versions = new Map<string, Json>();
   migrationsApplied = false;
   files = new Map<string, string>();
 
@@ -60,6 +68,7 @@ export class FakeAccount {
       identityProviders: this.identityProviders,
       apps: this.apps,
       deployments: this.deployments,
+      versions: [...this.versions],
       migrationsApplied: this.migrationsApplied,
       files: [...this.files],
     });
@@ -82,6 +91,11 @@ export class FakeAccount {
       if (this.forbidden?.test(path)) {
         throw new CloudflareApiError(403, [{ code: 10000, message: "Authentication error" }]);
       }
+      if (this.failing?.path.test(path)) {
+        throw new CloudflareApiError(this.failing.status, [
+          { code: 10000, message: `HTTP ${this.failing.status} from the fake` },
+        ]);
+      }
       return structuredClone(this.route(method, new URL(path, "https://api.test"), body)) as T;
     },
   };
@@ -98,9 +112,21 @@ export class FakeAccount {
         this.migrationsApplied = true;
         return ok("applied");
       }
+      if (args[0] === "deploy" && args.includes("--dry-run")) {
+        // The bundle is built from the release's source; the config is not in it.
+        const outdir = args[args.indexOf("--outdir") + 1];
+        this.files.set(`${outdir}/index.js`, `bundled: ${this.files.get("src/server.ts") ?? ""}`);
+        return ok("--dry-run: exiting now.");
+      }
       if (args[0] === "deploy") {
         const message = args[args.indexOf("--message") + 1];
-        this.deployments.unshift({ annotations: { "workers/message": message } });
+        const id = `version-${++this.ids}`;
+        const annotations = { "workers/message": message };
+        this.versions.set(id, { id, annotations });
+        this.deployments.unshift({
+          versions: [{ version_id: id, percentage: 100 }],
+          ...(this.messageOn === "version" ? {} : { annotations }),
+        });
         return ok("deployed");
       }
       throw new Error(`fake: wrangler ${args.join(" ")}`);
@@ -113,6 +139,17 @@ export class FakeAccount {
       this.writes.push(name);
       this.files.set(name, text);
     },
+    remove: async (name) => {
+      for (const key of this.files.keys()) {
+        if (key === name || key.startsWith(`${name}/`)) this.files.delete(key);
+      }
+    },
+    digest: async (directory) =>
+      [...this.files]
+        .filter(([key]) => key.startsWith(`${directory}/`))
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, text]) => `${key}=${text}`)
+        .join("\n"),
   };
 
   private route(method: string, url: URL, body: unknown): unknown {
@@ -186,6 +223,12 @@ export class FakeAccount {
     if (script) {
       if (this.deployments.length === 0) throw notFound();
       return { deployments: this.deployments };
+    }
+    const version = route.match(`^GET ${account}/workers/scripts/([^/]+)/versions/([^/]+)$`);
+    if (version) {
+      const found = this.versions.get(version[2] ?? "");
+      if (!found) throw notFound();
+      return found;
     }
 
     if (route === `GET ${account}/d1/database`) {

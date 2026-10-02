@@ -49,7 +49,12 @@ describe("--dry-run", () => {
     const ports: InstallPorts = {
       api: { request: refuse("the API") },
       commands: { run: refuse("a command") },
-      files: { read: refuse("the release"), write: refuse("the release") },
+      files: {
+        read: refuse("the release"),
+        write: refuse("the release"),
+        remove: refuse("the release"),
+        digest: refuse("the release"),
+      },
       store: { load: async () => answers, save: refuse("the answer store") },
       prompt,
     };
@@ -167,7 +172,7 @@ describe("installing", () => {
 
     const first = await runInstall(steps, ports);
     expect(first.blocked).toBeNull();
-    expect(Object.values(statuses(first)).filter((status) => status === "done")).toHaveLength(9);
+    expect(Object.values(statuses(first)).filter((status) => status === "done")).toHaveLength(8);
     const before = fake.state();
     fake.forget();
 
@@ -178,9 +183,10 @@ describe("installing", () => {
     expect(new Set(Object.values(statuses(second)))).toEqual(new Set(["unchanged"]));
     expect(fake.mutations).toEqual([]);
     expect(fake.writes).toEqual([]);
-    // Wrangler was only asked what is left to apply.
+    // Wrangler was only asked what is left to apply, and to build without deploying.
     expect(fake.commands.map((command) => command.args.slice(0, 3))).toEqual([
       ["d1", "migrations", "list"],
+      ["deploy", "--dry-run", "--outdir"],
     ]);
     expect(fake.state()).toEqual(before);
   });
@@ -204,6 +210,72 @@ describe("installing", () => {
       ["deploy", "done"],
     ]);
     expect(fake.deployments).toHaveLength(2);
+  });
+
+  it("creates the gateway with its spend rule, so a first install never rewrites it", async () => {
+    const fake = account();
+    const { ports } = fakePorts(fake);
+
+    const outcome = await runInstall(planInstall(answers), ports);
+
+    expect(statuses(outcome)).toMatchObject({ gateway: "done", "spend-rule": "unchanged" });
+    const gatewayWrites = fake.mutations.filter((request) => request.path.includes("/ai-gateway/"));
+    expect(gatewayWrites.map((request) => request.method)).toEqual(["POST"]);
+    expect(gatewayWrites[0]?.body).toMatchObject({
+      spend_limits: { enabled: true, rules: [{ id: "gitflare-monthly", limit: 200 }] },
+    });
+  });
+
+  it("deploys a change to the source, though the version number is the same", async () => {
+    const fake = account();
+    fake.files.set("src/server.ts", "export default {}");
+    const { ports } = fakePorts(fake);
+    await runInstall(planInstall(answers), ports);
+
+    fake.files.set("src/server.ts", "export default { fixed: true }");
+    const outcome = await runInstall(planInstall(answers), ports);
+
+    expect(statuses(outcome)).toMatchObject({ deploy: "done" });
+    expect(fake.deployments).toHaveLength(2);
+  });
+
+  it("knows the forge is deployed when the message is recorded on the version only", async () => {
+    const fake = account();
+    fake.messageOn = "version";
+    const { ports } = fakePorts(fake);
+    await runInstall(planInstall(answers), ports);
+
+    const second = await runInstall(planInstall(answers), ports);
+
+    expect(statuses(second)).toMatchObject({ deploy: "unchanged" });
+    expect(fake.deployments).toHaveLength(1);
+  });
+
+  it("turns workers.dev off beside a custom domain, and preview URLs always", async () => {
+    const onWorkersDev = account();
+    await runInstall(planInstall(answers), fakePorts(onWorkersDev).ports);
+    const plain = onWorkersDev.files.get(resources.config) ?? "";
+    expect(plain).toContain('"workers_dev": true');
+    expect(plain).toContain('"preview_urls": false');
+
+    const onDomain = account();
+    onDomain.zones.push({ name: "acme.example", status: "active" });
+    await runInstall(
+      planInstall({ ...answers, domain: "git.acme.example" }),
+      fakePorts(onDomain).ports,
+    );
+    const custom = onDomain.files.get(resources.config) ?? "";
+    expect(custom).toContain('"workers_dev": false');
+    expect(custom).toContain('"preview_urls": false');
+  });
+
+  it("names the step when the API fails in a way no dashboard visit fixes", async () => {
+    const fake = account();
+    fake.failing = { path: /\/d1\/database/, status: 503 };
+    const { ports } = fakePorts(fake);
+    await expect(runInstall(planInstall(answers), ports)).rejects.toThrow(
+      /^"Create the D1 database "gitflare"" failed: 10000: HTTP 503/,
+    );
   });
 
   it("leaves a spend rule it did not make alone", async () => {
@@ -362,6 +434,20 @@ describe("a missing precondition stops with a link", () => {
     expect(fake.gateways).toHaveLength(gateways);
     expect(fake.apps).toEqual([]);
     expect(fake.commands).toEqual([]);
+  });
+
+  it("does not blame the plan for an outage or a bad token", async () => {
+    const outage = account();
+    outage.failing = { path: /\/artifacts\//, status: 500 };
+    const failed = runInstall(planInstall(answers), fakePorts(outage).ports);
+    await expect(failed).rejects.toThrow(/Check the account can use Artifacts.*HTTP 500/);
+    await expect(failed).rejects.not.toThrow(/Workers Paid plan, and/);
+
+    const badToken = account();
+    badToken.failing = { path: /\/artifacts\//, status: 401 };
+    const outcome = await runInstall(planInstall(answers), fakePorts(badToken).ports);
+    expect(outcome.blocked?.url).toBe(links.apiTokens);
+    expect(outcome.blocked?.detail).toContain("did not accept the API token");
   });
 
   it("carries on once the precondition is met", async () => {

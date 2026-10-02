@@ -9,7 +9,7 @@ import { configureHost, git, requireClone, runGit } from "../git.ts";
 // spec/research/live/entire-on-artifacts.md.
 
 const SETTINGS = ".entire/settings.json";
-/** The committed files `entire enable` may rewrite. */
+/** The settings files gitflare commits and `entire enable` may rewrite. */
 const COMMITTED = [SETTINGS, ".claude/settings.json"];
 const INSTALL_GUIDE = "https://docs.entire.io/cli/installation";
 
@@ -38,9 +38,17 @@ export async function capture(ctx: CliContext, args: string[]): Promise<number> 
     );
   }
 
+  // Only what HEAD carries can be put back. A settings file the repository
+  // does not commit is the clone's own, and `entire enable` may create it.
+  const committed: string[] = [];
+  for (const path of COMMITTED) {
+    if ((await runGit(ctx, ["cat-file", "-e", `HEAD:${path}`])).exitCode === 0)
+      committed.push(path);
+  }
+
   // Installs the git hooks now. Left alone, Entire installs them on the first
   // agent prompt, and a commit made before that is not linked to its session.
-  const unchanged = (await git(ctx, ["status", "--porcelain", "--", ...COMMITTED])) === "";
+  const unchanged = (await git(ctx, ["status", "--porcelain", "--", ...committed])) === "";
   const enabled = await ctx.exec(
     "entire",
     ["enable", "--agent", "claude-code", "--telemetry=false"],
@@ -57,8 +65,8 @@ export async function capture(ctx: CliContext, args: string[]): Promise<number> 
     throw new CliError(`entire enable failed. ${enabled.stderr.trim()}`.trim());
   }
   // The committed settings are gitflare's. If enabling rewrote them, put them back.
-  if (unchanged && (await git(ctx, ["status", "--porcelain", "--", ...COMMITTED])) !== "") {
-    await git(ctx, ["checkout", "HEAD", "--", ...COMMITTED]);
+  if (unchanged && (await git(ctx, ["status", "--porcelain", "--", ...committed])) !== "") {
+    await git(ctx, ["checkout", "HEAD", "--", ...committed]);
   }
 
   ctx.stdout(

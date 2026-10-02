@@ -19,10 +19,20 @@ describe("deploy config", () => {
       deployPlaceholders.map((name) => [name, `value-of-${name.toLowerCase()}`]),
     ) as Record<(typeof deployPlaceholders)[number], string>;
     values.ORGANISATION_NAME = 'Acme "Web" Studio';
-    const rendered = renderDeployConfig(template, values);
+    const rendered = renderDeployConfig(template, values, { workersDev: true });
     expect(rendered).not.toMatch(/__[A-Z0-9_]+__/);
     expect(rendered).toContain('"ORGANISATION_NAME": "Acme \\"Web\\" Studio"');
-    expect(() => renderDeployConfig("__UNKNOWN__", values)).toThrow(/no value/);
+    expect(() => renderDeployConfig("__UNKNOWN__", values, { workersDev: true })).toThrow(
+      /no value/,
+    );
+    // Still JSONC, with the routing settings inside the object.
+    expect(rendered).toMatch(/^\{\n {2}"workers_dev": true,\n {2}"preview_urls": false,$/m);
+  });
+
+  it("refuses a template that sets the routing the installer decides", () => {
+    expect(() =>
+      renderDeployConfig('{ "workers_dev": true }', {} as never, { workersDev: false }),
+    ).toThrow(/installer sets them/);
   });
 
   it("validates the answers it asks for", () => {
