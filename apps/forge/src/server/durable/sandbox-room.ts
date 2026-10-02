@@ -1,5 +1,4 @@
 import { DurableObject } from "cloudflare:workers";
-import { notImplemented } from "@gitflare/core";
 import type {
   ExecOptions,
   ExecResult,
@@ -8,6 +7,15 @@ import type {
   SandboxSnapshot,
   SandboxStartOptions,
 } from "@gitflare/core/ports";
+import {
+  type EgressProps,
+  noContainer,
+  resolveEgressTargets,
+  SandboxController,
+} from "@gitflare/sandbox";
+import { getServices } from "../services";
+
+const GATEWAY_HOST = "gateway.ai.cloudflare.com";
 
 /**
  * One per sandbox, named by sandbox id: the Durable Object that owns one
@@ -18,47 +26,68 @@ import type {
  * class. Build task: `sandbox`.
  */
 export class SandboxRoom extends DurableObject<Env> {
-  async start(_options: SandboxStartOptions): Promise<void> {
-    return notImplemented("SandboxRoom.start");
+  private readonly controller: SandboxController;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.controller = new SandboxController({
+      container: ctx.container ?? noContainer,
+      storage: ctx.storage.kv,
+      // Every HTTPS request the container makes arrives at `SandboxEgress`,
+      // which is given the grants and nothing else: no token is in the props.
+      applyEgress: async (grants) => {
+        const gateway = { host: GATEWAY_HOST, gatewayId: env.AI_GATEWAY_ID };
+        const targets = await resolveEgressTargets(getServices(), grants, gateway);
+        const props: EgressProps = { grants, targets };
+        await ctx.container?.interceptOutboundHttps("*", ctx.exports.SandboxEgress({ props }));
+      },
+      scheduleKeepAlive: (delayMs) => ctx.storage.setAlarm(Date.now() + delayMs),
+    });
+    // A restart drops the container's inactivity timeout; nothing may run before it is back.
+    void ctx.blockConcurrencyWhile(() => this.controller.onWake());
+  }
+
+  async start(options: SandboxStartOptions): Promise<void> {
+    return this.controller.start(options);
   }
 
   async isRunning(): Promise<boolean> {
-    return notImplemented("SandboxRoom.isRunning");
+    return this.controller.isRunning();
   }
 
-  async exec(_command: string[], _options?: ExecOptions): Promise<ExecResult> {
-    return notImplemented("SandboxRoom.exec");
+  async exec(command: string[], options?: ExecOptions): Promise<ExecResult> {
+    return this.controller.exec(command, options);
   }
 
-  async spawn(_name: string, _command: string[], _options?: ExecOptions): Promise<void> {
-    return notImplemented("SandboxRoom.spawn");
+  async spawn(name: string, command: string[], options?: ExecOptions): Promise<void> {
+    return this.controller.spawn(name, command, options);
   }
 
-  async processStatus(_name: string): Promise<ProcessStatus | null> {
-    return notImplemented("SandboxRoom.processStatus");
+  async processStatus(name: string): Promise<ProcessStatus | null> {
+    return this.controller.processStatus(name);
   }
 
-  async readLog(_name: string, _stream: "stdout" | "stderr", _offset: number): Promise<LogChunk> {
-    return notImplemented("SandboxRoom.readLog");
+  async readLog(name: string, stream: "stdout" | "stderr", offset: number): Promise<LogChunk> {
+    return this.controller.readLog(name, stream, offset);
   }
 
-  async writeFile(_path: string, _content: string): Promise<void> {
-    return notImplemented("SandboxRoom.writeFile");
+  async writeFile(path: string, content: string): Promise<void> {
+    return this.controller.writeFile(path, content);
   }
 
-  async readFile(_path: string): Promise<string | null> {
-    return notImplemented("SandboxRoom.readFile");
+  async readFile(path: string): Promise<string | null> {
+    return this.controller.readFile(path);
   }
 
   async snapshot(): Promise<SandboxSnapshot> {
-    return notImplemented("SandboxRoom.snapshot");
+    return this.controller.snapshot();
   }
 
   async stop(): Promise<void> {
-    return notImplemented("SandboxRoom.stop");
+    return this.controller.stop();
   }
 
   async alarm(): Promise<void> {
-    return notImplemented("SandboxRoom.alarm");
+    return this.controller.onAlarm();
   }
 }
