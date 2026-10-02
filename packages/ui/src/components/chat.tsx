@@ -1,0 +1,304 @@
+import type { ComponentProps, FormEvent, ReactNode } from "react";
+import { Children } from "react";
+import { cx } from "../cx";
+
+export type LineThreadProps = ComponentProps<"div"> & {
+  /** `live` holds the thread with a flare rule; `settled` drops it to grey. */
+  state?: "live" | "settled";
+};
+
+/**
+ * A conversation pinned to a line of the diff. No card and no shadow: the
+ * rule down the left is the whole container. Indent it to the code it
+ * belongs to with a margin on `className`.
+ */
+export function LineThread({
+  state = "live",
+  className,
+  ...props
+}: LineThreadProps) {
+  return (
+    <div
+      className={cx(
+        "flex flex-col gap-[18px] border-l-2 py-[2px] pl-6",
+        state === "live" ? "border-flare" : "border-rule",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+export type LineThreadSummaryProps = Omit<ComponentProps<"button">, "children"> & {
+  /** The question that opened the thread. */
+  quote: ReactNode;
+  /** What the machine knows about it: "answered · 2 replies". */
+  meta?: ReactNode;
+};
+
+/** A settled thread, collapsed to one line. It keeps its place in the diff. */
+export function LineThreadSummary({
+  quote,
+  meta,
+  className,
+  ...props
+}: LineThreadSummaryProps) {
+  return (
+    <button
+      type="button"
+      className={cx(
+        "group flex w-full cursor-pointer items-center gap-4 border-l-2 border-rule pl-6 text-left outline-offset-2 outline-ink focus-visible:outline-[1.5px]",
+        className,
+      )}
+      {...props}
+    >
+      <span className="type-sm text-muted group-hover:text-ink">{quote}</span>
+      {meta != null && (
+        <span className="type-mono-xs shrink-0 text-faint">{meta}</span>
+      )}
+      <svg
+        width="12"
+        height="12"
+        viewBox="0 0 12 12"
+        aria-hidden="true"
+        className="shrink-0 stroke-faint"
+      >
+        <path
+          d="M2.5 4.5 L6 8 L9.5 4.5"
+          fill="none"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
+  );
+}
+
+export type ChatTurnProps = Omit<ComponentProps<"div">, "children"> & {
+  /** Who is speaking. A name, not an avatar. */
+  author: ReactNode;
+  /** Beside the name: what the turn is anchored to, in place of a timestamp. */
+  anchor?: ReactNode;
+  /** Beside the name while streaming: what the agent is reading right now. */
+  activity?: ReactNode;
+  /** A question is set heavier than an answer; intent is what gets scanned for. */
+  kind?: "question" | "answer";
+  /** Shows the caret at the end of the text. The caret is the only motion. */
+  streaming?: boolean;
+  /** `Citations`, under the text. */
+  citations?: ReactNode;
+  children: ReactNode;
+};
+
+/** One turn of an exchange. No bubbles: a mono name, then prose. */
+export function ChatTurn({
+  author,
+  anchor,
+  activity,
+  kind = "answer",
+  streaming = false,
+  citations,
+  className,
+  children,
+  ...props
+}: ChatTurnProps) {
+  return (
+    <div className={cx("flex flex-col gap-[6px]", className)} {...props}>
+      <div className="type-mono-xs flex items-center gap-2 text-faint">
+        <span>
+          {author}
+          {anchor != null && <> · {anchor}</>}
+        </span>
+        {activity != null && <span className="text-flare-deep">{activity}</span>}
+      </div>
+      <div
+        className={
+          kind === "question"
+            ? "font-display text-body-m leading-body-s font-medium tracking-tight text-ink"
+            : "type-body text-ink"
+        }
+      >
+        {children}
+        {streaming && (
+          <span
+            aria-hidden="true"
+            className="animate-[caret-blink_1s_steps(1)_infinite] motion-reduce:animate-none"
+          >
+            ▍
+          </span>
+        )}
+      </div>
+      {citations != null && <div className="mt-1">{citations}</div>}
+    </div>
+  );
+}
+
+export type SettledExchangeProps = Omit<ComponentProps<"div">, "children"> & {
+  question: ReactNode;
+  /** Who asked and when: "priya · 1h ago". */
+  byline?: ReactNode;
+  /** The answer. */
+  children: ReactNode;
+};
+
+/** An exchange someone else already had: the answer drops to muted. */
+export function SettledExchange({
+  question,
+  byline,
+  className,
+  children,
+  ...props
+}: SettledExchangeProps) {
+  return (
+    <div className={cx("flex flex-col gap-1", className)} {...props}>
+      <div className="flex items-baseline justify-between gap-7">
+        <div className="font-display text-body leading-body-s font-medium tracking-tight text-ink">
+          {question}
+        </div>
+        {byline != null && (
+          <div className="type-mono-xs shrink-0 text-faint">{byline}</div>
+        )}
+      </div>
+      <div className="type-body-s text-muted">{children}</div>
+    </div>
+  );
+}
+
+/** A row of `Citation`s. Citations are lines, not files. */
+export function Citations({
+  className,
+  children,
+  ...props
+}: ComponentProps<"div">) {
+  const items = Children.toArray(children);
+  return (
+    <div className={cx("flex flex-wrap items-center gap-4", className)} {...props}>
+      {items.map((item, index) => (
+        <span key={index} className="contents">
+          {index > 0 && (
+            <span aria-hidden="true" className="font-mono text-mono-xs leading-mono-xs text-faint">
+              ·
+            </span>
+          )}
+          {item}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+export function Citation({ className, ...props }: ComponentProps<"a">) {
+  return (
+    <a
+      className={cx(
+        "type-mono-xs cursor-pointer text-muted underline decoration-1 underline-offset-[3px] outline-offset-2 outline-ink hover:text-ink focus-visible:outline-[1.5px]",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+export type AskFieldProps = Omit<
+  ComponentProps<"input">,
+  "size" | "onSubmit" | "className"
+> & {
+  /** `page` sits under the intent, scoped to the whole change; `inline` lives in a line thread. */
+  size?: "page" | "inline";
+  /** What the question is anchored to: "line 46". Stated, not implied. */
+  scope?: ReactNode;
+  /**
+   * Set while the agent answers. The field goes quiet, the send becomes a
+   * stop, and this replaces the placeholder: "answering · 2.1s".
+   */
+  answering?: ReactNode;
+  onSubmit?: (event: FormEvent<HTMLFormElement>) => void;
+  onStop?: () => void;
+  className?: string;
+};
+
+/**
+ * Where a question enters. A pill, not a chat box: what it is scoped to on
+ * the left, one send affordance on the right, and it never grows a toolbar.
+ */
+export function AskField({
+  size = "inline",
+  scope,
+  answering,
+  onSubmit,
+  onStop,
+  className,
+  ...inputProps
+}: AskFieldProps) {
+  const page = size === "page";
+  const busy = answering != null && answering !== false;
+  const control = cx(
+    "flex shrink-0 cursor-pointer items-center justify-center rounded-pill bg-ink text-on-ink outline-offset-2 outline-ink transition-colors duration-150 hover:bg-ink-hover focus-visible:outline-[1.5px] active:bg-ink-press",
+    page ? "size-[34px]" : "size-[28px]",
+  );
+  const arrow = page ? 14 : 12;
+
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit?.(event);
+      }}
+      className={cx(
+        "flex w-full items-center rounded-pill border border-border focus-within:border-ink",
+        page ? "gap-5 py-4 pr-4 pl-7" : "gap-5 py-2 pr-2 pl-[18px]",
+        busy ? "bg-surface" : "bg-ground",
+        className,
+      )}
+    >
+      {scope != null && !busy && (
+        <span className="-mr-[2px] flex shrink-0 items-center gap-[14px]">
+          <span className="type-mono-xs text-flare-deep">{scope}</span>
+          <span aria-hidden="true" className="h-5 w-px bg-border" />
+        </span>
+      )}
+      {busy ? (
+        <span role="status" className="type-mono-xs grow text-muted">
+          {answering}
+        </span>
+      ) : (
+        <input
+          type="text"
+          className={cx(
+            "min-w-0 grow bg-transparent font-display text-ink outline-none placeholder:text-faint",
+            page ? "text-body leading-body-s" : "text-ui leading-ui",
+          )}
+          {...inputProps}
+        />
+      )}
+      {busy ? (
+        <button type="button" aria-label="Stop" onClick={onStop} className={control}>
+          <span aria-hidden="true" className="size-[9px] rounded-[2px] bg-on-ink" />
+        </button>
+      ) : (
+        <button type="submit" aria-label="Send" className={control}>
+          <svg
+            width={arrow}
+            height={arrow}
+            viewBox={`0 0 ${arrow} ${arrow}`}
+            aria-hidden="true"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path
+              d={
+                page
+                  ? "M7 11.5 L7 3 M3.4 6.4 L7 2.8 L10.6 6.4"
+                  : "M6 10 L6 2.5 M2.8 5.7 L6 2.4 L9.2 5.7"
+              }
+            />
+          </svg>
+        </button>
+      )}
+    </form>
+  );
+}

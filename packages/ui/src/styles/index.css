@@ -1,0 +1,32 @@
+/*
+ * The one stylesheet an app imports: Tailwind, the fonts, the Gitflare theme,
+ * and the class names the primitives in this package use.
+ *
+ *   @import "@gitflare/ui/styles.css";
+ *
+ * Do not also import "tailwindcss" in the app; this file already does.
+ */
+@import "tailwindcss";
+@import "./fonts.css";
+@import "./theme.css";
+@source "../components";
+
+@layer base {
+  html {
+    background-color: var(--color-ground);
+    color: var(--color-ink);
+    font-family: var(--font-display);
+    font-size: var(--text-body);
+    line-height: var(--leading-body);
+    font-synthesis: none;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-wrap: anywhere;
+  }
+}
+
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
