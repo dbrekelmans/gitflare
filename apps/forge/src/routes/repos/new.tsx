@@ -29,7 +29,7 @@ export const Route = createFileRoute("/repos/new")({
 //   function directly, and navigates only after it resolves;
 // - the mutation's error, which is the server's refusal, is shown beside the
 //   submit button.
-function NewRepository() {
+export function NewRepository() {
   const navigate = useNavigate();
   const create = useCreateRepository();
   const form = useForm({
@@ -42,8 +42,12 @@ function NewRepository() {
       },
     },
     onSubmit: async ({ value }) => {
-      const view = await create.mutateAsync(toInput(value));
-      await navigate({ to: "/repos/$repoSlug", params: { repoSlug: view.repository.slug } });
+      try {
+        const view = await create.mutateAsync(toInput(value));
+        await navigate({ to: "/repos/$repoSlug", params: { repoSlug: view.repository.slug } });
+      } catch {
+        // Shown beside the submit button via `create.error`.
+      }
     },
   });
 

@@ -56,25 +56,29 @@ export function InboxPage() {
         title="Inbox"
         lede="Changes that are waiting for you, then everything else in flight."
       />
-      <SectionHead
-        title="Needs you"
-        aside={needsYou.length > 0 ? plural(needsYou.length, "change") : undefined}
-      />
-      {needsYou.length === 0 ? (
-        <Text tone="muted">Nothing is waiting on you.</Text>
-      ) : (
-        needsYou.map((item) => <ChangeRow key={item.change.id} item={item} />)
-      )}
-      <SectionHead
-        title="In flight"
-        className="mt-s11"
-        aside={inFlight.length > 0 ? plural(inFlight.length, "change") : undefined}
-      />
-      {inFlight.length === 0 ? (
-        <Text tone="muted">Nothing else in flight.</Text>
-      ) : (
-        inFlight.map((item) => <ChangeRow key={item.change.id} item={item} />)
-      )}
+      <section aria-label="Needs you">
+        <SectionHead
+          title="Needs you"
+          aside={needsYou.length > 0 ? plural(needsYou.length, "change") : undefined}
+        />
+        {needsYou.length === 0 ? (
+          <Text tone="muted">Nothing is waiting on you.</Text>
+        ) : (
+          needsYou.map((item) => <ChangeRow key={item.change.id} item={item} />)
+        )}
+      </section>
+      <section aria-label="In flight">
+        <SectionHead
+          title="In flight"
+          className="mt-s11"
+          aside={inFlight.length > 0 ? plural(inFlight.length, "change") : undefined}
+        />
+        {inFlight.length === 0 ? (
+          <Text tone="muted">Nothing else in flight.</Text>
+        ) : (
+          inFlight.map((item) => <ChangeRow key={item.change.id} item={item} />)
+        )}
+      </section>
     </>
   );
 }

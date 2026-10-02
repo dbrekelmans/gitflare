@@ -30,9 +30,21 @@ function CaptureRow({ enabled }: { enabled: boolean }) {
   );
 }
 
+/**
+ * The provisioning Workflow retries an import for a while before giving up,
+ * so a few minutes of `importing` is normal. Past this, `readyAt` staying
+ * null more likely means a source the host could never import (too large,
+ * not reachable): `completeRepositoryImport` leaves the repository exactly
+ * like this on that failure, with nothing in the contract to tell the two
+ * apart (see the task comment on GF-34). This is a guess from `createdAt`
+ * alone, not a fact the backend reports.
+ */
+const IMPORT_STALL_MS = 30 * 60 * 1000;
+
 export function RepositoryPage({ repoSlug }: { repoSlug: string }) {
   const { data } = useSuspenseQuery(repositoryQueries.detail(repoSlug));
   const ready = data.repository.readyAt !== null;
+  const stalled = !ready && Date.now() - data.repository.createdAt > IMPORT_STALL_MS;
   return (
     <>
       <PageHead
@@ -44,14 +56,17 @@ export function RepositoryPage({ repoSlug }: { repoSlug: string }) {
               {data.activeDecisions} decisions
             </RouteLink>
           ) : (
-            <StatusPill tone="neutral">importing</StatusPill>
+            <StatusPill tone={stalled ? "warning" : "neutral"}>
+              {stalled ? "not responding" : "importing"}
+            </StatusPill>
           )
         }
       />
       {!ready ? (
         <Text tone="muted">
-          This repository is still being imported. Check back shortly: this page will show how to
-          clone it once it is ready.
+          {stalled
+            ? "This import has been running a long time and may have failed. Check that the source is reachable and fits, or create the repository again."
+            : "This repository is still being imported. Check back shortly: this page will show how to clone it once it is ready."}
         </Text>
       ) : (
         <>

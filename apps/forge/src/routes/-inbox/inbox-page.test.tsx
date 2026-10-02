@@ -9,7 +9,7 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InboxPage } from "./inbox-page";
 
@@ -52,30 +52,34 @@ async function renderInbox({
   await screen.findByRole("heading", { level: 1 });
 }
 
+const needsYou = () => within(screen.getByRole("region", { name: "Needs you" }));
+const inFlight = () => within(screen.getByRole("region", { name: "In flight" }));
+
 afterEach(cleanup);
 
 describe("the inbox, against the demo", () => {
-  it("puts a ready change still waiting on the viewer's approval into needs you", async () => {
+  it("puts a ready change still waiting on the viewer's approval into needs you, not in flight", async () => {
     await renderInbox({ as: demoUsers.maya });
-    expect(screen.getByText("Needs you")).toBeTruthy();
-    expect(screen.getByRole("link", { name: demoChanges.review.title })).toBeTruthy();
+    expect(needsYou().getByRole("link", { name: demoChanges.review.title })).toBeTruthy();
+    expect(inFlight().queryByRole("link", { name: demoChanges.review.title })).toBeNull();
   });
 
-  it("does not put the change's own author into needs you for it, even though it is ready", async () => {
+  it("puts the change's own author's view of it under in flight, not needs you", async () => {
     await renderInbox({ as: demoUsers.jonas });
-    expect(screen.getByText("Nothing is waiting on you.")).toBeTruthy();
-    // It still shows, just as everything else in flight rather than needing them.
-    expect(screen.getByRole("link", { name: demoChanges.review.title })).toBeTruthy();
+    expect(needsYou().queryByRole("link", { name: demoChanges.review.title })).toBeNull();
+    expect(inFlight().getByRole("link", { name: demoChanges.review.title })).toBeTruthy();
   });
 
   it("leaves a merged change out of both sections", async () => {
     await renderInbox();
-    expect(screen.queryByRole("link", { name: demoChanges.merged.title })).toBeNull();
+    expect(needsYou().queryByRole("link", { name: demoChanges.merged.title })).toBeNull();
+    expect(inFlight().queryByRole("link", { name: demoChanges.merged.title })).toBeNull();
   });
 
   it("puts a change still being processed under in flight, never needs you", async () => {
     await renderInbox({ as: demoUsers.priya });
-    expect(screen.getByRole("link", { name: demoChanges.cloud.title })).toBeTruthy();
+    expect(inFlight().getByRole("link", { name: demoChanges.cloud.title })).toBeTruthy();
+    expect(needsYou().queryByRole("link", { name: demoChanges.cloud.title })).toBeNull();
   });
 
   it("says nothing is waiting when every change has merged or closed", async () => {
@@ -84,7 +88,7 @@ describe("the inbox, against the demo", () => {
         for (const change of data.changes) change.status = "merged";
       }),
     });
-    expect(screen.getByText("Nothing is waiting on you.")).toBeTruthy();
-    expect(screen.getByText("Nothing else in flight.")).toBeTruthy();
+    expect(needsYou().getByText("Nothing is waiting on you.")).toBeTruthy();
+    expect(inFlight().getByText("Nothing else in flight.")).toBeTruthy();
   });
 });
