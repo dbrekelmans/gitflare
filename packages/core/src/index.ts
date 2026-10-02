@@ -7,6 +7,7 @@ export * from "./domain/events";
 export * from "./domain/model-call";
 export * from "./domain/organisation";
 export * from "./domain/permissions";
+export * from "./domain/pipeline";
 export * from "./domain/push";
 export * from "./domain/repo-names";
 export * from "./domain/repository";

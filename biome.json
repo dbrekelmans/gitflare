@@ -30,6 +30,12 @@
       "preset": "recommended"
     }
   },
+  "overrides": [
+    {
+      "includes": ["packages/testing/src/demo/**"],
+      "linter": { "rules": { "suspicious": { "noTemplateCurlyInString": "off" } } }
+    }
+  ],
   "javascript": {
     "formatter": {
       "quoteStyle": "double"

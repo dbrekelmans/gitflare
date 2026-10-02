@@ -1,0 +1,27 @@
+{
+  "name": "@gitflare/diff",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --root ../.. packages/diff/"
+  },
+  "dependencies": {
+    "@gitflare/core": "workspace:*",
+    "@gitflare/db": "workspace:*",
+    "diff": "^9.0.0",
+    "drizzle-orm": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@gitflare/testing": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
