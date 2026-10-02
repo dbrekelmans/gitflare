@@ -1,0 +1,14 @@
+{
+  "name": "gitflare-spike-container-git",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy --secrets-file .secrets.json",
+    "types": "wrangler types",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "wrangler": "4.147.0"
+  }
+}
