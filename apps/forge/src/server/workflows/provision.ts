@@ -89,11 +89,9 @@ export class ProvisionWorkflow extends WorkflowEntrypoint<Env, ProvisionParams> 
           failedAt: services.clock.now(),
           error: reason,
         } as const;
-        await services.db
-          .update(schema.organisations)
-          .set({
-            settings: { ...organisation.settings, workspace: { ...workspace, preparation } },
-          });
+        await services.db.update(schema.organisations).set({
+          settings: { ...organisation.settings, workspace: { ...workspace, preparation } },
+        });
       });
     }
   }
