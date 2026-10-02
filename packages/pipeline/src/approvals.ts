@@ -122,6 +122,6 @@ export async function rerunStage(
     throw new ForgeError("conflict", `The ${stage} stage is already running.`);
   }
   const run = await queueStageRerun(deps, changeId, stage);
-  await deps.pipeline.rerunStage(changeId, stage);
+  await deps.pipeline.rerunStage(changeId, stage, run.attempt);
   return run;
 }

@@ -212,7 +212,7 @@ it("runs a re-run once when it is asked for twice at the same time", async () =>
     return { status: "succeeded" };
   };
   const before = calls.length;
-  const rerun: PipelineParams = { kind: "rerun", changeId: opened.id, stage: "review" };
+  const rerun: PipelineParams = { kind: "rerun", changeId: opened.id, stage: "review", attempt: 2 };
 
   await run([rerun, rerun]);
 
@@ -245,7 +245,7 @@ it("re-runs one stage and brings the change back to ready", async () => {
   const opened = await change();
   runtime.stages.review = succeed;
 
-  await run({ kind: "rerun", changeId: opened.id, stage: "review" });
+  await run({ kind: "rerun", changeId: opened.id, stage: "review", attempt: 2 });
 
   expect(await stages(opened.id)).toEqual([
     ["intent", 1, "succeeded", null],

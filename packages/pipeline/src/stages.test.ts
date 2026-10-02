@@ -279,6 +279,6 @@ describe("re-running a stage", () => {
     const run = await rerunStage(world.deps, world.reviewer, changeId, "review");
 
     expect(run).toMatchObject({ attempt: 2, status: "queued" });
-    expect(world.ports.pipeline.reruns).toEqual([{ changeId, stage: "review" }]);
+    expect(world.ports.pipeline.reruns).toEqual([{ changeId, stage: "review", attempt: 2 }]);
   });
 });

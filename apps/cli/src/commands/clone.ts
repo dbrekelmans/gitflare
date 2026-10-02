@@ -15,18 +15,16 @@ export async function clone(ctx: CliContext, args: string[]): Promise<number> {
   if (!repoSlug || !RepoSlug.safeParse(repoSlug).success) throw new UsageError();
 
   const detail = await forgeRequest<RepositoryDetail>(ctx, forge, httpRoutes.repository(repoSlug));
-  if (!detail.repository.readyAt) {
+  const { remote, contextRemote } = detail;
+  if (!detail.repository.readyAt || !remote || !contextRemote) {
     throw new CliError(`${repoSlug} is still being imported. Try again in a minute.`);
   }
 
   const into = directory ?? repoSlug;
   // On the command line as well: the clone needs the credential helper before
   // the new repository has a configuration to read it from.
-  const settings = hostSettings(forge, detail.remote).flatMap(([key, value]) => [
-    "-c",
-    `${key}=${value}`,
-  ]);
-  const cloned = await runGit(ctx, [...settings, "clone", detail.remote, into], {
+  const settings = hostSettings(forge, remote).flatMap(([key, value]) => ["-c", `${key}=${value}`]);
+  const cloned = await runGit(ctx, [...settings, "clone", remote, into], {
     showProgress: true,
   });
   if (cloned.exitCode !== 0) {
@@ -34,8 +32,8 @@ export async function clone(ctx: CliContext, args: string[]): Promise<number> {
   }
 
   const cwd = resolve(ctx.cwd, into);
-  await configureHost(ctx, forge, detail.remote, cwd);
-  await configureHost(ctx, forge, detail.contextRemote, cwd);
+  await configureHost(ctx, forge, remote, cwd);
+  await configureHost(ctx, forge, contextRemote, cwd);
   await git(ctx, ["config", "gitflare.deployment", forge], { cwd });
   await git(ctx, ["config", "gitflare.repository", repoSlug], { cwd });
 

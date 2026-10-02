@@ -187,6 +187,7 @@ export async function changeDetail(deps: ViewDeps, changeId: ChangeId): Promise<
     change,
     repository: { id: repository.id, slug: repository.slug },
     author: ref(change.authorId),
+    mergedBy: change.mergedBy ? ref(change.mergedBy) : null,
     session,
     capture: await captureSummary(deps, changeId, commits, captured, waiting),
     revisions: revisionRows.map(toRevision),

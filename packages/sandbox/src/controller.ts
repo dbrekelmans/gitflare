@@ -161,7 +161,7 @@ export class SandboxController {
     if (this.container.running) {
       throw new ForgeError("conflict", "The sandbox is already running.");
     }
-    const egress = egressMode(options.egress);
+    const egress = egressMode(options);
     if (egress === "intercepted") await this.options.applyEgress(options.egress);
 
     const boot = {

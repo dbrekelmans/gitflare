@@ -426,7 +426,9 @@ describe("embed", () => {
         [0.3, 0.4],
       ],
       model: "@cf/baai/bge-m3",
+      usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
       costMicroUsd: 4,
+      gatewayLogId: expect.any(String),
     });
   });
 

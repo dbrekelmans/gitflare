@@ -79,8 +79,8 @@ export function sessionsApi(services: Services): ForgeApi["sessions"] {
       session,
       repository: { id: repository.id, slug: repository.slug },
       change: change ?? null,
-      // Empty until the fork is ready, and again once it has been deleted.
-      pushRemote: fork?.remote ?? "",
+      // Null until the fork is ready, and again once it has been deleted.
+      pushRemote: fork?.remote ?? null,
       cloud,
     };
   }

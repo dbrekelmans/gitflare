@@ -72,13 +72,15 @@ export async function start(ctx: CliContext, args: string[]): Promise<number> {
     await git(ctx, ["config", sessionKey(branch), view.session.id]);
   }
   view = await waitForFork(ctx, clone, view);
+  const { pushRemote } = view;
+  if (!pushRemote) throw new CliError("The session's fork is no longer there.");
 
   const remote = `fork-${view.session.id.slice(-8).toLowerCase()}`;
-  await configureHost(ctx, clone.forge, view.pushRemote);
+  await configureHost(ctx, clone.forge, pushRemote);
   const existing = await runGit(ctx, ["remote", "get-url", remote]);
-  if (existing.exitCode !== 0) await git(ctx, ["remote", "add", remote, view.pushRemote]);
-  else if (existing.stdout.trim() !== view.pushRemote) {
-    await git(ctx, ["remote", "set-url", remote, view.pushRemote]);
+  if (existing.exitCode !== 0) await git(ctx, ["remote", "add", remote, pushRemote]);
+  else if (existing.stdout.trim() !== pushRemote) {
+    await git(ctx, ["remote", "set-url", remote, pushRemote]);
   }
   await git(ctx, ["config", `branch.${branch}.pushRemote`, remote]);
 

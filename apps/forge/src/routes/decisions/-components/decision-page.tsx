@@ -31,9 +31,9 @@ const originCopy: Record<DecisionOrigin, string> = {
   manual: "Added by hand, not derived from a review.",
 };
 
-/** A `reshaped` event records every edit, even one that left the statement untouched. */
+/** Whether the event reworded the statement, which is the part of the wording this page shows. */
 function wordingChanged(event: DecisionEvent): boolean {
-  return event.statementAfter != null && event.statementBefore !== event.statementAfter;
+  return event.wording !== null && event.wording.before.statement !== event.wording.after.statement;
 }
 
 function historyLabel(event: DecisionEvent): string {
@@ -164,9 +164,9 @@ export function DecisionPage({ decisionId }: { decisionId: DecisionId }) {
                 {changed && (
                   <>
                     <Text size="body-s" tone="muted" className="line-through">
-                      {event.statementBefore}
+                      {event.wording?.before.statement}
                     </Text>
-                    <Text size="body-s">{event.statementAfter}</Text>
+                    <Text size="body-s">{event.wording?.after.statement}</Text>
                   </>
                 )}
                 {event.note != null && (

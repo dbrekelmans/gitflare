@@ -31,6 +31,7 @@ steps:
     expect(config).toEqual({
       setup: "pnpm install --frozen-lockfile",
       instance: "standard-2",
+      egress: { hosts: [] },
       steps: [
         { name: "lint", run: "pnpm lint", needs: [], timeoutMinutes: 15 },
         { name: "test", run: "pnpm build\npnpm test\n", needs: ["lint"], timeoutMinutes: 30 },

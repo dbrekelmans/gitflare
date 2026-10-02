@@ -136,9 +136,9 @@ describe("start", () => {
     expect(container.starts[0]?.image).toBe("registry.cloudflare.com/acct/workspace@sha256:abc");
   });
 
-  it("turns Internet access on, with nothing intercepted, for a grant of every host", async () => {
+  it("turns Internet access on, with nothing intercepted, when asked for by name", async () => {
     const { container, controller, applied } = setup();
-    await controller.start({ ...options, egress: [{ kind: "host", host: "*" }] });
+    await controller.start({ ...options, egress: [], openInternet: true });
     expect(container.starts[0]?.enableInternet).toBe(true);
     expect(applied).toEqual([]);
   });
@@ -146,7 +146,16 @@ describe("start", () => {
   it("refuses to combine open Internet access with a credential, before starting anything", async () => {
     const { container, controller } = setup();
     const error = await failure(
-      controller.start({ ...options, egress: [{ kind: "host", host: "*" }, gitGrant] }),
+      controller.start({ ...options, egress: [gitGrant], openInternet: true }),
+    );
+    expect(error.code).toBe("invalid");
+    expect(container.calls).toEqual([]);
+  });
+
+  it("refuses a host grant of *, before starting anything", async () => {
+    const { container, controller } = setup();
+    const error = await failure(
+      controller.start({ ...options, egress: [{ kind: "host", host: "*" }] }),
     );
     expect(error.code).toBe("invalid");
     expect(container.calls).toEqual([]);
@@ -216,7 +225,7 @@ describe("exec", () => {
     );
 
     const open = setup();
-    await open.controller.start({ ...options, egress: [{ kind: "host", host: "*" }] });
+    await open.controller.start({ ...options, egress: [], openInternet: true });
     expect((await open.controller.exec(print)).stdout).toBe("/root||||\n");
   });
 

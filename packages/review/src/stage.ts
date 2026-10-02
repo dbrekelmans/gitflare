@@ -185,6 +185,7 @@ export const runReviewStage: StageHandler<ReviewDeps> = async (deps, input) => {
       createdAt: now,
       settledAt: null,
       settledBy: null,
+      learnedAt: null,
       messageCount: 1,
       lastMessageAt: now,
     };

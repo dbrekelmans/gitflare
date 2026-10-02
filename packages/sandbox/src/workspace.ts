@@ -36,7 +36,7 @@ export async function prepareWorkspace(
 ): Promise<SandboxSnapshot> {
   const { instance = "standard-1", timeoutSeconds = 540, pollMs = 2_000 } = options;
   const sandbox = deps.sandboxes.get(deps.ids.next("sandbox"));
-  await sandbox.start({ image: input.image, instance, egress: [{ kind: "host", host: "*" }] });
+  await sandbox.start({ image: input.image, instance, egress: [], openInternet: true });
   try {
     await sandbox.writeFile(SETUP_PATH, input.setupScript);
     // The script runs for minutes: in the background, so that it does not

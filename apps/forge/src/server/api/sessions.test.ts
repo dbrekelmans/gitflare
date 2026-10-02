@@ -69,7 +69,7 @@ describe("sessions slice: starting", () => {
       },
       repository: { id: "rep_atlas", slug: "atlas-web" },
       change: null,
-      pushRemote: "",
+      pushRemote: null,
       cloud: null,
     });
     expect(provisioning.forks).toEqual([started.session.id]);
@@ -139,7 +139,7 @@ describe("sessions slice: reading", () => {
       reviewSession?.id,
     ]);
     const [merged] = await api.listMine({ user: priya });
-    expect(merged).toMatchObject({ session: { status: "merged" }, pushRemote: "" });
+    expect(merged).toMatchObject({ session: { status: "merged" }, pushRemote: null });
 
     await api.start({ user: jonas }, { repoSlug: "atlas-web", kind: "local", title: "Second" });
     expect((await api.listMine({ user: jonas })).map((view) => view.session.title)).toEqual([
@@ -154,14 +154,17 @@ describe("sessions slice: the hosted agent", () => {
 
   it("passes prompts, events and stop through to the port", async () => {
     const { api, cloudSessions } = await demoServices();
+    // The port takes a prompt only for a session that was launched.
+    await cloudSessions.launch(cloudId, "Add an export function.");
     await api.prompt({ user: maya }, { sessionId: cloudId, text: "Also add a header row." });
     cloudSessions.emit(cloudId, { type: "assistant", text: "Done." });
 
     expect(await api.events({ user: jonas }, { sessionId: cloudId, after: 0 })).toMatchObject([
-      { seq: 1, type: "prompt", text: "Also add a header row." },
-      { seq: 2, type: "assistant", text: "Done." },
+      { seq: 1, type: "prompt", text: "Add an export function." },
+      { seq: 2, type: "prompt", text: "Also add a header row." },
+      { seq: 3, type: "assistant", text: "Done." },
     ]);
-    expect(await api.events({ user: jonas }, { sessionId: cloudId, after: 1 })).toHaveLength(1);
+    expect(await api.events({ user: jonas }, { sessionId: cloudId, after: 2 })).toHaveLength(1);
 
     const stopped = await api.stop({ user: maya }, { sessionId: cloudId });
     expect(stopped.cloud?.state).toBe("asleep");
@@ -222,7 +225,7 @@ describe("sessions slice: abandoning", () => {
     expect(view).toMatchObject({
       session: { status: "abandoned" },
       change: { id: demoChanges.review.id, status: "closed" },
-      pushRemote: "",
+      pushRemote: null,
     });
   });
 

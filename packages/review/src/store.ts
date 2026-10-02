@@ -160,9 +160,13 @@ export async function messagesOf(db: Db, threadIds: ThreadId[]): Promise<ThreadM
 export async function authorsOf(
   db: Db,
   messages: readonly ThreadMessage[],
+  also: readonly UserId[] = [],
 ): Promise<Map<UserId, Pick<User, "id" | "name" | "email" | "role">>> {
   const ids = [
-    ...new Set(messages.flatMap((m) => (m.author.kind === "user" ? [m.author.userId] : []))),
+    ...new Set([
+      ...messages.flatMap((m) => (m.author.kind === "user" ? [m.author.userId] : [])),
+      ...also,
+    ]),
   ];
   if (ids.length === 0) return new Map();
   const rows = await db

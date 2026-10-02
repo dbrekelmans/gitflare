@@ -126,6 +126,7 @@ export const runIntentStage: StageHandler<IntentDeps> = async (deps, input) => {
       changeId,
       revisionId,
       version: (latest?.version ?? 0) + 1,
+      attempt,
       statement: result.output.statement,
       grade,
       checkpointIds,

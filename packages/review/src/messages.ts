@@ -47,6 +47,10 @@ export async function appendMessage(
   const seq = inserted[0]?.seq;
   if (seq === undefined) throw new Error(`thread ${threadId} took no message`);
   stored.seq = seq;
-  await appendChangeEvent(deps, thread.changeId, { type: "thread.message", threadId, seq });
+  await appendChangeEvent(deps, thread.changeId, {
+    type: "thread.message",
+    threadId,
+    messageSeq: seq,
+  });
   return stored;
 }

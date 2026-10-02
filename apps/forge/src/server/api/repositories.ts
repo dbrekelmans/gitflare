@@ -72,9 +72,9 @@ export function repositoriesApi(services: Services): ForgeApi["repositories"] {
       ]);
       return {
         ...view(repository),
-        // Empty while an import is still running: the host has no remote to report yet.
-        remote: main?.remote ?? "",
-        contextRemote: context?.remote ?? "",
+        // Null while an import is still running: the host has no remote to report yet.
+        remote: main?.remote ?? null,
+        contextRemote: context?.remote ?? null,
         recentCommits:
           main?.status === "ready"
             ? await git.log(main.name, { ref: repository.defaultBranch, limit: RECENT_COMMITS })

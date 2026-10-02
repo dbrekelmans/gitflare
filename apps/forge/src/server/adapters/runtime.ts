@@ -18,7 +18,7 @@ export function createPipelineRunner(env: Env): PipelineRunner {
   };
   return {
     handlePush: (push) => start({ kind: "push", push }),
-    rerunStage: (changeId, stage) => start({ kind: "rerun", changeId, stage }),
+    rerunStage: (changeId, stage, attempt) => start({ kind: "rerun", changeId, stage, attempt }),
   };
 }
 

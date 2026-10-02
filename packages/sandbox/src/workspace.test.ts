@@ -31,7 +31,8 @@ it("runs the setup script in a fresh container with Internet access and returns 
   expect(sandboxes.startOptions(setup.sandboxId)).toEqual({
     image: "cloudflare/debian-trixie",
     instance: "standard-1",
-    egress: [{ kind: "host", host: "*" }],
+    egress: [],
+    openInternet: true,
   });
   expect(setup.command[0]).toBe("sh");
   expect(scriptOnDisk).toBe(input.setupScript);

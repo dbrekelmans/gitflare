@@ -64,12 +64,12 @@ export async function revertDecision(
     )
     .limit(1);
   if (!event) throw new ForgeError("not_found", `Decision event ${input.eventId} does not exist.`);
-  if (event.statementBefore === null) {
+  if (event.wording === null) {
     throw new ForgeError("invalid", "That event did not change the wording.");
   }
   return recordDecisionEvent(deps, input.decisionId, {
     kind: "reverted",
-    statement: event.statementBefore,
+    ...event.wording.before,
     changeId: null,
     threadId: null,
     userId: input.userId,
