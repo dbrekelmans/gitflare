@@ -28,7 +28,7 @@ Short names used below:
 
 ### Package: `@cloudflare/sandbox` 1.0
 
-- Latest is `1.0.0`, published 2026-09-30. Apache-2.0, repo `cloudflare/sandbox-sdk`. Dist-tags also carry `release-0-12-6: 0.12.6` and `next: 0.13.0-next.776.1`; last 0.x release is `0.12.10`. Source: `npm view @cloudflare/sandbox`.
+- Latest is `1.0.0`, published 2026-09-30. Apache-2.0, repo `cloudflare/sandbox-sdk`. Dist-tags also carry `rc: 1.0.0-rc.2`, `release-0-12-6: 0.12.6`, `next: 0.13.0-next.776.1` and `beta: 0.0.0-1558ec9`; last 0.x release is `0.12.10`. Source: `npm view @cloudflare/sandbox`.
 - "`@cloudflare/sandbox` works with a container you start from a Durable Object. Its classes run helper processes in the running container through `exec()`. The package does not start, stop, or monitor the container." Source: https://developers.cloudflare.com/sandbox/reference/
 - Requirements for every class: the image contains `/usr/local/bin/sandbox-shim` copied from the `cloudflare/sandbox` image whose tag matches the npm version (a static `linux/amd64` binary); the Worker has `nodejs_compat`; the container is running when a method is called. Source: same page. The `docker.io/cloudflare/sandbox:1.0.0` tag exists (amd64, ~1.6 MB). Source: https://hub.docker.com/v2/repositories/cloudflare/sandbox/tags
 
@@ -87,7 +87,7 @@ Copied from https://developers.cloudflare.com/sandbox/reference/ :
 
 ### `ctx.container`: exact types
 
-Copied from `@cloudflare/workers-types@5.20261002.1` (`index.d.ts`):
+Copied from `@cloudflare/workers-types@5.20261002.1` (`index.d.ts`), a contiguous run of declarations with nothing removed:
 
 ```ts
 interface ExecOutput {
@@ -138,6 +138,21 @@ interface Container {
   exec(cmd: string[], options?: ContainerExecOptions): Promise<ExecProcess>;
   inspect(): Promise<ContainerInfo | null>;
 }
+interface ContainerDirectorySnapshot {
+  id: string;
+  size: number;
+  dir: string;
+  name?: string;
+}
+type ContainerDirectorySnapshotRestoreParams =
+  | {
+      snapshot: ContainerDirectorySnapshot;
+      mountPoint?: string;
+    }
+  | {
+      snapshot?: undefined;
+      mountPoint: string;
+    };
 interface ContainerSnapshot {
   id: string;
   size: number;
@@ -194,17 +209,17 @@ Behaviour, all from the DO container API page unless noted:
 - **Run a command.** "`exec()` starts the executable directly with the provided arguments. It does not start a shell or interpret pipes, redirects, expansion, or other shell syntax." It does not start a stopped container; it waits for one that is still starting. Use `["bash", "-lc", "<COMMAND>"]` or `["sh", "-c", "<COMMAND>"]` for shell syntax.
 - **Exit codes.** `process.exitCode` is a `Promise<number>`: "Nonzero codes resolve normally instead of rejecting." `output()` buffers both streams and the exit code, can be called once, and "holds all of the output in the memory of the Durable Object".
 - **Streaming.** Read `process.stdout` and `process.stderr` concurrently; "a stream that nobody reads can block a process that keeps writing to it". A documented server-sent-events implementation is at https://developers.cloudflare.com/sandbox/commands/stream-command-output/
-- **Timeouts and kill.** "`exec()` has no built-in timeout." `kill()` defaults to `SIGTERM` and reaches only the process `exec()` started, not its children. To bound a command and its children, run it under GNU `timeout`: `["timeout", "--kill-after=5", "60", "sh", "-c", "npm test"]` (exit code `124` on timeout). Do not pass `AbortSignal.timeout()` or `request.signal` directly; signalling an exited process "raises an uncaught `internal error` in the Durable Object".
+- **Timeouts and kill.** "`exec()` has no built-in timeout." `kill()` defaults to `SIGTERM` and reaches only the process `exec()` started, not its children. To bound a command and its children, run it under GNU `timeout`: `["timeout", "--kill-after=5", "60", "sh", "-c", "npm test"]` (exit code `124` on timeout, or `137` if `timeout` also sends `SIGKILL`); this example is from https://developers.cloudflare.com/sandbox/commands/stream-command-output/ and https://developers.cloudflare.com/containers/guides/execute-commands/ , not from the DO container API page. Do not pass `AbortSignal.timeout()` or `request.signal` directly; signalling an exited process "raises an uncaught `internal error` in the Durable Object".
 - **Retries duplicate work.** "Canceling the request that started a process does not stop the process. If the client retries, a second copy of the command runs."
 - **Env vars.** `start({ env })` sets container variables, but "Processes started with `exec()` do not receive these variables, except `PATH`." Each `exec()` passes its own `env` and `cwd`; there are no sessions. There is no secrets API: an env var is readable by every process in the container (Security).
 - **User.** `user` is numeric `uid:gid`. "A user ID without a group ID runs the process as `root`, and a user or group name makes `exec()` reject with an internal error." And: "`user` does not restrict a process in a deployed container with the `durable_object` scheduling policy. Every process has the same Linux capabilities as `root`".
 - **Ports.** `getTcpPort(port)` returns a `Fetcher`; `port.fetch(request)` proxies HTTP and WebSocket upgrades. There is no public port and no built-in preview URL: "The server has no public port, so your Worker forwards requests to it." The server must listen on `0.0.0.0`. A WebSocket that only passes through does not keep the sandbox alive; the Durable Object has to accept both ends. Source: https://developers.cloudflare.com/sandbox/previews/ . Previews should be served from a separate hostname: https://developers.cloudflare.com/sandbox/previews/serve-previews-on-their-own-hostnames/
 - **Monitor.** `monitor()` resolves when the main process exits with code 0 or `destroy()` is called without an error value; rejects otherwise. A pending call keeps the Durable Object in memory for up to 15 minutes and does not survive a Durable Object restart.
-- **Git.** There are no git helpers. The 0.x `gitCheckout()` is replaced by "`exec()` of `git clone --filter=blob:none` in `/workspace`". Source: https://developers.cloudflare.com/sandbox/sdk/migrate/api-map/
+- **Git.** There are no git helpers. The 0.x `gitCheckout()` is replaced by "`exec()` of `git clone --filter=blob:none` in `/workspace`". Source: https://developers.cloudflare.com/sandbox/sdk/migrate/api-map/ . **Do not use that flag against Artifacts without testing it:** that page is written for GitHub, and the Artifacts git-protocol page lists `filter` among unsupported capabilities (see "Git in a Sandbox against Artifacts"). Plan on a shallow fetch of a commit (`git fetch --depth=1 origin <sha>`), which is what `@cloudflare/ci` does and what `spec/research/artifacts.md` recommends.
 
 ### `Files` (`@cloudflare/sandbox@1.0.0`)
 
-Copied from `dist/index.d.mts`:
+Signatures from `dist/index.d.mts`. The declarations are exact; the JSDoc comments between them are left out, and the `SandboxFileStat` / `SandboxDirectoryEntry` types are not shown:
 
 ```ts
 type FileContent = string | ArrayBuffer | ArrayBufferView | Blob | ReadableStream<Uint8Array>;
@@ -278,8 +293,8 @@ Sources: DO container API; Security; https://developers.cloudflare.com/sandbox/n
 
   "If you copy them to a class that intercepts some hostnames only, add the certificate to the system trust store instead."
 - "Add the credential only to HTTPS requests. The handler fetches with the scheme that the container used, so a credential added to a plain HTTP request crosses the Internet unencrypted."
-- The documented git gateway allows only `GET <repo>.git/info/refs?service=git-upload-pack` and `POST <repo>.git/git-upload-pack`, then sets `Authorization`. The result: "`git remote get-url origin` prints the URL without a token. A `git push` from the sandbox fails with `403`." Push is the same pattern with `git-receive-pack` allowed.
-- AI Gateway through the intercept, copied from the Runner tutorial (`src/outbound.ts`):
+- The documented git gateway allows only `GET <repo>.git/info/refs?service=git-upload-pack` and `POST <repo>.git/git-upload-pack`, then sets `Authorization`. The result: "`git remote get-url origin` prints the URL without a token. A `git push` from the sandbox fails with `403`." The page shows only `git-upload-pack`. That allowing `GET …/info/refs?service=git-receive-pack` and `POST …/git-receive-pack` in the same gateway makes push work is an inference from how git smart HTTP works, not something the page demonstrates; see "Could not verify".
+- AI Gateway through the intercept, an excerpt of the `fetch()` method in the Runner tutorial's `src/outbound.ts`:
 
   ```ts
   if (
@@ -364,7 +379,7 @@ Sources: `@cloudflare/ci@0.2.0` tarball (publishes TypeScript source, no build) 
   - `@cloudflare/ci/worker`: `CiSandbox`, `restartCiRun`, `startCiRun`; types `CiBindings`, `DirectoryBackup`, `RunnerOptions`, `CreatePullRequestResult`, `SourceControlCheckout`, `SourceControlPushCredentials`, `SourceControlSource`.
   - `@cloudflare/ci/worker/source-control`: `cloudflareArtifacts`, type `SourceControlAdapter`.
   - There is no `HealingAgent` export. "The Healing Agent, its tools, and its AI dependencies are not part of `@cloudflare/ci`" (README); it is application code in `examples/self-healing`.
-- It is a library used inside your own Worker: "The HTTP routes, queue handler, Wrangler configuration, bindings, and concrete Workflow classes remain application code". It needs `nodejs_compat` and a Workers-aware bundler. It expects these bindings by name (`src/env.ts`):
+- It is a library used inside your own Worker: "The HTTP routes, queue handler, Wrangler configuration, bindings, and concrete Workflow classes remain application code". It needs `nodejs_compat` and a Workers-aware bundler. It expects these bindings by name (excerpt of `src/env.ts`; the unrelated `CheckRunRef`, `Variables` and `Env` types are not shown):
 
   ```ts
   type Secrets = {
@@ -374,6 +389,8 @@ Sources: `@cloudflare/ci@0.2.0` tarball (publishes TypeScript source, no build) 
     R2_SECRET_ACCESS_KEY: string;
   };
 
+  // Runtime contract owned by the CI package. A deployable Worker can intersect
+  // this with its Wrangler-generated CloudflareBindings for configuration checks.
   export type Bindings = Secrets & {
     ARTIFACTS: Artifacts;
     BACKUP_BUCKET: R2Bucket;
@@ -388,7 +405,7 @@ Sources: `@cloudflare/ci@0.2.0` tarball (publishes TypeScript source, no build) 
   };
   ```
 
-- Pipeline definition, copied from `examples/cloudflare-artifacts/cloudflare.ci.ts`:
+- Pipeline definition, an excerpt of `examples/cloudflare-artifacts/cloudflare.ci.ts` (the imports, a leading comment and the final `deploy` runner are cut, marked `// ...`):
 
   ```ts
   export class CI extends CIWorkflow<CloudflareArtifacts, Bindings> {
@@ -415,7 +432,7 @@ Sources: `@cloudflare/ci@0.2.0` tarball (publishes TypeScript source, no build) 
   ```
 
   The file lives in the CI Worker's own source and is exported from its entry module. "Changes to `cloudflare.ci.ts` take effect after the Worker is deployed." (example README).
-- `RunnerOptions` (`src/pipeline/types.ts`):
+- `RunnerOptions`, copied whole from `src/pipeline/types.ts`. Note the TODO: there is no `outputs` option, so a cache hit reuses the entire cached workspace rather than restoring selected paths:
 
   ```ts
   export type RunnerOptions = {
@@ -424,6 +441,8 @@ Sources: `@cloudflare/ci@0.2.0` tarball (publishes TypeScript source, no build) 
     command: string;
     cwd?: string;
     env?: Record<string, string>;
+    // TODO: Add `outputs` so cache hits restore only declared paths (for example,
+    // node_modules/) onto a fresh checkout instead of reusing a full workspace.
     cache?: { inputs: string[] };
     config?: RunnerConfig;
     cloudflareCredentials?: boolean | { accountId: string };
@@ -459,7 +478,7 @@ Sources: `@cloudflare/ci@0.2.0` tarball (publishes TypeScript source, no build) 
 
   This shape matches `wrangler@4.147.0`'s `config-schema.json` (`ArtifactsEventTrigger`: `filter.namespace`, `filter.repo_name`, `targets[].type: "workflow"`, `targets[].workflow_name`, `additionalProperties: false`). **The docs page https://developers.cloudflare.com/artifacts/guides/build-and-deploy-on-push/ shows a different shape (`repoName`, `target.scriptName`, `target.workflowName`) that the schema rejects.** The same page states the filter is optional and that omitting the repository name runs the Workflow "for every push to any repo in your Artifacts namespace". The schema accepts nine event types on this trigger (`cf.artifacts.repo.created|deleted|forked|imported|pushed|cloned|fetched|token.created|token.revoked`).
 - It can also be started from code: `startCiRun(env, params)` calls `env.CI_WORKFLOW.createBatch([{ id, params }])` with a deterministic id derived from provider, owner, repository and commit SHA, and returns `null` if a run for that commit already exists; `restartCiRun(env, source)` restarts it (`src/ci/dispatch.ts`).
-- Push event payload as the package parses it (`src/artifacts/events.ts`): `type: 'cf.artifacts.repo.pushed'`, `source: { namespace, repoName }`, `payload: { ref, before, after, commits: [{ id, message, author: { name, email } }] }`. Only `refs/heads/*` and `refs/tags/*` start a run; a ref deletion (`after` all zeros) is ignored. The package reads no pusher or token identity from the event.
+- Push event payload as the package parses it (`src/artifacts/events.ts`): `id?` (optional string), `type: 'cf.artifacts.repo.pushed'`, `source: { type?: 'artifacts.repo', namespace, repoName }`, `payload: { ref, before, after, commits: [{ id, message, author: { name, email } }] }`. Only `refs/heads/*` and `refs/tags/*` start a run; a ref deletion (`after` all zeros) is ignored. The package reads no pusher or token identity from the event.
 - Observing a run: a runner returns `{ exitCode, logs: { stdout, stderr }, snapshot, cachePointer? }` when its step completes; logs above 300,000 bytes are returned as streams. A failed runner throws `CiRunnerFailure` carrying the last 20,000 characters of output. `StepNotificationHandle` (`succeed`/`fail`) exists as a provider hook, but the Artifacts provider does not implement `startStepNotification`, so nothing is reported per step. The docs point at the Workflows dashboard: "To identify which stage failed, inspect the instance in the Workflows dashboard". Programmatically that is the Workflow instance's `status(): Promise<InstanceStatus>` and `subscribe(options?): Promise<WorkflowInstanceSubscription>` ("historical and live execution events"). Source: https://developers.cloudflare.com/workflows/build/workers-api/
 - "`CiRunnerResult.logs` contains raw command output and is not secret-redacted; only provider notification previews and failure messages are redacted." (README)
 - Caching: `cache: { inputs: [...] }` keys the runner's workspace backup on the git blob hashes of the listed paths (globs `*` and `**`), plus repository, ref, runner name, command, cwd and env. A hit skips the command and returns the cached workspace with a synthetic log line. Keys are scoped by ref "so an untrusted branch cannot publish a workspace later restored by the default branch" (`src/ci/capabilities.ts`). The pointer is a small JSON object in R2 under `cache/<key>.json`.
@@ -537,6 +556,7 @@ Sources: Runner tutorial; https://developers.cloudflare.com/sandbox/coding-agent
 - ArtifactFS "starts with a blobless clone. It fetches commits, trees, and refs first, then mounts the working tree through FUSE"; contents hydrate on read. It is installed with `go install github.com/cloudflare/artifact-fs/cmd/artifact-fs@latest` and needs "a working FUSE implementation on the host" and a running `artifact-fs daemon`. The documented example passes the token inside the remote URL.
 - Timings: the docs give none. The launch post says "most repositories take only a few seconds to clone at most", that a 2.4 GB repository "takes close to 2 minutes to clone", and frames ArtifactFS as getting large repositories "down to ~10-15 second[s]". Source: https://blog.cloudflare.com/artifacts-git-for-agents-beta/ (2026-04-16).
 - Plain git over HTTPS works with the standard client for `clone`, `fetch`, `pull`, `push`; fetch supports protocol v1 and v2 including shallow fetches; "Some optional v1 capabilities, such as `filter` and `include-tag`, are not supported." Source: https://developers.cloudflare.com/artifacts/api/git-protocol/
+- Consequence for clone flags: the Sandbox docs' `git clone --filter=blob:none` (the `gitCheckout()` replacement above) relies on the `filter` capability, which that sentence says is unsupported at least for v1; the ArtifactFS page nevertheless describes a blobless clone of an Artifacts remote. The two pages are not reconciled anywhere, and nothing was run. Until tested, use shallow fetches (`--depth=1`), which the same page says are supported and which `@cloudflare/ci` uses. `spec/research/artifacts.md` reaches the same conclusion.
 - The only Sandbox + Artifacts page (https://developers.cloudflare.com/artifacts/examples/sandbox-sdk-artifacts/) uses the 0.x `getSandbox()` and `sandbox.setEnvVars({ ARTIFACTS_GIT_REMOTE: … })` with the token embedded in the URL. That is the pattern the Security page warns about ("Git saves that URL in the `.git/config` file… Any of that code can read the token").
 - Fetching a fork and merging have no Cloudflare-specific documentation: they are ordinary `git remote add` / `git fetch` / `git merge` against two Artifacts remotes, each needing its own token because tokens are repository-scoped.
 
@@ -555,6 +575,7 @@ Sources: Runner tutorial; https://developers.cloudflare.com/sandbox/coding-agent
 ## Could not verify
 
 - **Git push from a sandbox to Artifacts with the token added by an intercept.** Verified separately: `interceptOutboundHttps` on a hostname with a `WorkerEntrypoint` that sets `Authorization` (documented for `github.com`), and that Artifacts accepts `Authorization: Bearer <token>` on `https://<ACCOUNT_ID>.artifacts.cloudflare.net/git/...`. No doc or example combines them, and nothing was run. Open points: whether `git-receive-pack` request bodies (packfiles) stream through the entrypoint without a size limit, and whether a Worker `fetch()` to `*.artifacts.cloudflare.net` from the same account behaves like an external client. Keep behind a port and test first.
+- **Partial clone (`--filter=blob:none`) against Artifacts.** The git-protocol page lists `filter` as unsupported for protocol v1 and says nothing about v2; the ArtifactFS page describes a blobless clone of an Artifacts remote; the Sandbox migration docs recommend the flag, but for GitHub. Nothing was run. Use `--depth=1` until tested.
 - **Session resume for a headless coding agent.** The official guide and example run with `--no-session-persistence` and document no resume. Tried: the Runner tutorial, the Claude Code page, the `cloudflare/sandbox-sdk` `examples/coding-agents` source. Whether Claude Code's own session files survive a container snapshot and can be resumed afterwards is undocumented by Cloudflare.
 - **Snapshot pricing.** The Containers pricing page has no snapshot line; the limits page gives only size and retention.
 - **Snapshot behaviour under `wrangler dev`** beyond the fact that an implementation exists: size limit, retention, and whether a local snapshot is tied to the image the same way.
