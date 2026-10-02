@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "f0033a35-6c3a-4b47-9898-1b64e5549035",
+  "id": "dbb66873-b5f4-44ae-ae25-b209ce226e26",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "approvals": {
@@ -34,6 +34,14 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "self_approval": {
+          "name": "self_approval",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
         },
         "content_hash": {
           "name": "content_hash",
@@ -1377,6 +1385,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "ready_at": {
+          "name": "ready_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "archived_at": {
           "name": "archived_at",
           "type": "integer",
@@ -1656,6 +1671,13 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "fork_ready_at": {
+          "name": "fork_ready_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "ended_at": {

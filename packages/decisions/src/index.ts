@@ -3,13 +3,20 @@ import {
   type Decision,
   type DecisionEvent,
   type DecisionId,
-  type DecisionOrigin,
   notImplemented,
   type RepositoryId,
   type ThreadId,
-  type UserId,
 } from "@gitflare/core";
-import type { Clock, GitHost, GitWriter, IdGenerator, ModelGateway } from "@gitflare/core/ports";
+import type {
+  Clock,
+  DecisionsPort,
+  GitHost,
+  GitWriter,
+  IdGenerator,
+  ModelGateway,
+  NewDecision,
+  RetrievedDecision,
+} from "@gitflare/core/ports";
 import type { Db } from "@gitflare/db";
 
 // @gitflare/decisions — the decision record. Each decision is a markdown file
@@ -27,10 +34,9 @@ export interface DecisionsDeps {
   ids: IdGenerator;
 }
 
-export interface RetrievedDecision {
-  decision: Decision;
-  /** Cosine similarity to the query, 0 to 1. */
-  similarity: number;
+/** The `DecisionsPort` the review and the pipeline use, over the functions below. */
+export function createDecisionRecord(_deps: DecisionsDeps): DecisionsPort {
+  return notImplemented("@gitflare/decisions createDecisionRecord");
 }
 
 /**
@@ -43,18 +49,6 @@ export async function retrieveDecisions(
   _input: { repositoryId: RepositoryId; query: string; limit: number; changeId?: ChangeId },
 ): Promise<RetrievedDecision[]> {
   return notImplemented("@gitflare/decisions retrieveDecisions");
-}
-
-export interface NewDecision {
-  repositoryId: RepositoryId;
-  title: string;
-  statement: string;
-  rationale: string;
-  globs: string[];
-  origin: DecisionOrigin;
-  changeId: ChangeId | null;
-  threadId: ThreadId | null;
-  userId: UserId | null;
 }
 
 /** Writes the decision's file to the context repo, indexes and embeds it, and records `created`. */

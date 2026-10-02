@@ -143,3 +143,55 @@ export class FakeModelGateway implements ModelGateway {
     );
   }
 }
+
+type JsonSchema = {
+  type?: string | string[];
+  properties?: Record<string, JsonSchema>;
+  required?: string[];
+  items?: JsonSchema;
+  enum?: unknown[];
+  const?: unknown;
+  anyOf?: JsonSchema[];
+  oneOf?: JsonSchema[];
+  minItems?: number;
+  minimum?: number;
+};
+
+/** The smallest value a JSON schema accepts, more or less: enough for a placeholder reply. */
+function sample(schema: JsonSchema): unknown {
+  if (schema.const !== undefined) return schema.const;
+  if (schema.enum) return schema.enum[0];
+  const variant = schema.anyOf?.[0] ?? schema.oneOf?.[0];
+  if (variant) return sample(variant);
+  const type = Array.isArray(schema.type) ? schema.type[0] : schema.type;
+  switch (type) {
+    case "object":
+      return Object.fromEntries(
+        (schema.required ?? []).map((key) => [key, sample(schema.properties?.[key] ?? {})]),
+      );
+    case "array":
+      return Array.from({ length: schema.minItems ?? 0 }, () => sample(schema.items ?? {}));
+    case "number":
+    case "integer":
+      return schema.minimum ?? 0;
+    case "boolean":
+      return false;
+    case "null":
+      return null;
+    default:
+      return "Placeholder from the local model fake.";
+  }
+}
+
+/**
+ * A responder that answers anything: a structured request gets the smallest
+ * object its schema accepts, a plain one gets a line of text. Local
+ * development registers it so the pipeline runs end to end without a model;
+ * tests should script real replies instead.
+ */
+export function placeholderResponder(toJsonSchema: (schema: never) => unknown) {
+  return (request: GenerateRequest<unknown>): ScriptedReply =>
+    request.output
+      ? { output: sample(toJsonSchema(request.output.schema as never) as JsonSchema) }
+      : { text: "This is a placeholder reply from the local model fake." };
+}

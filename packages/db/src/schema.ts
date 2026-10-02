@@ -103,6 +103,7 @@ export const repositories = sqliteTable(
     /** The next change number to hand out. */
     nextChangeNumber: integer("next_change_number").notNull().default(1),
     createdAt: time("created_at").notNull(),
+    readyAt: time("ready_at"),
     archivedAt: time("archived_at"),
   },
   (t) => [uniqueIndex("repositories_slug").on(t.slug)],
@@ -120,6 +121,7 @@ export const sessions = sqliteTable(
     forkRepo: text("fork_repo").notNull(),
     baseSha: text("base_sha").notNull(),
     createdAt: time("created_at").notNull(),
+    forkReadyAt: time("fork_ready_at"),
     endedAt: time("ended_at"),
     forkDeletedAt: time("fork_deleted_at"),
   },
@@ -319,6 +321,7 @@ export const approvals = sqliteTable(
     changeId: id<ChangeId>("change_id").notNull(),
     sectionId: id<SectionId>("section_id").notNull(),
     userId: id<UserId>("user_id").notNull(),
+    selfApproval: integer("self_approval", { mode: "boolean" }).notNull().default(false),
     contentHash: text("content_hash").notNull(),
     createdAt: time("created_at").notNull(),
     withdrawnAt: time("withdrawn_at"),

@@ -131,3 +131,36 @@ export interface ForgeApi {
 }
 
 export type ApiSlice = keyof ForgeApi;
+
+/**
+ * The name of every operation, per slice. Code that has to treat the API
+ * generically (the fixture fallback, the stubs) walks this instead of the
+ * interface, which does not exist at run time.
+ */
+export const apiOperations = {
+  account: ["me", "listMembers", "setMemberRole", "getSettings", "updateSettings", "budget"],
+  repositories: ["list", "get", "create", "gitCredential"],
+  sessions: ["start", "get", "listMine", "prompt", "events", "stop", "abandon"],
+  changes: [
+    "list",
+    "get",
+    "sectionDiff",
+    "approveSection",
+    "revokeApproval",
+    "rerunStage",
+    "merge",
+    "close",
+    "ci",
+    "ciLog",
+  ],
+  threads: ["list", "open", "post", "resolve", "dismiss", "reclassify", "reopen"],
+  decisions: ["list", "get", "create", "edit", "revert", "revive"],
+  dev: ["simulatePush"],
+} as const satisfies { [S in ApiSlice]: readonly (keyof ForgeApi[S])[] };
+
+// Fails to compile when an operation is added to `ForgeApi` but not listed above.
+type Unlisted = {
+  [S in ApiSlice]: Exclude<keyof ForgeApi[S], (typeof apiOperations)[S][number]>;
+}[ApiSlice];
+const _everyOperationIsListed: Unlisted extends never ? true : never = true;
+void _everyOperationIsListed;

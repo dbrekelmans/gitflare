@@ -2,6 +2,7 @@ import type { BatchItem, BatchResponse } from "drizzle-orm/batch";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import * as schema from "./schema";
 
+export * from "./cost";
 export * from "./events";
 export * from "./rows";
 export { schema };

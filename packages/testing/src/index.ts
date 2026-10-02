@@ -1,9 +1,11 @@
 import type { Identity } from "@gitflare/core";
 import type { Ports } from "@gitflare/core/ports";
+import { z } from "zod";
 import { demo } from "./demo";
 import { buildDemoGit } from "./demo/git";
 import { FakeGit } from "./fakes/git";
-import { FakeModelGateway } from "./fakes/models";
+import { FakeCapture, FakeDecisions, FakeDiffs } from "./fakes/internal";
+import { FakeModelGateway, placeholderResponder } from "./fakes/models";
 import {
   FakeCloudSessions,
   FakeIdentity,
@@ -15,12 +17,12 @@ import {
 } from "./fakes/runtime";
 import { FakeSandboxHost } from "./fakes/sandbox";
 
-export { diffFiles, lineDiff, stableHash } from "./demo/diff";
+export { diffFiles, lineDiff } from "./demo/diff";
 export * from "./fakes/git";
+export * from "./fakes/internal";
 export * from "./fakes/models";
 export * from "./fakes/runtime";
 export * from "./fakes/sandbox";
-export { gitObjectId, sha1 } from "./fakes/sha1";
 
 /** `Ports`, with every member typed as its fake so a test can script and inspect it. */
 export interface FakePorts extends Ports {
@@ -33,6 +35,9 @@ export interface FakePorts extends Ports {
   pipeline: RecordingPipeline;
   threads: FakeThreads;
   cloudSessions: FakeCloudSessions;
+  capture: FakeCapture;
+  diffs: FakeDiffs;
+  decisions: FakeDecisions;
   clock: ManualClock;
   ids: SequentialIds;
 }
@@ -62,6 +67,9 @@ export function createFakePorts(overrides: Partial<FakePorts> = {}): FakePorts {
     pipeline: new RecordingPipeline(),
     threads: new FakeThreads(clock, ids),
     cloudSessions: new FakeCloudSessions(clock),
+    capture: new FakeCapture(clock),
+    diffs: new FakeDiffs(git),
+    decisions: new FakeDecisions(clock, ids),
     clock,
     ids,
     ...overrides,
@@ -71,14 +79,27 @@ export function createFakePorts(overrides: Partial<FakePorts> = {}): FakePorts {
 /**
  * The fakes local development runs on: the demo's repositories in the git
  * host, the demo's "now" on the clock, and every request signed in as the
- * demo's viewer. Pair it with `seedDemo` for the database.
+ * demo's viewer. The model fake answers every call with a placeholder, so the
+ * pipeline can run without a model. Pair it with `seedDemo` for the database.
  */
 export function createDemoPorts(): FakePorts {
   const clock = new ManualClock(demo.now);
   const { subject, email, name } = demo.viewer;
-  return createFakePorts({
+  const ports = createFakePorts({
     clock,
+    models: new FakeModelGateway().respond(
+      placeholderResponder((schema) => z.toJSONSchema(schema)),
+    ),
     git: buildDemoGit().git,
     identity: new FakeIdentity({ subject, email, name }),
   });
+  for (const session of demo.capturedSessions) {
+    ports.capture.set({
+      changeId: session.changeId,
+      sessions: [session],
+      missingCheckpointIds: [],
+    });
+  }
+  ports.decisions.add(...structuredClone(demo.decisions));
+  return ports;
 }

@@ -1,5 +1,12 @@
 import { type FileDiff, notImplemented, type Section, type StageHandler } from "@gitflare/core";
-import type { Clock, GitHost, IdGenerator, ModelGateway } from "@gitflare/core/ports";
+import type {
+  CapturePort,
+  ChangeLive,
+  Clock,
+  DiffPort,
+  IdGenerator,
+  ModelGateway,
+} from "@gitflare/core/ports";
 import type { Db } from "@gitflare/db";
 
 // @gitflare/sections — dividing one change into sections a person can read
@@ -9,8 +16,10 @@ import type { Db } from "@gitflare/db";
 
 export interface SectionsDeps {
   db: Db;
-  git: GitHost;
+  capture: CapturePort;
+  diffs: DiffPort;
   models: ModelGateway;
+  live: ChangeLive;
   clock: Clock;
   ids: IdGenerator;
 }
@@ -33,7 +42,8 @@ export interface FoldResult {
 
 /**
  * Folds a new revision's diff into existing sections without consulting a
- * model: a section keeps its files, its `contentHash` is recomputed, and a
+ * model: a section keeps its files, its `contentHash` is recomputed with
+ * `sectionContentHash`, and a
  * section left with nothing to show is dropped. Pure, so the rule that decides
  * which approvals survive a push is testable on its own.
  */

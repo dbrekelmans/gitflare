@@ -393,6 +393,7 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
           headSha: null,
           captureEnabled: true,
           createdAt: now(),
+          readyAt: now(),
           archivedAt: null,
         };
         data.repositories.push(repository);
@@ -417,6 +418,7 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
           forkRepo: forkRepoName(repository.slug, id),
           baseSha: repository.headSha ?? "",
           createdAt: now(),
+          forkReadyAt: now(),
           endedAt: null,
           forkDeletedAt: null,
         };
@@ -525,6 +527,7 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
             changeId: change.id,
             sectionId: section.id,
             userId: ctx.user.id,
+            selfApproval: change.authorId === ctx.user.id,
             contentHash: section.contentHash,
             createdAt: now(),
             withdrawnAt: null,

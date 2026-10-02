@@ -8,8 +8,11 @@ import {
   type User,
 } from "@gitflare/core";
 import type {
+  CapturePort,
   ChangeLive,
   Clock,
+  DecisionsPort,
+  DiffPort,
   GitHost,
   GitWriter,
   IdGenerator,
@@ -27,6 +30,9 @@ import type { Db } from "@gitflare/db";
 
 export interface ReviewDeps {
   db: Db;
+  capture: CapturePort;
+  diffs: DiffPort;
+  decisions: DecisionsPort;
   git: GitHost;
   gitWriter: GitWriter;
   models: ModelGateway;

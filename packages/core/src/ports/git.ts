@@ -46,17 +46,32 @@ export interface GitHost {
     name: string,
     source: { url: string; branch?: string; depth?: number },
   ): Promise<HostedRepo>;
-  /** Copies the default branch only. The fork is usable once `getRepo` reports `ready`. */
+  /**
+   * A full copy of the source: every ref, stored in full. It takes seconds for
+   * a small repository and most of a minute for one of tens of megabytes, so
+   * call it from a background step, never while a person waits. The fork is
+   * usable once `getRepo` reports `ready`.
+   */
   forkRepo(source: string, name: string): Promise<HostedRepo>;
   getRepo(name: string): Promise<HostedRepo | null>;
   /** Deletes the repo and every token issued for it. False if it did not exist. */
   deleteRepo(name: string): Promise<boolean>;
 
-  /** `ttlSeconds` is between 60 and 31,536,000. Tokens are per repo; there is no per-branch scope. */
+  /**
+   * `ttlSeconds` is between 60 and 31,536,000. Tokens are per repo; there is
+   * no per-branch scope, and the host refuses nothing a write token asks for:
+   * force pushes and ref deletions included. Who holds a write token is the
+   * only protection a repository has.
+   */
   mintToken(repo: string, scope: GitTokenScope, ttlSeconds: number): Promise<MintedToken>;
   revokeToken(repo: string, tokenId: string): Promise<boolean>;
 
-  /** The commit a branch, tag or full ref name points at, or null if it does not resolve. */
+  /**
+   * The commit a branch or tag points at, by its short name, or the commit
+   * itself when given a commit id. Null if it does not resolve. Refs outside
+   * `refs/heads` and `refs/tags` cannot be resolved by name: take their tips
+   * from push events and read by commit id.
+   */
   resolveRef(repo: string, ref: string): Promise<Sha | null>;
   readCommit(repo: string, sha: Sha): Promise<GitCommit | null>;
   /** First-parent history from `ref` (a ref name or a commit), newest first. */
@@ -82,9 +97,10 @@ export type MergeResult =
   | { status: "conflict"; paths: string[] };
 
 /**
- * Everything that writes repository content. In production this is a git
- * client: isomorphic-git inside the Worker where that proves to work, real git
- * in a sandbox where it does not. Callers do not know which.
+ * Everything that writes repository content. In production a commit and a
+ * fast-forward merge are done inside the Worker, without cloning; a true merge
+ * of a repository too large for the Worker's memory is done with real git in a
+ * sandbox. Callers do not know which.
  */
 export interface GitWriter {
   /**

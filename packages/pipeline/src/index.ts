@@ -13,12 +13,14 @@ import {
   type User,
 } from "@gitflare/core";
 import type {
+  CapturePort,
   ChangeLive,
   Clock,
+  DecisionsPort,
+  DiffPort,
   GitHost,
   GitWriter,
   IdGenerator,
-  ModelGateway,
 } from "@gitflare/core/ports";
 import type { Db } from "@gitflare/db";
 
@@ -32,7 +34,9 @@ export interface PipelineDeps {
   db: Db;
   git: GitHost;
   gitWriter: GitWriter;
-  models: ModelGateway;
+  capture: CapturePort;
+  diffs: DiffPort;
+  decisions: DecisionsPort;
   live: ChangeLive;
   clock: Clock;
   ids: IdGenerator;
@@ -54,8 +58,10 @@ export type PushResult =
  * Reacts to one push. For a session's branch it re-reads the commit range
  * from the fork (the event's own commit list can be truncated), opens the
  * change or adds a revision, and creates the head revision's stage runs. For
- * a checkpoint ref it records the new tip. The same push delivered twice
- * yields the same result.
+ * a checkpoint ref it records the new tip. Events come one per ref and can
+ * arrive out of order, so this reads the ref's current tip rather than trust
+ * the event's `after`, and the same or an older push delivered again yields
+ * the same result.
  */
 export async function handlePush(_deps: PipelineDeps, _push: Push): Promise<PushResult> {
   return notImplemented("@gitflare/pipeline handlePush");

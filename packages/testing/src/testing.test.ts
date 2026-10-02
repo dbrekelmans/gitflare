@@ -1,12 +1,19 @@
-import { classifyPush, ForgeError, mergeReadiness, sectionApprovalState } from "@gitflare/core";
-import { changeEventsAfter, schema } from "@gitflare/db";
+import {
+  classifyPush,
+  ForgeError,
+  mergeReadiness,
+  sectionApprovalState,
+  sectionContentHash,
+  sha1,
+} from "@gitflare/core";
+import { budgetSummary, changeCost, changeEventsAfter, schema } from "@gitflare/db";
 import { createTestDb } from "@gitflare/db/testing";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { buildDemoGit, demo, demoChanges, demoFiles, demoUsers } from "./demo";
 import { lineDiff } from "./demo/diff";
 import { createFixtureApi } from "./fixture-api";
-import { createDemoPorts, createFakePorts, fakeEmbedding, sha1 } from "./index";
+import { createDemoPorts, createFakePorts, fakeEmbedding } from "./index";
 import { seedDemo } from "./seed";
 
 describe("fake git host", () => {
@@ -141,6 +148,41 @@ describe("other fakes", () => {
   });
 });
 
+describe("internal port fakes", () => {
+  it("diffs two commits of the fake git host to what the demo's sections show", async () => {
+    const ports = createDemoPorts();
+    const change = demoChanges.review;
+    const diff = await ports.diffs.between(
+      demo.git.repos.forks.review,
+      change.baseSha,
+      change.headSha,
+    );
+    for (const section of demo.sections.filter((s) => s.changeId === change.id)) {
+      expect(sectionContentHash(diff, section.files)).toBe(section.contentHash);
+    }
+    expect(
+      await ports.diffs.mergeBase(demo.git.repos.forks.review, change.headSha, change.baseSha),
+    ).toBe(change.baseSha);
+    expect(ports.diffs.format(diff)).toContain("+++ b/src/invites/rate-limit.ts");
+  });
+
+  it("serves the demo's capture and ranks decisions by meaning", async () => {
+    const ports = createDemoPorts();
+    const capture = await ports.capture.read(demoChanges.review.id);
+    expect(capture.sessions[0]?.checkpointIds).toEqual(demo.checkpoints.map((c) => c.checkpointId));
+    expect(ports.capture.condense(capture)).toContain("[prompt] Support had three workspaces");
+    expect((await ports.capture.read("chg_other")).sessions).toEqual([]);
+
+    const found = await ports.decisions.retrieve({
+      repositoryId: demo.repositories[0]?.id ?? "rep_x",
+      query: "a counter that is incremented and compared, kept in KV",
+      limit: 2,
+    });
+    expect(found[0]?.decision.id).toBe("dec_counters_in_durable_objects");
+    expect(found.some((entry) => entry.decision.status === "dormant")).toBe(false);
+  });
+});
+
 describe("demo fixture", () => {
   it("names commits that exist in the demo's repositories", async () => {
     const { git, repos, shas } = buildDemoGit();
@@ -263,6 +305,20 @@ describe("demo seed", () => {
       if (table === schema.gitTokens) continue;
       expect((await db.select().from(table)).length).toBeGreaterThan(0);
     }
+    const cost = await changeCost(db, demoChanges.review.id);
+    expect(cost).toEqual(
+      await createFixtureApi()
+        .changes.get({ user: demoUsers.maya }, { changeId: demoChanges.review.id })
+        .then((d) => d.cost),
+    );
+    const budget = await budgetSummary(db, demo.organisation.settings, demo.now);
+    // The merged change's calls were made the month before and do not count.
+    expect(budget.spentMicroUsd).toBe(
+      demo.modelCalls
+        .filter((call) => call.createdAt >= budget.monthStart)
+        .reduce((sum, call) => sum + call.costMicroUsd, 0),
+    );
+    expect(budget.spentMicroUsd).toBe(4_001_000);
     const events = await changeEventsAfter(db, demoChanges.review.id, 0);
     expect(events.at(-1)).toEqual(
       demo.changeEvents.filter((e) => e.changeId === demoChanges.review.id).at(-1),

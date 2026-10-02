@@ -7,7 +7,7 @@ import {
   type RepositoryId,
   type Sha,
 } from "@gitflare/core";
-import type { Clock, GitHost } from "@gitflare/core/ports";
+import type { CapturePort, Clock, GitHost } from "@gitflare/core/ports";
 import type { Db } from "@gitflare/db";
 
 // @gitflare/capture — reading what Entire's CLI recorded. A commit carries
@@ -21,6 +21,14 @@ export interface CaptureDeps {
   db: Db;
   git: GitHost;
   clock: Clock;
+}
+
+/**
+ * The `CapturePort` the rest of the forge uses, over the functions below.
+ * Other packages depend on the port, never on this package.
+ */
+export function createCapture(_deps: CaptureDeps): CapturePort {
+  return notImplemented("@gitflare/capture createCapture");
 }
 
 /** Every checkpoint id named by `Entire-Checkpoint` trailers in a commit message, in order, once each. */
@@ -83,7 +91,10 @@ export function condense(_capture: ChangeCapture, _options?: CondenseOptions): s
 /**
  * The files gitflare commits to a repository so the unmodified Entire CLI
  * pushes checkpoints to its context repo: `.entire/settings.json`,
- * `.entire/.gitignore` and the agent hook settings.
+ * `.entire/.gitignore` and the agent hook settings. A clone carrying them
+ * needs no `entire enable`. The settings name the provider `artifacts` (never
+ * `github` or `gitlab`, which would send tokens to those hosts), use the
+ * `git-refs` backend, and set `commit_linking` to `always`.
  */
 export function captureSettingsFiles(_input: {
   /** The context repo's path on the git host, e.g. `git/<namespace>/<slug>.context`. */

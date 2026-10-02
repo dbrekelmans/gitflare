@@ -3,6 +3,7 @@ CREATE TABLE `approvals` (
 	`change_id` text NOT NULL,
 	`section_id` text NOT NULL,
 	`user_id` text NOT NULL,
+	`self_approval` integer DEFAULT false NOT NULL,
 	`content_hash` text NOT NULL,
 	`created_at` integer NOT NULL,
 	`withdrawn_at` integer,
@@ -214,6 +215,7 @@ CREATE TABLE `repositories` (
 	`capture_enabled` integer DEFAULT false NOT NULL,
 	`next_change_number` integer DEFAULT 1 NOT NULL,
 	`created_at` integer NOT NULL,
+	`ready_at` integer,
 	`archived_at` integer
 );
 --> statement-breakpoint
@@ -258,6 +260,7 @@ CREATE TABLE `sessions` (
 	`fork_repo` text NOT NULL,
 	`base_sha` text NOT NULL,
 	`created_at` integer NOT NULL,
+	`fork_ready_at` integer,
 	`ended_at` integer,
 	`fork_deleted_at` integer
 );

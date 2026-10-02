@@ -1,16 +1,4 @@
-import type { DiffLine, FileDiff, Hunk } from "@gitflare/core";
-
-/** A short stable hash of a string. Not git's and not cryptographic: fixtures only. */
-export function stableHash(text: string): string {
-  let a = 0x811c9dc5;
-  let b = 0x01000193;
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    a = Math.imul(a ^ code, 16777619);
-    b = Math.imul(b + code, 0x85ebca6b) ^ (b >>> 13);
-  }
-  return (a >>> 0).toString(16).padStart(8, "0") + (b >>> 0).toString(16).padStart(8, "0");
-}
+import { type DiffLine, type FileDiff, type Hunk, hunkHash } from "@gitflare/core";
 
 type Op = { kind: DiffLine["kind"]; text: string };
 
@@ -82,16 +70,13 @@ export function lineDiff(path: string, before: string | null, after: string | nu
       current.lines.length - Math.max(0, current.trailing - CONTEXT),
     );
     const first = lines[0];
-    const changed = lines.filter((line) => line.kind !== "context");
     hunks.push({
       oldStart: lines.find((line) => line.oldLine !== null)?.oldLine ?? 0,
       oldLines: lines.filter((line) => line.kind !== "add").length,
       newStart: lines.find((line) => line.newLine !== null)?.newLine ?? 0,
       newLines: lines.filter((line) => line.kind !== "delete").length,
       lines,
-      hash: stableHash(
-        `${path}\n${changed.map((line) => `${line.kind === "add" ? "+" : "-"}${line.text}`).join("\n")}`,
-      ),
+      hash: hunkHash(path, lines),
     });
     if (!first) hunks.pop();
     current = null;

@@ -19,10 +19,7 @@ export interface Hunk {
   newStart: number;
   newLines: number;
   lines: DiffLine[];
-  /**
-   * Hash of the hunk's added and deleted lines, ignoring line numbers, so a
-   * hunk that only moved because of an edit elsewhere keeps its hash.
-   */
+  /** `hunkHash(path, lines)`: stable when the hunk only moved. */
   hash: string;
 }
 
@@ -64,7 +61,7 @@ export interface Section {
   /** What changed and why, written for a reader who has not opened the diff. */
   explanation: string;
   files: SectionFile[];
-  /** Hash over the section's hunks at `updatedRevisionId`. Approvals are tied to it. */
+  /** `sectionContentHash` of the diff at `updatedRevisionId`. Approvals are tied to it. */
   contentHash: string;
   createdRevisionId: RevisionId;
   updatedRevisionId: RevisionId;
@@ -79,6 +76,8 @@ export interface Approval {
   changeId: ChangeId;
   sectionId: SectionId;
   userId: UserId;
+  /** True when the approver is the change's author. Allowed, and always shown as such. */
+  selfApproval: boolean;
   contentHash: string;
   createdAt: Timestamp;
   withdrawnAt: Timestamp | null;

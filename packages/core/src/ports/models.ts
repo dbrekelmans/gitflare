@@ -48,6 +48,13 @@ export interface EmbedResult {
 export type ModelErrorCode =
   /** The gateway refused the call because a budget is spent. */
   | "budget_exceeded"
+  /**
+   * The deployment has neither prepaid gateway credits nor a stored provider
+   * key, so no call to this provider can succeed until its owner adds one.
+   * Not retryable and not a reason to fall back to another model of the same
+   * provider.
+   */
+  | "no_credits"
   | "rate_limited"
   /** The model answered, but not with what was asked for. */
   | "invalid_output"
@@ -65,7 +72,9 @@ export class ModelError extends Error {
 
 /**
  * One call to one model through the deployment's gateway. This is the whole
- * surface the gateway is allowed to have in gitflare's code: choosing a
+ * surface the gateway is allowed to have in gitflare's code. Every call bypasses
+ * the gateway's response cache, which is otherwise on even at a zero lifetime
+ * and would hand one caller another's reply. Choosing a
  * fallback model, recording the call, and enforcing a per-change budget are
  * wrappers around this interface in `@gitflare/models`, not part of it.
  */

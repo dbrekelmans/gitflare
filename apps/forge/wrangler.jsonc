@@ -1,0 +1,46 @@
+// Local development and tests. Everything declared here runs in workerd on
+// this machine with no Cloudflare account and no Docker: D1, Durable Objects
+// and Workflows are simulated; Artifacts, the AI binding, containers and
+// Access are not declared at all, and the forge uses its fakes for them.
+//
+// wrangler.deploy.jsonc is the same Worker as it is deployed. The two must
+// declare the same Durable Objects and Workflows; a test checks that.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gitflare-forge",
+  "main": "src/server.ts",
+  "compatibility_date": "2026-10-02",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "vars": {
+    "GITFLARE_MODE": "dev"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "gitflare",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "../../packages/db/migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "CHANGE_ROOM", "class_name": "ChangeRoom" },
+      { "name": "THREAD_ROOM", "class_name": "ThreadRoom" },
+      { "name": "SANDBOX", "class_name": "SandboxRoom" }
+    ]
+  },
+  "exports": {
+    "ChangeRoom": { "type": "durable-object", "storage": "sqlite" },
+    "ThreadRoom": { "type": "durable-object", "storage": "sqlite" },
+    "SandboxRoom": { "type": "durable-object", "storage": "sqlite" }
+  },
+  "workflows": [
+    {
+      "name": "gitflare-change-pipeline",
+      "binding": "CHANGE_PIPELINE",
+      "class_name": "ChangePipelineWorkflow"
+    },
+    { "name": "gitflare-ci", "binding": "CI", "class_name": "CiWorkflow" }
+  ]
+}

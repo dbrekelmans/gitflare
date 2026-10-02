@@ -29,13 +29,14 @@ import {
   type StageName,
   type StageRun,
   type StageStatus,
+  sectionContentHash,
   stageNames,
   type Thread,
   type ThreadMessage,
   type Timestamp,
   type User,
 } from "@gitflare/core";
-import { diffFiles, stableHash } from "./diff";
+import { diffFiles } from "./diff";
 import { demoFiles } from "./files";
 import {
   buildDemoGit,
@@ -94,6 +95,7 @@ const atlas: Repository = {
   headSha: git.shas.base,
   captureEnabled: true,
   createdAt: minutes(-60 * 24 * 21),
+  readyAt: minutes(-60 * 24 * 21),
   archivedAt: null,
 };
 
@@ -106,6 +108,7 @@ const billing: Repository = {
   headSha: null,
   captureEnabled: false,
   createdAt: minutes(-60 * 24 * 3),
+  readyAt: minutes(-60 * 24 * 3),
   archivedAt: null,
 };
 
@@ -120,6 +123,7 @@ const sessions: Session[] = [
     forkRepo: git.repos.forks.merged,
     baseSha: git.shas.initial,
     createdAt: minutes(-600),
+    forkReadyAt: minutes(-600),
     endedAt: minutes(-420),
     forkDeletedAt: minutes(-419),
   },
@@ -133,6 +137,7 @@ const sessions: Session[] = [
     forkRepo: git.repos.forks.review,
     baseSha: git.shas.base,
     createdAt: minutes(10),
+    forkReadyAt: minutes(10),
     endedAt: null,
     forkDeletedAt: null,
   },
@@ -146,6 +151,7 @@ const sessions: Session[] = [
     forkRepo: git.repos.forks.cloud,
     baseSha: git.shas.base,
     createdAt: minutes(140),
+    forkReadyAt: minutes(140),
     endedAt: null,
     forkDeletedAt: null,
   },
@@ -399,13 +405,17 @@ const intents: Intent[] = [
 // --- Sections and approvals ---------------------------------------------------
 
 function contentHash(diff: FileDiff[], paths: string[]): string {
-  return stableHash(
-    diff
-      .filter((file) => paths.includes(file.path))
-      .flatMap((file) => file.hunks.map((hunk) => hunk.hash))
-      .join(":"),
+  return sectionContentHash(
+    diff,
+    paths.map((path) => ({ path, hunkHashes: [] })),
   );
 }
+
+const demo11Diff = diffFiles(
+  {},
+  { "src/invites/email.ts": demoFiles.base["src/invites/email.ts"] ?? "" },
+);
+const demo11Hash = contentHash(demo11Diff, ["src/invites/email.ts"]);
 
 const sectionPlan = [
   {
@@ -452,7 +462,7 @@ const sections: Section[] = [
     explanation:
       "`sendInvite` hands the email to the `invite-emails` queue instead of calling the mail provider.",
     files: [{ path: "src/invites/email.ts", hunkHashes: [] }],
-    contentHash: stableHash("demo11"),
+    contentHash: demo11Hash,
     createdRevisionId: "rev_demo11a",
     updatedRevisionId: "rev_demo11a",
   },
@@ -474,12 +484,7 @@ const sections: Section[] = [
   }),
 ];
 
-const sectionDiffs: Record<SectionId, FileDiff[]> = {
-  sec_demo11queue: diffFiles(
-    {},
-    { "src/invites/email.ts": demoFiles.base["src/invites/email.ts"] ?? "" },
-  ),
-};
+const sectionDiffs: Record<SectionId, FileDiff[]> = { sec_demo11queue: demo11Diff };
 for (const plan of sectionPlan) {
   sectionDiffs[plan.id] = plan.paths.flatMap((path) =>
     headDiff.filter((file) => file.path === path),
@@ -497,7 +502,8 @@ const approvals: Approval[] = [
     changeId: mergedChange.id,
     sectionId: "sec_demo11queue",
     userId: maya.id,
-    contentHash: stableHash("demo11"),
+    selfApproval: false,
+    contentHash: demo11Hash,
     createdAt: minutes(-430),
     withdrawnAt: null,
     withdrawnReason: null,
@@ -508,6 +514,7 @@ const approvals: Approval[] = [
     changeId: reviewChange.id,
     sectionId: "sec_demo12limit",
     userId: priya.id,
+    selfApproval: false,
     contentHash: rev1Hash("sec_demo12limit"),
     createdAt: minutes(52),
     withdrawnAt: minutes(96),
@@ -518,6 +525,7 @@ const approvals: Approval[] = [
     changeId: reviewChange.id,
     sectionId: "sec_demo12limit",
     userId: priya.id,
+    selfApproval: false,
     contentHash: headHash("sec_demo12limit"),
     createdAt: minutes(118),
     withdrawnAt: null,
@@ -529,6 +537,7 @@ const approvals: Approval[] = [
     changeId: reviewChange.id,
     sectionId: "sec_demo12tests",
     userId: maya.id,
+    selfApproval: false,
     contentHash: rev1Hash("sec_demo12tests"),
     createdAt: minutes(60),
     withdrawnAt: minutes(96),
@@ -539,6 +548,7 @@ const approvals: Approval[] = [
     changeId: reviewChange.id,
     sectionId: "sec_demo12config",
     userId: priya.id,
+    selfApproval: false,
     contentHash: headHash("sec_demo12config"),
     createdAt: minutes(53),
     withdrawnAt: null,

@@ -1,17 +1,20 @@
-import {
-  type DiffStats,
-  type FileDiff,
-  notImplemented,
-  type SectionFile,
-  type Sha,
-} from "@gitflare/core";
-import type { GitHost } from "@gitflare/core/ports";
+import { type DiffStats, type FileDiff, notImplemented, type Sha } from "@gitflare/core";
+import type { DiffPort, GitHost } from "@gitflare/core/ports";
 
 // @gitflare/diff — what changed between two commits, computed in the Worker
 // from the git host's object reads. The host has no diff endpoint and a
 // container is too slow for a page load, so this walks the two trees
 // (descending only where tree ids differ) and line-diffs the blobs that
 // changed. Build task: `diff`.
+
+// Hunk and section hashes are defined once, in `@gitflare/core`
+// (`hunkHash`, `sectionContentHash`, `selectDiff`). Every hunk this package
+// produces carries `hunkHash(path, lines)`.
+
+/** The `DiffPort` the rest of the forge uses, over the functions below. */
+export function createDiffs(_deps: { git: GitHost }): DiffPort {
+  return notImplemented("@gitflare/diff createDiffs");
+}
 
 export interface DiffOptions {
   /** Files larger than this are reported without hunks. */
@@ -42,29 +45,6 @@ export async function mergeBase(
   _b: Sha,
 ): Promise<Sha | null> {
   return notImplemented("@gitflare/diff mergeBase");
-}
-
-/**
- * A hunk's identity: a hash of its added and deleted lines and its path,
- * ignoring line numbers and context, so a hunk keeps its hash when an edit
- * elsewhere in the file only moves it.
- */
-export function hunkHash(_path: string, _lines: FileDiff["hunks"][number]["lines"]): string {
-  return notImplemented("@gitflare/diff hunkHash");
-}
-
-/**
- * A section's `contentHash`: a hash over the hunks it presents. Section
- * approval depends on this being stable when, and only when, those hunks are
- * unchanged.
- */
-export function contentHash(_diff: FileDiff[], _files: SectionFile[]): string {
-  return notImplemented("@gitflare/diff contentHash");
-}
-
-/** The part of a diff a section presents. */
-export function selectDiff(_diff: FileDiff[], _files: SectionFile[]): FileDiff[] {
-  return notImplemented("@gitflare/diff selectDiff");
 }
 
 export function diffStats(_diff: FileDiff[], _commits: number): DiffStats {

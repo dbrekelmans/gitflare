@@ -3,8 +3,10 @@ import {
   type GitCommit,
   type GitSignature,
   type GitTokenScope,
+  gitObjectId,
   type Push,
   type Sha,
+  sha1,
   ZERO_SHA,
 } from "@gitflare/core";
 import type {
@@ -17,7 +19,6 @@ import type {
   MintedToken,
   TreeEntry,
 } from "@gitflare/core/ports";
-import { gitObjectId, sha1 } from "./sha1";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -88,9 +89,8 @@ export class FakeGit implements GitHost, GitWriter {
   async forkRepo(source: string, name: string): Promise<HostedRepo> {
     const parent = this.repo(source);
     const info = this.addRepo(name, parent.info.defaultBranch, `artifacts:gitflare/${source}`);
-    const ref = fullRef(parent.info.defaultBranch);
-    const tip = parent.refs.get(ref);
-    if (tip) this.repo(name).refs.set(ref, tip);
+    // A fork is a full copy: every branch, tag and other ref of the source.
+    for (const [ref, tip] of parent.refs) this.repo(name).refs.set(ref, tip);
     return info;
   }
 

@@ -1,0 +1,68 @@
+// The forge as it is deployed. `create-gitflare` copies this file, replaces
+// every value written between double underscores with the deployment's own, and hands the
+// result to `wrangler deploy`. Nothing account-specific is ever committed.
+//
+// Keep the Durable Objects and Workflows identical to wrangler.jsonc.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // The installer may rename the Worker; Wrangler only accepts a valid name here.
+  "name": "gitflare-forge",
+  "main": "src/server.ts",
+  "compatibility_date": "2026-10-02",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "vars": {
+    "GITFLARE_MODE": "production",
+    // Cloudflare Access: `https://<team>.cloudflareaccess.com` and the application's audience tag.
+    "ACCESS_TEAM_DOMAIN": "__ACCESS_TEAM_DOMAIN__",
+    "ACCESS_AUDIENCE": "__ACCESS_AUDIENCE__",
+    "FIRST_ADMIN_EMAIL": "__FIRST_ADMIN_EMAIL__",
+    "ORGANISATION_NAME": "__ORGANISATION_NAME__",
+    "AI_GATEWAY_ID": "__AI_GATEWAY_ID__",
+    "ARTIFACTS_NAMESPACE": "__ARTIFACTS_NAMESPACE__"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "__D1_DATABASE_NAME__",
+      "database_id": "__D1_DATABASE_ID__",
+      "migrations_dir": "../../packages/db/migrations"
+    }
+  ],
+  "artifacts": [{ "binding": "ARTIFACTS", "namespace": "__ARTIFACTS_NAMESPACE__" }],
+  "ai": { "binding": "AI" },
+  "durable_objects": {
+    "bindings": [
+      { "name": "CHANGE_ROOM", "class_name": "ChangeRoom" },
+      { "name": "THREAD_ROOM", "class_name": "ThreadRoom" },
+      { "name": "SANDBOX", "class_name": "SandboxRoom" }
+    ]
+  },
+  "exports": {
+    "ChangeRoom": { "type": "durable-object", "storage": "sqlite" },
+    "ThreadRoom": { "type": "durable-object", "storage": "sqlite" },
+    "SandboxRoom": { "type": "durable-object", "storage": "sqlite" }
+  },
+  // No image is declared: sandboxes boot Cloudflare's managed base image and a
+  // snapshot prepared from it (containers/workspace/setup.sh), so a deploy
+  // needs no Docker on the deployer's machine.
+  "containers": [{ "class_name": "SandboxRoom", "scheduling_policy": "durable_object" }],
+  "workflows": [
+    {
+      "name": "gitflare-change-pipeline",
+      "binding": "CHANGE_PIPELINE",
+      "class_name": "ChangePipelineWorkflow"
+    },
+    { "name": "gitflare-ci", "binding": "CI", "class_name": "CiWorkflow" }
+  ],
+  // Every push to any repository in the namespace, forks included, starts the pipeline.
+  "triggers": {
+    "events": [
+      {
+        "type": "cf.artifacts.repo.pushed",
+        "filter": { "namespace": "__ARTIFACTS_NAMESPACE__" },
+        "targets": [{ "type": "workflow", "workflow_name": "gitflare-change-pipeline" }]
+      }
+    ]
+  }
+}

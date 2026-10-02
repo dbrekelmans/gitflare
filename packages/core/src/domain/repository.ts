@@ -20,6 +20,11 @@ export interface Repository {
   /** Whether the capture client's settings files are committed to the main repo. */
   captureEnabled: boolean;
   createdAt: Timestamp;
+  /**
+   * When the main repo became usable. Null while an import is still running:
+   * importing is slow and can fail, so it happens after the request that asked.
+   */
+  readyAt: Timestamp | null;
   archivedAt: Timestamp | null;
 }
 
@@ -46,6 +51,8 @@ export interface Session {
   /** Tip of the main repo's default branch when the fork was made. */
   baseSha: Sha;
   createdAt: Timestamp;
+  /** When the fork became usable. Null while it is still being copied. */
+  forkReadyAt: Timestamp | null;
   endedAt: Timestamp | null;
   /** Set once the fork has been deleted from Artifacts. */
   forkDeletedAt: Timestamp | null;

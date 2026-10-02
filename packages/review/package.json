@@ -12,11 +12,8 @@
     "test": "vitest run --root ../.. packages/review/"
   },
   "dependencies": {
-    "@gitflare/capture": "workspace:*",
     "@gitflare/core": "workspace:*",
     "@gitflare/db": "workspace:*",
-    "@gitflare/decisions": "workspace:*",
-    "@gitflare/diff": "workspace:*",
     "drizzle-orm": "catalog:",
     "zod": "catalog:"
   },

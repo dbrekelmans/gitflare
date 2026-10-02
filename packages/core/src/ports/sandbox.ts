@@ -17,7 +17,7 @@ export type EgressGrant =
   | { kind: "host"; host: string };
 
 export interface SandboxStartOptions {
-  /** A named image from the Worker's container configuration. */
+  /** What to boot: the managed base image, or a named image from the Worker's container configuration. */
   image: string;
   instance: SandboxInstance;
   egress: EgressGrant[];

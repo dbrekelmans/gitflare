@@ -50,6 +50,7 @@ function approval(id: string, sectionId: string, contentHash: string, userId = "
     changeId: "chg_1",
     sectionId: `sec_${sectionId}`,
     userId: userId as Approval["userId"],
+    selfApproval: false,
     contentHash,
     createdAt: 1,
     withdrawnAt: null,

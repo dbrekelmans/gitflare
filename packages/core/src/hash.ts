@@ -4,7 +4,10 @@ function rotl(value: number, bits: number): number {
   return (value << bits) | (value >>> (32 - bits));
 }
 
-/** SHA-1 as lowercase hex. Synchronous and dependency-free so the fakes run anywhere. */
+/**
+ * SHA-1 as lowercase hex. Synchronous and dependency-free, so the same hash is
+ * available in the Worker, the browser and Node without `await`.
+ */
 export function sha1(input: Uint8Array | string): string {
   const data = typeof input === "string" ? encoder.encode(input) : input;
   const bitLength = data.length * 8;

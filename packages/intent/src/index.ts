@@ -1,5 +1,5 @@
 import { type Intent, notImplemented, type StageHandler } from "@gitflare/core";
-import type { Clock, GitHost, IdGenerator, ModelGateway } from "@gitflare/core/ports";
+import type { CapturePort, Clock, DiffPort, IdGenerator, ModelGateway } from "@gitflare/core/ports";
 import type { Db } from "@gitflare/db";
 
 // @gitflare/intent — what a change is for, derived from the session that
@@ -10,7 +10,8 @@ import type { Db } from "@gitflare/db";
 
 export interface IntentDeps {
   db: Db;
-  git: GitHost;
+  capture: CapturePort;
+  diffs: DiffPort;
   models: ModelGateway;
   clock: Clock;
   ids: IdGenerator;

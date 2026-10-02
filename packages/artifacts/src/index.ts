@@ -8,7 +8,14 @@ import {
   type User,
 } from "@gitflare/core";
 import type { GitCredential } from "@gitflare/core/api";
-import type { Clock, GitHost, GitWriter, IdGenerator } from "@gitflare/core/ports";
+import type {
+  CapturePort,
+  Clock,
+  GitHost,
+  GitWriter,
+  IdGenerator,
+  SandboxHost,
+} from "@gitflare/core/ports";
 import type { Db } from "@gitflare/db";
 
 // @gitflare/artifacts — everything that talks to Cloudflare Artifacts, and
@@ -38,19 +45,36 @@ export function createArtifactsGitHost(_binding: ArtifactsBindingLike): GitHost 
 }
 
 /**
- * The `GitWriter` port over a git client in the Worker (isomorphic-git against
- * the repo's HTTPS remote, with a token minted for the purpose). Whether that
- * client can fetch from and merge on Artifacts is on the "Needs a live test"
- * list; the sandbox-backed writer is the fallback behind the same port.
+ * The `GitWriter` port, inside the Worker. A commit is built from binding
+ * reads and pushed as a hand-made pack, without cloning; a fast-forward merge
+ * relays the fork's pack to the main repo. Both cost tens of milliseconds of
+ * CPU whatever the repository's size. A true merge uses isomorphic-git, which
+ * holds the repository in memory: above a few tens of megabytes it must hand
+ * over to the sandbox-backed writer (`createSandboxGitWriter`).
  */
 export function createWorkerGitWriter(_deps: { git: GitHost }): GitWriter {
   return notImplemented("@gitflare/artifacts createWorkerGitWriter");
+}
+
+/**
+ * The `GitWriter` for what the Worker cannot hold in memory: a true merge of
+ * a larger repository, done with real git in a sandbox (shallow clone, fetch
+ * the fork, merge, push), with credentials added at the egress.
+ */
+export function createSandboxGitWriter(_deps: {
+  git: GitHost;
+  sandboxes: SandboxHost;
+  ids: IdGenerator;
+}): GitWriter {
+  return notImplemented("@gitflare/artifacts createSandboxGitWriter");
 }
 
 export interface ArtifactsDeps {
   db: Db;
   git: GitHost;
   gitWriter: GitWriter;
+  /** For the capture settings files committed to a new repository. */
+  capture: CapturePort;
   clock: Clock;
   ids: IdGenerator;
 }
@@ -68,7 +92,11 @@ export async function provisionRepository(
   return notImplemented("@gitflare/artifacts provisionRepository");
 }
 
-/** Forks the main repo for a new session and records the session. */
+/**
+ * Records a session and starts forking the main repo for it. Forking takes
+ * seconds to most of a minute, so this returns before the fork is usable:
+ * `forkReadyAt` is null until `completeSessionFork` has seen it ready.
+ */
 export async function openSession(
   _deps: ArtifactsDeps,
   _user: User,
@@ -88,6 +116,14 @@ export async function issueGitCredential(
   _remote: string,
 ): Promise<GitCredential> {
   return notImplemented("@gitflare/artifacts issueGitCredential");
+}
+
+/** Marks a session's fork ready once the host reports it. Safe to call repeatedly. */
+export async function completeSessionFork(
+  _deps: ArtifactsDeps,
+  _sessionId: SessionId,
+): Promise<Session> {
+  return notImplemented("@gitflare/artifacts completeSessionFork");
 }
 
 /** A token for gitflare's own use, recorded like any other. */

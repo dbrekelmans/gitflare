@@ -4,6 +4,8 @@ import { CiConfig } from "./ci";
 import { can } from "./permissions";
 import { ArtifactsPushEvent, classifyPush, parseCheckpointRef, toPush, ZERO_SHA } from "./push";
 import { contextRepoName, forkRepoName, mainRepoName, parseRepoName } from "./repo-names";
+import type { DiffLine, FileDiff } from "./section";
+import { hunkHash, sectionContentHash, selectDiff } from "./section-hash";
 
 const sha = "def789a012def789a012def789a012def789a012";
 
@@ -115,5 +117,56 @@ describe("schemas", () => {
     expect(StartSessionInput.safeParse({ ...base, kind: "cloud", prompt: "do it" }).success).toBe(
       true,
     );
+  });
+});
+
+describe("section hashes", () => {
+  const line = (kind: DiffLine["kind"], text: string, n: number): DiffLine => ({
+    kind,
+    text,
+    oldLine: kind === "add" ? null : n,
+    newLine: kind === "delete" ? null : n,
+  });
+  const file = (path: string, lines: DiffLine[]): FileDiff => ({
+    path,
+    oldPath: null,
+    status: "modified",
+    binary: false,
+    insertions: 1,
+    deletions: 0,
+    hunks: [
+      { oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, lines, hash: hunkHash(path, lines) },
+    ],
+  });
+
+  it("keeps a hunk's hash when it only moves or its context changes", () => {
+    const original = [line("context", "a", 1), line("add", "b", 2)];
+    const moved = [line("context", "z", 40), line("add", "b", 41)];
+    expect(hunkHash("f.ts", moved)).toBe(hunkHash("f.ts", original));
+    expect(hunkHash("f.ts", [line("add", "c", 2)])).not.toBe(hunkHash("f.ts", original));
+    expect(hunkHash("g.ts", original)).not.toBe(hunkHash("f.ts", original));
+    expect(hunkHash("f.ts", [line("delete", "b", 2)])).not.toBe(hunkHash("f.ts", original));
+  });
+
+  it("changes a section's hash only when a file it presents changes", () => {
+    const a = file("a.ts", [line("add", "one", 1)]);
+    const b = file("b.ts", [line("add", "two", 1)]);
+    const section = [{ path: "a.ts", hunkHashes: [] }];
+    const before = sectionContentHash([a, b], section);
+    expect(sectionContentHash([a, file("b.ts", [line("add", "changed", 1)])], section)).toBe(
+      before,
+    );
+    expect(sectionContentHash([file("a.ts", [line("add", "changed", 1)]), b], section)).not.toBe(
+      before,
+    );
+    expect(sectionContentHash([{ ...a, status: "added" }, b], section)).not.toBe(before);
+    expect(sectionContentHash([b], section)).not.toBe(before);
+  });
+
+  it("selects whole files or named hunks", () => {
+    const a = file("a.ts", [line("add", "one", 1)]);
+    expect(selectDiff([a], [{ path: "a.ts", hunkHashes: [] }])).toEqual([a]);
+    expect(selectDiff([a], [{ path: "a.ts", hunkHashes: ["nope"] }])).toEqual([]);
+    expect(selectDiff([a], [{ path: "a.ts", hunkHashes: [a.hunks[0]?.hash ?? ""] }])).toEqual([a]);
   });
 });

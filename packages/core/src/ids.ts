@@ -57,7 +57,7 @@ export type MicroUsd = number;
 const CROCKFORD = "0123456789abcdefghjkmnpqrstvwxyz";
 
 /** A lowercase ULID: 10 characters of time, 16 of randomness. */
-export function ulid(now: Timestamp, random: (bytes: Uint8Array) => Uint8Array): string {
+export function ulid(now: Timestamp, random: (length: number) => Uint8Array): string {
   let time = "";
   let t = now;
   for (let i = 0; i < 10; i++) {
@@ -65,7 +65,7 @@ export function ulid(now: Timestamp, random: (bytes: Uint8Array) => Uint8Array):
     t = Math.floor(t / 32);
   }
   let rand = "";
-  for (const byte of random(new Uint8Array(16))) {
+  for (const byte of random(16)) {
     rand += CROCKFORD.charAt(byte % 32);
   }
   return time + rand;

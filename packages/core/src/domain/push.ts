@@ -10,8 +10,10 @@ export const CHECKPOINT_BRANCH_REF = "refs/heads/entire/checkpoints/v1";
 /**
  * The documented `cf.artifacts.repo.pushed` payload, loosely: unknown fields
  * pass through, because what a Workflow actually receives from
- * `triggers.events` is not documented. `commits` is not trusted (it can be
- * truncated); the range is always re-read from the repo.
+ * `triggers.events` carries a few more. An event means "this ref moved" and
+ * nothing else: there is one per ref, they can arrive out of order, they name
+ * no actor, and `commits` is not the list of new commits. Take the repository,
+ * `ref` and `after` from it and read everything else from the repository.
  */
 export const ArtifactsPushEvent = z.looseObject({
   type: z.literal(ARTIFACTS_PUSH_EVENT),
