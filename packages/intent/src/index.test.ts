@@ -133,12 +133,12 @@ async function seedSecondRevision(input: {
   return { revisionId, headSha: head.sha };
 }
 
-function stageInput(changeId: string, revisionId: string): StageInput {
+function stageInput(changeId: string, revisionId: string, attempt = 1): StageInput {
   return {
     changeId: changeId as never,
     revisionId: revisionId as never,
     stageRunId: "stg_1" as never,
-    attempt: 1,
+    attempt,
   };
 }
 
@@ -178,6 +178,10 @@ describe("runIntentStage", () => {
     expect(intent?.checkpointIds).toEqual(["cp_1"]);
     expect(intent?.statement).toBe("Let a workspace owner export its audit log as CSV.");
     expect(ports.live.types("chg_1" as never)).toEqual(["intent.updated"]);
+
+    const prompt = ports.models.calls[0]?.messages[0]?.content ?? "";
+    expect(prompt).toContain("Add a CSV export of the audit log.");
+    expect(prompt).toContain("src/audit.ts");
   });
 
   it("grades a change with no capture as diff", async () => {
@@ -194,6 +198,10 @@ describe("runIntentStage", () => {
     const intent = await currentIntent(deps(), "chg_2" as never);
     expect(intent?.grade).toBe("diff");
     expect(intent?.checkpointIds).toEqual([]);
+
+    const prompt = ports.models.calls[0]?.messages[0]?.content ?? "";
+    expect(prompt).toContain("No agent session transcript is available");
+    expect(prompt).toContain("src/invites.ts");
   });
 
   it("skips a later revision with a reason", async () => {
@@ -221,6 +229,17 @@ describe("runIntentStage", () => {
     });
     expect(ports.models.calls).toHaveLength(1); // no second call
     expect((await currentIntent(deps(), "chg_3" as never))?.version).toBe(1);
+
+    // A requested re-run, on that same later revision, is not skipped: it is
+    // told apart from the revision's automatic first attempt by `attempt`,
+    // not by comparing `revisionId` to the existing intent's.
+    ports.models.reply("intent", { output: { statement: "Re-derived statement." } });
+    const rerun = await runIntentStage(deps(), stageInput("chg_3", revision2Id, 2));
+    expect(rerun).toEqual({ status: "succeeded" });
+    const reDerived = await currentIntent(deps(), "chg_3" as never);
+    expect(reDerived?.version).toBe(2);
+    expect(reDerived?.revisionId).toBe(revision2Id);
+    expect(reDerived?.statement).toBe("Re-derived statement.");
   });
 
   it("adds a version on a re-run", async () => {
@@ -234,12 +253,31 @@ describe("runIntentStage", () => {
     ports.models.reply("intent", { output: { statement: "Second statement." } });
 
     await runIntentStage(deps(), stageInput("chg_4", revisionId));
-    const outcome = await runIntentStage(deps(), stageInput("chg_4", revisionId));
+    const outcome = await runIntentStage(deps(), stageInput("chg_4", revisionId, 2));
 
     expect(outcome).toEqual({ status: "succeeded" });
     const intent = await currentIntent(deps(), "chg_4" as never);
     expect(intent?.version).toBe(2);
     expect(intent?.statement).toBe("Second statement.");
+  });
+
+  it("is idempotent when the same attempt is retried", async () => {
+    const { revisionId } = await seedChange({
+      changeId: "chg_4b",
+      sessionId: "ses_4b",
+      title: "Something",
+      file: { path: "src/a.ts", content: "a" },
+    });
+    ports.models.reply("intent", { output: { statement: "Only statement." } });
+
+    const first = await runIntentStage(deps(), stageInput("chg_4b", revisionId));
+    const retried = await runIntentStage(deps(), stageInput("chg_4b", revisionId));
+
+    expect(first).toEqual({ status: "succeeded" });
+    expect(retried).toEqual({ status: "succeeded" });
+    expect(ports.models.calls).toHaveLength(1); // the retry never calls the model again
+    const intent = await currentIntent(deps(), "chg_4b" as never);
+    expect(intent?.version).toBe(1);
   });
 
   it("fails the stage on a malformed model reply", async () => {
