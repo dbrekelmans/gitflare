@@ -11,6 +11,7 @@ export {
   BilledModelError,
   catalogPrices,
   createGatewayModels,
+  type GatewayLog,
   type GatewayModelsOptions,
   type ModelPrice,
 } from "./gateway";

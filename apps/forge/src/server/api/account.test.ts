@@ -113,7 +113,7 @@ describe("account slice", () => {
     expect(results.find((result) => result.status === "rejected")).toMatchObject({
       reason: { code: "conflict" },
     });
-    const admins = (await api.listMembers()).filter((user) => user.role === "admin");
+    const admins = (await api.listMembers(ctxFor(admin))).filter((user) => user.role === "admin");
     expect(admins).toHaveLength(1);
   });
 

@@ -1,4 +1,4 @@
-import type { AiBindingLike } from "./gateway";
+import type { AiBindingLike, GatewayLog } from "./gateway";
 
 type Reply = { result: unknown; logId: string | null } | { error: Error };
 
@@ -11,7 +11,7 @@ export class StubAi implements AiBindingLike {
   readonly calls: { model: string; inputs: Record<string, unknown>; options: unknown }[] = [];
   readonly logReads: string[] = [];
   /** The gateway's logs by id. A missing entry is "Log not found". */
-  readonly logs = new Map<string, { cost?: number }>();
+  readonly logs = new Map<string, GatewayLog>();
   /** Called after each log read, to make a log appear late. */
   onLogRead: (logId: string, reads: number) => void = () => {};
   aiGatewayLogId: string | null = null;
