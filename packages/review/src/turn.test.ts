@@ -4,6 +4,7 @@ import { demo, demoChanges, demoFiles, demoUsers } from "@gitflare/testing/demo"
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { appendMessage } from "./messages";
+import { learnFromSettledThread } from "./settle";
 import { messagesOf, requireThread } from "./store";
 import { addThread, atlas, demoReview } from "./testing/setup";
 import { bodySoFar, runAgentTurn } from "./turn";
@@ -209,6 +210,9 @@ describe("runAgentTurn", () => {
       { type: "thread.status", threadId: rollover, status: "resolved" },
       { type: "thread.message", threadId: rollover },
     ]);
+    // Learning is the thread's writer's next step, after the turn.
+    expect(ports.decisions.learnedFrom).toEqual([]);
+    await learnFromSettledThread(deps, rollover);
     expect(ports.decisions.learnedFrom).toEqual([rollover]);
     expect(ports.decisions.decisions).toHaveLength(demo.decisions.length);
   });
@@ -298,6 +302,7 @@ describe("runAgentTurn", () => {
       decisionId: null,
     });
     expect(ports.decisions.decisions).toHaveLength(demo.decisions.length);
+    await learnFromSettledThread(deps, threadId);
     expect(ports.decisions.learnedFrom).toEqual([threadId]);
   });
 

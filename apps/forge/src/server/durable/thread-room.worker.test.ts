@@ -122,3 +122,57 @@ it("keeps the turn in flight in its own storage, and forgets it once the alarm h
   await waitUntil(async () => (await inFlight()).turn === undefined);
   expect((await stored(deps.db, threadId)).map((row) => row.authorKind)).toEqual(["agent", "user"]);
 });
+
+async function learnedAt(db: Services["db"], threadId: ThreadId): Promise<number | null> {
+  const [row] = await db
+    .select({ learnedAt: schema.threads.learnedAt })
+    .from(schema.threads)
+    .where(eq(schema.threads.id, threadId));
+  return row?.learnedAt ?? null;
+}
+
+async function settledComment(deps: Services, threadId: ThreadId): Promise<void> {
+  const at = deps.clock.now();
+  await deps.db.insert(schema.threads).values({
+    id: threadId,
+    changeId: demoChanges.review.id,
+    kind: "comment",
+    origin: "review",
+    status: "resolved",
+    createdAt: at,
+    settledAt: at,
+    settledBy: jonas.id,
+    lastMessageAt: at,
+  });
+}
+
+it("learns from a thread a person settled, off the request that settled it", async () => {
+  const deps = await services();
+  const threadId: ThreadId = "thr_worker_settled";
+  await settledComment(deps, threadId);
+  const room = env.THREAD_ROOM.getByName(threadId);
+
+  await room.settled(threadId);
+
+  await waitUntil(async () => (await learnedAt(deps.db, threadId)) !== null);
+  const pending = await runInDurableObject(room, async (_instance: ThreadRoom, state) =>
+    state.storage.get("learn"),
+  );
+  expect(pending).toBeUndefined();
+});
+
+it("learns from a thread after the turn a person's reason asked for", async () => {
+  const deps = await services();
+  const threadId: ThreadId = "thr_worker_reason";
+  await settledComment(deps, threadId);
+  const room = env.THREAD_ROOM.getByName(threadId);
+
+  // A dismissal's reason arrives on a settled thread: the turn has nothing to answer, learning runs.
+  await room.post(threadId, {
+    author: { kind: "user", userId: jonas.id },
+    body: "We never retry inside a request handler.",
+  });
+
+  await waitUntil(async () => (await learnedAt(deps.db, threadId)) !== null);
+  expect((await stored(deps.db, threadId)).map((row) => row.authorKind)).toEqual(["user"]);
+});
