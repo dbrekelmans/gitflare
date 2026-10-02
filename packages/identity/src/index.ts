@@ -1,12 +1,17 @@
-import { type Identity, notImplemented, type User } from "@gitflare/core";
+import { ForgeError, type Identity, type User, type UserRole } from "@gitflare/core";
 import type { Clock, IdentityProvider, IdGenerator } from "@gitflare/core/ports";
 import type { Db } from "@gitflare/db";
+import { schema } from "@gitflare/db";
+import { createRemoteJWKSet, customFetch, jwtVerify } from "jose";
 
 // @gitflare/identity — who a request is from, and the user record that
 // identity maps to. Production validates the Cloudflare Access JWT itself
 // (`ctx.access` is not available to a Worker with static assets); local
 // development uses a fixed identity. Facts and signatures:
 // spec/research/ai-identity.md. Build task: `identity`.
+
+const ACCESS_HEADER = "Cf-Access-Jwt-Assertion";
+const ACCESS_COOKIE = "CF_Authorization";
 
 export interface AccessOptions {
   /** `https://<team>.cloudflareaccess.com` */
@@ -17,14 +22,51 @@ export interface AccessOptions {
   fetch?: typeof fetch;
 }
 
+function tokenFromHeaders(headers: { get(name: string): string | null }): string | null {
+  const header = headers.get(ACCESS_HEADER);
+  if (header) return header;
+  const cookie = headers.get("Cookie");
+  if (!cookie) return null;
+  for (const part of cookie.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator === -1) continue;
+    if (part.slice(0, separator).trim() === ACCESS_COOKIE) return part.slice(separator + 1).trim();
+  }
+  return null;
+}
+
 /**
  * Validates the `Cf-Access-Jwt-Assertion` header against the team's published
  * keys, issuer and audience, falling back to the `CF_Authorization` cookie.
  * Returns null for a missing, expired or forged token, and for a service
  * token, which carries no user.
  */
-export function createAccessIdentity(_options: AccessOptions): IdentityProvider {
-  return notImplemented("@gitflare/identity createAccessIdentity");
+export function createAccessIdentity(options: AccessOptions): IdentityProvider {
+  const jwks = createRemoteJWKSet(
+    new URL(`${options.teamDomain}/cdn-cgi/access/certs`),
+    options.fetch ? { [customFetch]: options.fetch } : undefined,
+  );
+
+  return {
+    async identify(headers) {
+      const token = tokenFromHeaders(headers);
+      if (!token) return null;
+      try {
+        const { payload } = await jwtVerify(token, jwks, {
+          issuer: options.teamDomain,
+          audience: options.audience,
+        });
+        // A service-token request carries an empty `sub` and no user.
+        if (!payload.sub) return null;
+        if (typeof payload.email !== "string") return null;
+        const identity: Identity = { subject: payload.sub, email: payload.email };
+        if (typeof payload.name === "string") identity.name = payload.name;
+        return identity;
+      } catch {
+        return null;
+      }
+    },
+  };
 }
 
 /**
@@ -33,9 +75,25 @@ export function createAccessIdentity(_options: AccessOptions): IdentityProvider 
  * administrator. Access has already decided this person may log in.
  */
 export async function provisionUser(
-  _deps: { db: Db; clock: Clock; ids: IdGenerator },
-  _identity: Identity,
-  _options: { firstAdminEmail: string | null },
+  deps: { db: Db; clock: Clock; ids: IdGenerator },
+  identity: Identity,
+  options: { firstAdminEmail: string | null },
 ): Promise<User> {
-  return notImplemented("@gitflare/identity provisionUser");
+  const [organisation] = await deps.db.select().from(schema.organisations).limit(1);
+  if (!organisation) throw new ForgeError("not_found", "No organisation for this deployment.");
+
+  const role: UserRole = identity.email === options.firstAdminEmail ? "admin" : "member";
+  const now = deps.clock.now();
+  const user: User = {
+    id: deps.ids.next("user"),
+    organisationId: organisation.id,
+    subject: identity.subject,
+    email: identity.email,
+    name: identity.name ?? identity.email,
+    role,
+    createdAt: now,
+    lastSeenAt: now,
+  };
+  await deps.db.insert(schema.users).values(user);
+  return user;
 }
