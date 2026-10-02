@@ -1287,7 +1287,11 @@ None of this is a Cloudflare runtime API, so nothing here runs under `wrangler d
 
 - **Whether Artifacts accepts pushes to, and serves fetches of, refs outside `refs/heads/` and
   `refs/tags/`** — specifically `refs/entire/checkpoints/<shard>/<id>`. The Git protocol page does
-  not say. Everything about the git-refs backend on Artifacts depends on it. Not tested: creating
+  not say. The nearest statement is on Cloudflare's
+  [best-practices page](https://developers.cloudflare.com/artifacts/concepts/best-practices/):
+  "Push and fetch `refs/notes/*` with the rest of your repo data" — so one namespace outside
+  heads/tags is expected to work, which makes `refs/entire/*` plausible but is not a statement about
+  it. Everything about the git-refs backend on Artifacts depends on it. Not tested: creating
   Cloudflare resources is out of bounds for this task. If it does not, the fallback is the
   `git-branch` backend (`checkpoints.primary.type: "git-branch"`, one branch
   `entire/checkpoints/v1`).
