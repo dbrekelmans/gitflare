@@ -1,12 +1,10 @@
 import { z } from "zod";
+import { CHECKPOINT_ID_PATTERN } from "./capture";
 import { parseRepoName, type RepoNameKind } from "./repo-names";
 
 export const ARTIFACTS_PUSH_EVENT = "cf.artifacts.repo.pushed";
 export const ZERO_SHA = "0000000000000000000000000000000000000000";
 export const CHECKPOINT_REF_PREFIX = "refs/entire/checkpoints/";
-/** The legacy single-branch checkpoint store; also the fallback if Artifacts refuses custom refs. */
-export const CHECKPOINT_BRANCH_REF = "refs/heads/entire/checkpoints/v1";
-
 /**
  * The documented `cf.artifacts.repo.pushed` payload, loosely: unknown fields
  * pass through, because what a Workflow actually receives from
@@ -56,13 +54,10 @@ export type PushKind =
     }
   /** A checkpoint ref moved in a context repo: record its new tip. */
   | { kind: "checkpoint"; slug: string; checkpointId: string }
-  /** The legacy checkpoint branch moved: re-index it. */
-  | { kind: "checkpoint_branch"; slug: string }
   /** Gitflare's own writes, and pushes that need no reaction. */
   | { kind: "ignored"; reason: string };
 
-/** Entire's two id shapes: a ULID, or twelve hex characters from the legacy backend. */
-const CHECKPOINT_ID = /^(?:[0-9a-f]{12}|[0-9A-HJKMNP-TV-Z]{26})$/;
+const CHECKPOINT_ID = new RegExp(`^${CHECKPOINT_ID_PATTERN}$`);
 
 /**
  * `refs/entire/checkpoints/<shard>/<id>`, where the shard is the id's last two
@@ -83,7 +78,6 @@ export function classifyPush(push: Push): PushKind {
   if (repo.kind === "context") {
     const checkpointId = parseCheckpointRef(push.ref);
     if (checkpointId) return { kind: "checkpoint", slug: repo.slug, checkpointId };
-    if (push.ref === CHECKPOINT_BRANCH_REF) return { kind: "checkpoint_branch", slug: repo.slug };
     return { kind: "ignored", reason: "context repo ref that is not a checkpoint" };
   }
 

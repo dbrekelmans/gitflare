@@ -121,7 +121,8 @@ export const RevertDecisionInput = z.object({
 
 export const SetMemberRoleInput = z.object({ userId: idSchema("user"), role: UserRole });
 
-export const UpdateSettingsInput = OrganisationSettings.partial();
+/** The workspace snapshot is set by preparing the workspace, never by hand. */
+export const UpdateSettingsInput = OrganisationSettings.omit({ workspace: true }).partial();
 
 export const GitCredentialInput = z.object({
   /** The remote git is about to talk to, as git reports it to a credential helper. */

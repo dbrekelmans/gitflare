@@ -51,6 +51,7 @@ describe("test database", () => {
         embedding: "e",
         fallbacks: ["f"],
       },
+      workspace: { image: "base", snapshot: null },
     };
     await db
       .insert(organisations)

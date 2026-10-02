@@ -37,12 +37,17 @@ export function apiRoute<Params>(
   };
 }
 
+/** Validates route params or any other untrusted value; what does not fit is an `invalid` error, never a 500. */
+export function parseInput<S extends z.ZodType>(schema: S, value: unknown): z.output<S> {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new ForgeError("invalid", parsed.error.message);
+  return parsed.data;
+}
+
 /** Reads and validates a JSON body; a body that does not parse is an `invalid` error. */
 export async function readJson<S extends z.ZodType>(
   request: Request,
   schema: S,
 ): Promise<z.output<S>> {
-  const parsed = schema.safeParse(await request.json().catch(() => undefined));
-  if (!parsed.success) throw new ForgeError("invalid", parsed.error.message);
-  return parsed.data;
+  return parseInput(schema, await request.json().catch(() => undefined));
 }

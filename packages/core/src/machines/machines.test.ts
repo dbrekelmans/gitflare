@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Change, StageName, StageRun, StageStatus } from "../domain/change";
 import type { Approval, Section } from "../domain/section";
 import type { Thread } from "../domain/thread";
+import { workspaceStart } from "../ports/sandbox";
 import { approvalsWithdrawnByPush, canApprove, sectionApprovalState } from "./approval";
 import {
   canRerunStage,
@@ -268,6 +269,15 @@ describe("decision strength", () => {
     expect(applyDecisionEvent(dormant, "revived")).toEqual({ strength: 0.5, status: "active" });
     expect(applyDecisionEvent({ strength: 0.9, status: "active" }, "revived").strength).toBe(0.9);
     expect(applyDecisionEvent(dormant, "confirmed").status).toBe("active");
+  });
+});
+
+describe("workspace", () => {
+  it("refuses to boot a sandbox until the workspace has been prepared", () => {
+    const image = "cloudflare/debian-trixie";
+    expect(() => workspaceStart({ image, snapshot: null })).toThrow(/not been prepared/);
+    const snapshot = { id: "snap_1", image };
+    expect(workspaceStart({ image, snapshot })).toEqual({ image, snapshot });
   });
 });
 

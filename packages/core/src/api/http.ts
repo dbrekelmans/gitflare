@@ -19,6 +19,8 @@ export const httpRoutes = {
   repository: (repoSlug: string) => `/api/repos/${repoSlug}`,
   /** POST `StartSessionInput` without `repoSlug` → `SessionView`. */
   repositorySessions: (repoSlug: string) => `/api/repos/${repoSlug}/sessions`,
+  /** GET → `SessionView`. The CLI polls it until the session's fork is ready, and reads it for `status`. */
+  session: (sessionId: string) => `/api/sessions/${sessionId}`,
   /** GET with `Upgrade: websocket`. Speaks `LiveServerMessage` / `LiveClientMessage`. */
   changeLive: (changeId: ChangeId) => `/api/changes/${changeId}/live`,
   /** POST `Push`. Exists only when the forge runs in local development. */

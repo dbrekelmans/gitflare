@@ -78,6 +78,22 @@ describe("fake git host", () => {
     ).toEqual({ status: "conflict", paths: ["b.txt"] });
   });
 
+  it("can hold a fork as not ready, the way a slow copy looks", async () => {
+    const { git, provisioning } = createFakePorts();
+    await git.createRepo("app");
+    git.push("app", "main", { a: "1" });
+    git.holdCopies = true;
+    const fork = await git.forkRepo("app", "app.fork.x");
+    expect(fork.status).toBe("forking");
+    expect(await git.resolveRef("app.fork.x", "main")).toBeNull();
+    git.finish("app.fork.x");
+    expect((await git.getRepo("app.fork.x"))?.status).toBe("ready");
+    expect(await git.resolveRef("app.fork.x", "main")).not.toBeNull();
+
+    await provisioning.forkSession("ses_1");
+    expect(provisioning.forks).toEqual(["ses_1"]);
+  });
+
   it("refuses a commit when the branch moved, and bounds token lifetimes", async () => {
     const { git } = createFakePorts();
     await git.createRepo("app");
@@ -251,6 +267,10 @@ describe("fixture API", () => {
     expect(inbox.map((item) => item.change.number)).toEqual([12]);
     const detail = await api.changes.get(ctx, { changeId: demoChanges.review.id });
     expect(detail.intent?.grade).toBe("transcript");
+    expect(detail.capture).toMatchObject({ state: "present", missingCheckpointIds: [] });
+    expect(detail.capture.sessions[0]?.agent).toBe("claude-code");
+    const cloud = await api.changes.get(ctx, { changeId: demoChanges.cloud.id });
+    expect(cloud.capture.state).toBe("none");
     expect(detail.sections).toHaveLength(4);
     expect(detail.cost.totalMicroUsd).toBeGreaterThan(0);
     expect((await api.threads.list(ctx, { changeId: demoChanges.review.id })).length).toBe(4);
@@ -280,6 +300,9 @@ describe("fixture API", () => {
   it("checks permissions", async () => {
     const api = createFixtureApi();
     const jonas = { user: demoUsers.jonas };
+    await expect(api.account.prepareWorkspace(jonas)).rejects.toMatchObject({ code: "forbidden" });
+    await api.account.prepareWorkspace(ctx);
+    expect((await api.account.getSettings(ctx)).workspace.snapshot).not.toBeNull();
     await expect(
       api.repositories.create(jonas, { slug: "new-repo", description: "" }),
     ).rejects.toMatchObject({

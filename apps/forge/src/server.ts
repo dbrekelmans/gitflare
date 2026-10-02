@@ -11,6 +11,7 @@ export { ThreadRoom } from "./server/durable/thread-room";
 export { SandboxEgress } from "./server/egress";
 export { ChangePipelineWorkflow } from "./server/workflows/change-pipeline";
 export { CiWorkflow } from "./server/workflows/ci";
+export { ProvisionWorkflow } from "./server/workflows/provision";
 
 export default {
   fetch: handler.fetch,

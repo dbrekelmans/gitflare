@@ -5,6 +5,8 @@ import {
   type Push,
   type PushKind,
   type RevisionId,
+  type Session,
+  type SessionId,
   type StageHandler,
   type StageInput,
   type StageName,
@@ -57,7 +59,8 @@ export type PushResult =
 /**
  * Reacts to one push. For a session's branch it re-reads the commit range
  * from the fork (the event's own commit list can be truncated), opens the
- * change or adds a revision, and creates the head revision's stage runs. For
+ * change or adds a revision (filling each commit's `checkpointIds` with
+ * `parseCheckpointTrailers`), and creates the head revision's stage runs. For
  * a checkpoint ref it records the new tip. Events come one per ref and can
  * arrive out of order, so this reads the ref's current tip rather than trust
  * the event's `after`, and the same or an older push delivered again yields
@@ -68,18 +71,6 @@ export async function handlePush(_deps: PipelineDeps, _push: Push): Promise<Push
 }
 
 export type { PushKind };
-
-/**
- * True once every checkpoint the head revision's commits name has arrived.
- * The capture client pushes checkpoints before code but fails soft, so the
- * pipeline waits a short while and then goes on without them.
- */
-export async function checkpointsArrived(
-  _deps: Pick<PipelineDeps, "db">,
-  _changeId: ChangeId,
-): Promise<boolean> {
-  return notImplemented("@gitflare/pipeline checkpointsArrived");
-}
 
 /**
  * Runs one stage attempt around its handler: marks it running, calls the
@@ -126,8 +117,8 @@ export async function queueStageRerun(
 /**
  * Merges a ready change into the main repo. Checks `mergeReadiness` first and
  * fails with `not_ready`; a merge conflict fails with `conflict` and leaves
- * the change as it was. On success it records the merge, ends the session,
- * settles the change's decisions and deletes the fork.
+ * the change as it was. On success it records the merge, settles the change's
+ * decisions and ends the session.
  */
 export async function mergeChange(
   _deps: PipelineDeps,
@@ -137,11 +128,25 @@ export async function mergeChange(
   return notImplemented("@gitflare/pipeline mergeChange");
 }
 
-/** Closes a change without merging, ends its session and deletes the fork. */
+/** Closes a change without merging and ends its session. */
 export async function closeChange(
   _deps: PipelineDeps,
   _user: User,
   _changeId: ChangeId,
 ): Promise<Change> {
   return notImplemented("@gitflare/pipeline closeChange");
+}
+
+/**
+ * Ends a session, in the one place that does: marks it merged or abandoned,
+ * deletes its fork from the git host (which revokes the fork's tokens) and
+ * records that the fork is gone. `mergeChange` and `closeChange` call it; so
+ * does abandoning a session that never opened a change. Safe to call twice.
+ */
+export async function endSession(
+  _deps: Pick<PipelineDeps, "db" | "git" | "clock">,
+  _sessionId: SessionId,
+  _outcome: "merged" | "abandoned",
+): Promise<Session> {
+  return notImplemented("@gitflare/pipeline endSession");
 }

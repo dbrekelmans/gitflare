@@ -8,7 +8,9 @@ import {
   type Identity,
   type IdKind,
   makeId,
+  type ProvisionParams,
   type Push,
+  type RepositoryId,
   type SessionId,
   type StageName,
   type ThreadId,
@@ -24,6 +26,7 @@ import type {
   IdGenerator,
   NewThreadMessage,
   PipelineRunner,
+  Provisioner,
   ThreadHost,
 } from "@gitflare/core/ports";
 
@@ -97,6 +100,34 @@ export class RecordingPipeline implements PipelineRunner {
 
   async rerunStage(changeId: ChangeId, stage: StageName): Promise<void> {
     this.reruns.push({ changeId, stage });
+  }
+}
+
+/**
+ * Records what was asked for and does none of it, which is how the real one
+ * looks to its caller: the session's fork, the import or the workspace is not
+ * ready when the call returns. A test then does the work itself (for a fork,
+ * `completeSessionFork`), or sets `run` to have it done on the spot.
+ */
+export class RecordingProvisioner implements Provisioner {
+  readonly forks: SessionId[] = [];
+  readonly imports: { repositoryId: RepositoryId; url: string }[] = [];
+  workspacePreparations = 0;
+  run: ((params: ProvisionParams) => Promise<void>) | null = null;
+
+  async forkSession(sessionId: SessionId): Promise<void> {
+    this.forks.push(sessionId);
+    await this.run?.({ kind: "fork", sessionId });
+  }
+
+  async importRepository(repositoryId: RepositoryId, url: string): Promise<void> {
+    this.imports.push({ repositoryId, url });
+    await this.run?.({ kind: "import", repositoryId, url });
+  }
+
+  async prepareWorkspace(): Promise<void> {
+    this.workspacePreparations++;
+    await this.run?.({ kind: "workspace" });
   }
 }
 

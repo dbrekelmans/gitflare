@@ -1,4 +1,4 @@
-import type { ChangeId, RevisionId, StageRunId } from "../ids";
+import type { ChangeId, RepositoryId, RevisionId, SessionId, StageRunId } from "../ids";
 import type { StageName } from "./change";
 import type { Push } from "./push";
 
@@ -42,6 +42,16 @@ export interface CiWorkflowParams extends StageInput {
   notifyInstanceId: string;
 }
 
+/**
+ * What the provisioning Workflow is started with: the slow work that must
+ * not run on a request. Forking takes up to most of a minute and importing
+ * can fail; preparing the workspace installs software in a container.
+ */
+export type ProvisionParams =
+  | { kind: "fork"; sessionId: SessionId }
+  | { kind: "import"; repositoryId: RepositoryId; url: string }
+  | { kind: "workspace" };
+
 /** The event type the CI Workflow sends back to the pipeline instance when it finishes. */
 export const CI_FINISHED_EVENT = "ci-finished";
 
@@ -51,4 +61,5 @@ export type CiFinishedPayload = StageOutcome | { status: "failed"; reason: strin
 export const workflowNames = {
   changePipeline: "gitflare-change-pipeline",
   ci: "gitflare-ci",
+  provision: "gitflare-provision",
 } as const;

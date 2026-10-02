@@ -101,7 +101,7 @@ export interface StageRun {
 }
 
 /** How the intent was arrived at. Shown to reviewers; not equally trustworthy. */
-export const IntentGrade = z.enum(["transcript", "diff", "stated"]);
+export const IntentGrade = z.enum(["transcript", "diff"]);
 export type IntentGrade = z.infer<typeof IntentGrade>;
 
 /**

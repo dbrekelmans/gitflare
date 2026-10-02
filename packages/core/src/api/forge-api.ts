@@ -51,6 +51,11 @@ export interface ForgeApi {
       input: In<typeof inputs.UpdateSettingsInput>,
     ): Promise<OrganisationSettings>;
     budget(ctx: ApiContext): Promise<BudgetView>;
+    /**
+     * Starts preparing the workspace every sandbox boots from. Returns at
+     * once; the settings show a snapshot once it is done. Administrators only.
+     */
+    prepareWorkspace(ctx: ApiContext): Promise<void>;
   };
 
   repositories: {
@@ -68,7 +73,12 @@ export interface ForgeApi {
   };
 
   sessions: {
-    /** Forks the repository for a new piece of work. A cloud session also boots its workspace. */
+    /**
+     * Records a session and starts forking the repository for it. The fork
+     * takes seconds to most of a minute: the view comes back with
+     * `session.forkReadyAt` null, and callers poll `get` until it is set. A
+     * cloud session's workspace boots once the fork is ready.
+     */
     start(ctx: ApiContext, input: In<typeof inputs.StartSessionInput>): Promise<SessionView>;
     get(ctx: ApiContext, input: In<typeof inputs.SessionRef>): Promise<SessionView>;
     listMine(ctx: ApiContext): Promise<SessionView[]>;
@@ -138,7 +148,15 @@ export type ApiSlice = keyof ForgeApi;
  * interface, which does not exist at run time.
  */
 export const apiOperations = {
-  account: ["me", "listMembers", "setMemberRole", "getSettings", "updateSettings", "budget"],
+  account: [
+    "me",
+    "listMembers",
+    "setMemberRole",
+    "getSettings",
+    "updateSettings",
+    "budget",
+    "prepareWorkspace",
+  ],
   repositories: ["list", "get", "create", "gitCredential"],
   sessions: ["start", "get", "listMine", "prompt", "events", "stop", "abandon"],
   changes: [

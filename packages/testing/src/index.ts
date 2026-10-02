@@ -13,6 +13,7 @@ import {
   ManualClock,
   RecordingLive,
   RecordingPipeline,
+  RecordingProvisioner,
   SequentialIds,
 } from "./fakes/runtime";
 import { FakeSandboxHost } from "./fakes/sandbox";
@@ -33,6 +34,7 @@ export interface FakePorts extends Ports {
   identity: FakeIdentity;
   live: RecordingLive;
   pipeline: RecordingPipeline;
+  provisioning: RecordingProvisioner;
   threads: FakeThreads;
   cloudSessions: FakeCloudSessions;
   capture: FakeCapture;
@@ -65,6 +67,7 @@ export function createFakePorts(overrides: Partial<FakePorts> = {}): FakePorts {
     identity: new FakeIdentity(testIdentity),
     live: new RecordingLive(),
     pipeline: new RecordingPipeline(),
+    provisioning: new RecordingProvisioner(),
     threads: new FakeThreads(clock, ids),
     cloudSessions: new FakeCloudSessions(clock),
     capture: new FakeCapture(clock),

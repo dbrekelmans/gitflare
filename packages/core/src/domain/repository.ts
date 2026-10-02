@@ -58,16 +58,6 @@ export interface Session {
   forkDeletedAt: Timestamp | null;
 }
 
-/**
- * How far the platform observed the session. A cloud session's transcript,
- * model and spend are seen by gitflare; a local session's are self-reported.
- */
-export type TrustTier = "observed" | "self_reported";
-
-export function trustTier(kind: SessionKind): TrustTier {
-  return kind === "cloud" ? "observed" : "self_reported";
-}
-
 export const GitTokenScope = z.enum(["read", "write"]);
 export type GitTokenScope = z.infer<typeof GitTokenScope>;
 

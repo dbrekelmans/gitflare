@@ -4,6 +4,7 @@ import {
   getMe,
   getSettings,
   listMembers,
+  prepareWorkspace,
   setMemberRole,
   updateSettings,
 } from "./account.functions";
@@ -25,3 +26,10 @@ export const useUpdateSettings = () =>
     keys.account.budget,
     keys.account.me,
   ]);
+
+/** Preparing takes minutes and reports nothing back: refetch the settings to see the snapshot appear. */
+export const usePrepareWorkspace = () =>
+  useApiMutation(
+    (_options: { data: undefined }) => prepareWorkspace(),
+    () => [keys.account.settings],
+  );

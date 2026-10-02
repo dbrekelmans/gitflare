@@ -8,6 +8,7 @@ import {
   type ChangeId,
   can,
   canRerunStage,
+  captureState,
   contextRepoName,
   type Decision,
   type DecisionEvent,
@@ -28,11 +29,11 @@ import {
   type ThreadMessage,
   transitionChange,
   transitionThread,
-  trustTier,
   type User,
 } from "@gitflare/core";
 import type {
   ApiContext,
+  CaptureSummary,
   ChangeDetail,
   ChangeSummary,
   DecisionDetail,
@@ -163,7 +164,7 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
       repository: { id: repository.id, slug: repository.slug },
       author: ref(change.authorId),
       session,
-      trustTier: trustTier(session.kind),
+      capture: captureSummary(change),
       revisions: data.revisions
         .filter((r) => r.changeId === change.id)
         .sort((a, b) => a.number - b.number),
@@ -183,6 +184,28 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
       }),
       cost: costOf(change.id),
       lastEventSeq: data.changeEvents.filter((e) => e.changeId === change.id).length,
+    };
+  }
+
+  function captureSummary(change: Change): CaptureSummary {
+    const named = [
+      ...new Set(
+        data.commits.filter((c) => c.changeId === change.id).flatMap((c) => c.checkpointIds),
+      ),
+    ];
+    const arrived = data.checkpoints.map((ref) => ref.checkpointId);
+    return {
+      state: captureState({ named, arrived, waiting: change.status === "open" }),
+      sessions: data.capturedSessions
+        .filter((session) => session.changeId === change.id)
+        .map(({ agentSessionId, agent, model, checkpointIds, attribution }) => ({
+          agentSessionId,
+          agent,
+          model,
+          checkpointIds,
+          attribution,
+        })),
+      missingCheckpointIds: named.filter((id) => !arrived.includes(id)),
     };
   }
 
@@ -331,6 +354,11 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
         if (!can(ctx.user, { type: "settings.manage" })) forbidden();
         data.organisation.settings = { ...data.organisation.settings, ...input };
         return data.organisation.settings;
+      },
+      async prepareWorkspace(ctx) {
+        if (!can(ctx.user, { type: "settings.manage" })) forbidden();
+        const { image } = data.organisation.settings.workspace;
+        data.organisation.settings.workspace = { image, snapshot: { id: "snap_fixture", image } };
       },
       async budget() {
         const byAgent = new Map<string, number>();

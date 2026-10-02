@@ -3,6 +3,7 @@ import type {
   EgressGrant,
   ExecOptions,
   ExecResult,
+  IdGenerator,
   LogChunk,
   ProcessStatus,
   SandboxHost,
@@ -14,7 +15,7 @@ import type {
 // owns it. Sandbox SDK 1.0 is helpers, not a sandbox: starting the container,
 // running commands, keeping it alive, snapshots and egress are all this
 // package's code over `ctx.container`. The Durable Object class in
-// `apps/forge/src/server/durable/sandbox.ts` is a thin shell around
+// `apps/forge/src/server/durable/sandbox-room.ts` is a thin shell around
 // `SandboxController`; everything testable lives here, against `ContainerLike`.
 // Facts and signatures: spec/research/sandbox-ci.md. Build task: `sandbox`.
 
@@ -145,4 +146,17 @@ export function decideEgress(
   _request: { method: string; url: string },
 ): EgressDecision {
   return notImplemented("@gitflare/sandbox decideEgress");
+}
+
+/**
+ * The provisioning Workflow's workspace step: boots the managed base image
+ * with Internet access, runs `setupScript` (the text of
+ * `containers/workspace/setup.sh`), takes a snapshot and stops the container.
+ * The caller stores the result in the organisation's `workspace` settings.
+ */
+export async function prepareWorkspace(
+  _deps: { sandboxes: SandboxHost; ids: IdGenerator },
+  _input: { image: string; setupScript: string },
+): Promise<SandboxSnapshot> {
+  return notImplemented("@gitflare/sandbox prepareWorkspace");
 }

@@ -4,7 +4,16 @@ import type { ChangeEvent, TransientChangeSignal } from "../domain/events";
 import type { Identity } from "../domain/organisation";
 import type { Push } from "../domain/push";
 import type { AgentAction, ThreadMessage } from "../domain/thread";
-import type { ChangeId, Id, IdKind, SessionId, ThreadId, Timestamp, UserId } from "../ids";
+import type {
+  ChangeId,
+  Id,
+  IdKind,
+  RepositoryId,
+  SessionId,
+  ThreadId,
+  Timestamp,
+  UserId,
+} from "../ids";
 
 /** "Who is this request from": the one function a different identity system would replace. */
 export interface IdentityProvider {
@@ -32,6 +41,18 @@ export interface PipelineRunner {
   handlePush(push: Push): Promise<void>;
   /** Queues a new attempt of one settled stage for the change's head revision. */
   rerunStage(changeId: ChangeId, stage: StageName): Promise<void>;
+}
+
+/**
+ * Starts slow work in the background and returns at once. In production each
+ * call creates a provisioning Workflow instance. The caller records the thing
+ * as not ready (`Session.forkReadyAt`, `Repository.readyAt`, a null workspace
+ * snapshot); the Workflow marks it ready when the work is done.
+ */
+export interface Provisioner {
+  forkSession(sessionId: SessionId): Promise<void>;
+  importRepository(repositoryId: RepositoryId, url: string): Promise<void>;
+  prepareWorkspace(): Promise<void>;
 }
 
 export interface NewThreadMessage {

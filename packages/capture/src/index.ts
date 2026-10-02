@@ -31,10 +31,7 @@ export function createCapture(_deps: CaptureDeps): CapturePort {
   return notImplemented("@gitflare/capture createCapture");
 }
 
-/** Every checkpoint id named by `Entire-Checkpoint` trailers in a commit message, in order, once each. */
-export function parseCheckpointTrailers(_message: string): string[] {
-  return notImplemented("@gitflare/capture parseCheckpointTrailers");
-}
+// `parseCheckpointTrailers` is in `@gitflare/core`: the pipeline needs it too.
 
 /** Records the new tip of a checkpoint ref. Called for every push the pipeline classifies as `checkpoint`. */
 export async function recordCheckpointPush(

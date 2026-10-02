@@ -21,6 +21,7 @@ import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessio
 import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as ApiDevPushRouteImport } from './routes/api/dev/push'
 import { Route as ApiGitCredentialsRouteImport } from './routes/api/git/credentials'
+import { Route as ApiSessionsSessionIdRouteImport } from './routes/api/sessions/$sessionId'
 import { Route as ReposRepoSlugIndexRouteImport } from './routes/repos/$repoSlug/index'
 import { Route as ReposRepoSlugDecisionsRouteImport } from './routes/repos/$repoSlug/decisions'
 import { Route as ApiChangesChangeIdLiveRouteImport } from './routes/api/changes/$changeId/live'
@@ -87,6 +88,11 @@ const ApiGitCredentialsRoute = ApiGitCredentialsRouteImport.update({
   path: '/api/git/credentials',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiSessionsSessionIdRoute = ApiSessionsSessionIdRouteImport.update({
+  id: '/api/sessions/$sessionId',
+  path: '/api/sessions/$sessionId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ReposRepoSlugIndexRoute = ReposRepoSlugIndexRouteImport.update({
   id: '/repos/$repoSlug/',
   path: '/repos/$repoSlug/',
@@ -127,6 +133,7 @@ export interface FileRoutesByFullPath {
   '/settings/': typeof SettingsIndexRoute
   '/api/dev/push': typeof ApiDevPushRoute
   '/api/git/credentials': typeof ApiGitCredentialsRoute
+  '/api/sessions/$sessionId': typeof ApiSessionsSessionIdRoute
   '/repos/$repoSlug/decisions': typeof ReposRepoSlugDecisionsRoute
   '/repos/$repoSlug/': typeof ReposRepoSlugIndexRoute
   '/api/changes/$changeId/live': typeof ApiChangesChangeIdLiveRoute
@@ -146,6 +153,7 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsIndexRoute
   '/api/dev/push': typeof ApiDevPushRoute
   '/api/git/credentials': typeof ApiGitCredentialsRoute
+  '/api/sessions/$sessionId': typeof ApiSessionsSessionIdRoute
   '/repos/$repoSlug/decisions': typeof ReposRepoSlugDecisionsRoute
   '/repos/$repoSlug': typeof ReposRepoSlugIndexRoute
   '/api/changes/$changeId/live': typeof ApiChangesChangeIdLiveRoute
@@ -166,6 +174,7 @@ export interface FileRoutesById {
   '/settings/': typeof SettingsIndexRoute
   '/api/dev/push': typeof ApiDevPushRoute
   '/api/git/credentials': typeof ApiGitCredentialsRoute
+  '/api/sessions/$sessionId': typeof ApiSessionsSessionIdRoute
   '/repos/$repoSlug/decisions': typeof ReposRepoSlugDecisionsRoute
   '/repos/$repoSlug/': typeof ReposRepoSlugIndexRoute
   '/api/changes/$changeId/live': typeof ApiChangesChangeIdLiveRoute
@@ -187,6 +196,7 @@ export interface FileRouteTypes {
     | '/settings/'
     | '/api/dev/push'
     | '/api/git/credentials'
+    | '/api/sessions/$sessionId'
     | '/repos/$repoSlug/decisions'
     | '/repos/$repoSlug/'
     | '/api/changes/$changeId/live'
@@ -206,6 +216,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/api/dev/push'
     | '/api/git/credentials'
+    | '/api/sessions/$sessionId'
     | '/repos/$repoSlug/decisions'
     | '/repos/$repoSlug'
     | '/api/changes/$changeId/live'
@@ -225,6 +236,7 @@ export interface FileRouteTypes {
     | '/settings/'
     | '/api/dev/push'
     | '/api/git/credentials'
+    | '/api/sessions/$sessionId'
     | '/repos/$repoSlug/decisions'
     | '/repos/$repoSlug/'
     | '/api/changes/$changeId/live'
@@ -245,6 +257,7 @@ export interface RootRouteChildren {
   SettingsIndexRoute: typeof SettingsIndexRoute
   ApiDevPushRoute: typeof ApiDevPushRoute
   ApiGitCredentialsRoute: typeof ApiGitCredentialsRoute
+  ApiSessionsSessionIdRoute: typeof ApiSessionsSessionIdRoute
   ReposRepoSlugDecisionsRoute: typeof ReposRepoSlugDecisionsRoute
   ReposRepoSlugIndexRoute: typeof ReposRepoSlugIndexRoute
   ApiChangesChangeIdLiveRoute: typeof ApiChangesChangeIdLiveRoute
@@ -338,6 +351,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiGitCredentialsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/sessions/$sessionId': {
+      id: '/api/sessions/$sessionId'
+      path: '/api/sessions/$sessionId'
+      fullPath: '/api/sessions/$sessionId'
+      preLoaderRoute: typeof ApiSessionsSessionIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/repos/$repoSlug/': {
       id: '/repos/$repoSlug/'
       path: '/repos/$repoSlug'
@@ -389,6 +409,7 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsIndexRoute: SettingsIndexRoute,
   ApiDevPushRoute: ApiDevPushRoute,
   ApiGitCredentialsRoute: ApiGitCredentialsRoute,
+  ApiSessionsSessionIdRoute: ApiSessionsSessionIdRoute,
   ReposRepoSlugDecisionsRoute: ReposRepoSlugDecisionsRoute,
   ReposRepoSlugIndexRoute: ReposRepoSlugIndexRoute,
   ApiChangesChangeIdLiveRoute: ApiChangesChangeIdLiveRoute,

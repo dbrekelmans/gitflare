@@ -42,4 +42,5 @@ it("reaches the Durable Objects and Workflows the config declares", async () => 
   expect(env.THREAD_ROOM.getByName("thr_1")).toBeDefined();
   expect(env.CHANGE_PIPELINE).toBeDefined();
   expect(env.CI).toBeDefined();
+  expect(env.PROVISION).toBeDefined();
 });

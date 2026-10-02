@@ -7,7 +7,12 @@ import { createDecisionRecord } from "@gitflare/decisions";
 import { createDiffs } from "@gitflare/diff";
 import { createDemoPorts } from "@gitflare/testing";
 import { createCloudflarePorts, type ExternalPorts } from "./adapters/cloudflare";
-import { createChangeLive, createPipelineRunner, createThreadHost } from "./adapters/runtime";
+import {
+  createChangeLive,
+  createPipelineRunner,
+  createProvisioner,
+  createThreadHost,
+} from "./adapters/runtime";
 
 /**
  * Everything server code works with: the database and every port. Domain
@@ -72,6 +77,7 @@ export function getServices(): Services {
     decisions: lazy(() => createDecisionRecord({ db, git, gitWriter, models, clock, ids })),
     live: createChangeLive(env),
     pipeline: createPipelineRunner(env),
+    provisioning: createProvisioner(env),
     threads: createThreadHost(env),
     clock,
     ids,

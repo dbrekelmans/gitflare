@@ -1,5 +1,5 @@
-import type { PipelineParams } from "@gitflare/core";
-import type { ChangeLive, PipelineRunner, ThreadHost } from "@gitflare/core/ports";
+import type { PipelineParams, ProvisionParams } from "@gitflare/core";
+import type { ChangeLive, PipelineRunner, Provisioner, ThreadHost } from "@gitflare/core/ports";
 
 // The ports that are backed by this Worker's own Durable Objects and
 // Workflows. They run the same way locally and deployed, so there is one
@@ -19,6 +19,17 @@ export function createPipelineRunner(env: Env): PipelineRunner {
   return {
     handlePush: (push) => start({ kind: "push", push }),
     rerunStage: (changeId, stage) => start({ kind: "rerun", changeId, stage }),
+  };
+}
+
+export function createProvisioner(env: Env): Provisioner {
+  const start = async (params: ProvisionParams) => {
+    await env.PROVISION.create({ params });
+  };
+  return {
+    forkSession: (sessionId) => start({ kind: "fork", sessionId }),
+    importRepository: (repositoryId, url) => start({ kind: "import", repositoryId, url }),
+    prepareWorkspace: () => start({ kind: "workspace" }),
   };
 }
 

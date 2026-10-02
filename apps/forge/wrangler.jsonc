@@ -41,6 +41,7 @@
       "binding": "CHANGE_PIPELINE",
       "class_name": "ChangePipelineWorkflow"
     },
-    { "name": "gitflare-ci", "binding": "CI", "class_name": "CiWorkflow" }
+    { "name": "gitflare-ci", "binding": "CI", "class_name": "CiWorkflow" },
+    { "name": "gitflare-provision", "binding": "PROVISION", "class_name": "ProvisionWorkflow" }
   ]
 }

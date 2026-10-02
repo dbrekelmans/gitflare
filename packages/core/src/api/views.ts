@@ -1,3 +1,4 @@
+import type { CapturedSession, CaptureState } from "../domain/capture";
 import type {
   Change,
   ChangeCommit,
@@ -10,7 +11,7 @@ import type { CiRun, CiStep } from "../domain/ci";
 import type { CloudSessionStatus } from "../domain/cloud-session";
 import type { Decision, DecisionEvent } from "../domain/decision";
 import type { BudgetSummary, Organisation, User } from "../domain/organisation";
-import type { GitCommit, Repository, Session, TrustTier } from "../domain/repository";
+import type { GitCommit, Repository, Session } from "../domain/repository";
 import type { Approval, FileDiff, Section } from "../domain/section";
 import type { Thread, ThreadMessage } from "../domain/thread";
 import type { ChangeId, MicroUsd, SectionId, Timestamp } from "../ids";
@@ -72,7 +73,7 @@ export interface ChangeDetail {
   repository: RepositoryRef;
   author: UserRef;
   session: Session;
-  trustTier: TrustTier;
+  capture: CaptureSummary;
   revisions: Revision[];
   commits: ChangeCommit[];
   /** The newest attempt of each stage for the head revision. */
@@ -84,6 +85,18 @@ export interface ChangeDetail {
   cost: ChangeCost;
   /** The last event applied to this view. The live connection resumes after it. */
   lastEventSeq: number;
+}
+
+/** How the change was made, as far as the capture client recorded it. */
+export interface CaptureSummary {
+  state: CaptureState;
+  /** The agent sessions that fed the change, without their transcripts. */
+  sessions: Pick<
+    CapturedSession,
+    "agentSessionId" | "agent" | "model" | "checkpointIds" | "attribution"
+  >[];
+  /** Checkpoints the commits name that are not in the context repo. */
+  missingCheckpointIds: string[];
 }
 
 export interface SectionDiff {

@@ -27,12 +27,26 @@ export const ModelSettings = z.object({
 });
 export type ModelSettings = z.infer<typeof ModelSettings>;
 
+/**
+ * What every sandbox boots: CI runs and hosted sessions alike. `image` is the
+ * managed base image; `snapshot` is that image after `containers/workspace/setup.sh`
+ * has installed git, the runtimes, the agent and the capture client. It is
+ * null until an administrator has prepared the workspace, and until then
+ * nothing that needs a sandbox can run.
+ */
+export const WorkspaceSettings = z.object({
+  image: z.string(),
+  snapshot: z.object({ id: z.string(), image: z.string() }).nullable(),
+});
+export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
+
 export const OrganisationSettings = z.object({
   /** The deployment's whole AI budget for a calendar month. */
   monthlyBudgetMicroUsd: z.number().int().nonnegative(),
   /** Platform-agent spend on one change stops here. */
   perChangeBudgetMicroUsd: z.number().int().nonnegative(),
   models: ModelSettings,
+  workspace: WorkspaceSettings,
 });
 export type OrganisationSettings = z.infer<typeof OrganisationSettings>;
 
@@ -51,6 +65,7 @@ export const defaultOrganisationSettings: OrganisationSettings = {
   monthlyBudgetMicroUsd: 200_000_000,
   perChangeBudgetMicroUsd: 5_000_000,
   models: defaultModelSettings,
+  workspace: { image: "cloudflare/debian-trixie", snapshot: null },
 };
 
 export const UserRole = z.enum(["admin", "member"]);

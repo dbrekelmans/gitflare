@@ -9,6 +9,7 @@ export { ThreadRoom } from "./durable/thread-room";
 export { SandboxEgress } from "./egress";
 export { ChangePipelineWorkflow } from "./workflows/change-pipeline";
 export { CiWorkflow } from "./workflows/ci";
+export { ProvisionWorkflow } from "./workflows/provision";
 
 export default {
   fetch: () => new Response("test entry"),

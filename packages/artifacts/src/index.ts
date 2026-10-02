@@ -14,6 +14,7 @@ import type {
   GitHost,
   GitWriter,
   IdGenerator,
+  Provisioner,
   SandboxHost,
 } from "@gitflare/core/ports";
 import type { Db } from "@gitflare/db";
@@ -75,14 +76,16 @@ export interface ArtifactsDeps {
   gitWriter: GitWriter;
   /** For the capture settings files committed to a new repository. */
   capture: CapturePort;
+  /** Forks and imports are started here and finished by the provisioning Workflow. */
+  provisioning: Provisioner;
   clock: Clock;
   ids: IdGenerator;
 }
 
 /**
- * Creates a repository: the main repo (empty, or imported from a public URL
- * after checking it fits Artifacts' size limits), its context repo, and a
- * first commit with the capture settings files.
+ * Creates a repository: the main repo, its context repo, and a first commit
+ * with the capture settings files. An import is handed to the provisioner and
+ * the repository comes back with `readyAt` null.
  */
 export async function provisionRepository(
   _deps: ArtifactsDeps,
@@ -93,9 +96,9 @@ export async function provisionRepository(
 }
 
 /**
- * Records a session and starts forking the main repo for it. Forking takes
- * seconds to most of a minute, so this returns before the fork is usable:
- * `forkReadyAt` is null until `completeSessionFork` has seen it ready.
+ * Records a session and asks the provisioner to fork the main repo for it.
+ * Forking takes seconds to most of a minute, so this returns before the fork
+ * exists: `forkReadyAt` is null until `completeSessionFork` has run.
  */
 export async function openSession(
   _deps: ArtifactsDeps,
@@ -118,7 +121,11 @@ export async function issueGitCredential(
   return notImplemented("@gitflare/artifacts issueGitCredential");
 }
 
-/** Marks a session's fork ready once the host reports it. Safe to call repeatedly. */
+/**
+ * The provisioning Workflow's fork step: forks the main repo if the fork does
+ * not exist yet, and marks the session's fork ready once the host reports it
+ * so. Throws while it is still being copied, so the step is retried.
+ */
 export async function completeSessionFork(
   _deps: ArtifactsDeps,
   _sessionId: SessionId,
@@ -136,10 +143,15 @@ export async function mintSystemToken(
   return notImplemented("@gitflare/artifacts mintSystemToken");
 }
 
-/** Deletes a finished session's fork, which also revokes its tokens, and records that it is gone. */
-export async function deleteSessionFork(
+/**
+ * The provisioning Workflow's import step: checks the source fits the host's
+ * size limits, imports it, commits the capture settings files and marks the
+ * repository ready. Throws on a failure worth retrying.
+ */
+export async function completeRepositoryImport(
   _deps: ArtifactsDeps,
-  _sessionId: SessionId,
-): Promise<void> {
-  return notImplemented("@gitflare/artifacts deleteSessionFork");
+  _repositoryId: Repository["id"],
+  _url: string,
+): Promise<Repository> {
+  return notImplemented("@gitflare/artifacts completeRepositoryImport");
 }

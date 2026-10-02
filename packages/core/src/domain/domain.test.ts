@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { StartSessionInput } from "../api/inputs";
+import { captureState, parseCheckpointTrailers } from "./capture";
 import { CiConfig } from "./ci";
 import { can } from "./permissions";
 import { ArtifactsPushEvent, classifyPush, parseCheckpointRef, toPush, ZERO_SHA } from "./push";
@@ -59,9 +60,7 @@ describe("pushes", () => {
       slug: "atlas-web",
       checkpointId: id,
     });
-    expect(classifyPush({ ...push, ref: "refs/heads/entire/checkpoints/v1" }).kind).toBe(
-      "checkpoint_branch",
-    );
+    expect(classifyPush({ ...push, ref: "refs/heads/entire/checkpoints/v1" }).kind).toBe("ignored");
     expect(classifyPush({ ...push, ref: "refs/heads/main" }).kind).toBe("ignored");
   });
 
@@ -168,5 +167,31 @@ describe("section hashes", () => {
     expect(selectDiff([a], [{ path: "a.ts", hunkHashes: [] }])).toEqual([a]);
     expect(selectDiff([a], [{ path: "a.ts", hunkHashes: ["nope"] }])).toEqual([]);
     expect(selectDiff([a], [{ path: "a.ts", hunkHashes: [a.hunks[0]?.hash ?? ""] }])).toEqual([a]);
+  });
+});
+
+describe("capture", () => {
+  const ulid = "01M3WE2VX9HQC3NVY9BWYCW6JV";
+
+  it("collects every checkpoint trailer once, in order, in both id shapes", () => {
+    const message = [
+      "Squash two commits",
+      "",
+      "Co-Authored-By: Someone <s@example.com>",
+      `Entire-Checkpoint: ${ulid}`,
+      "Entire-Checkpoint: a3b2c4d5e6f7",
+      `Entire-Checkpoint: ${ulid}`,
+    ].join("\n");
+    expect(parseCheckpointTrailers(message)).toEqual([ulid, "a3b2c4d5e6f7"]);
+    expect(parseCheckpointTrailers("No trailers here")).toEqual([]);
+    expect(parseCheckpointTrailers("Entire-Checkpoint: not-an-id")).toEqual([]);
+    expect(parseCheckpointTrailers(`Entire-Checkpoint: ${ulid}extra`)).toEqual([]);
+  });
+
+  it("tells present, pending, missing and none apart", () => {
+    expect(captureState({ named: [], arrived: [], waiting: true })).toBe("none");
+    expect(captureState({ named: ["a"], arrived: ["a", "b"], waiting: false })).toBe("present");
+    expect(captureState({ named: ["a", "b"], arrived: ["a"], waiting: true })).toBe("pending");
+    expect(captureState({ named: ["a", "b"], arrived: ["a"], waiting: false })).toBe("missing");
   });
 });

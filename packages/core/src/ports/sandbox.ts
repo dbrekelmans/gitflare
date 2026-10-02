@@ -1,5 +1,7 @@
 import type { ModelAttribution } from "../domain/model-call";
+import type { WorkspaceSettings } from "../domain/organisation";
 import type { GitTokenScope } from "../domain/repository";
+import { ForgeError } from "../errors";
 import type { SandboxId } from "../ids";
 
 export type SandboxInstance = "lite" | "standard-1" | "standard-2" | "standard-3" | "standard-4";
@@ -15,6 +17,23 @@ export type EgressGrant =
   | { kind: "models"; attribution: ModelAttribution }
   /** Plain outbound HTTPS to one host, for package registries. Globs allowed. */
   | { kind: "host"; host: string };
+
+/**
+ * What to boot a sandbox from: the deployment's prepared workspace. Throws
+ * `unavailable` when no administrator has prepared it yet, so a CI run or a
+ * hosted session fails with a reason a person can act on.
+ */
+export function workspaceStart(
+  workspace: WorkspaceSettings,
+): Pick<SandboxStartOptions, "image" | "snapshot"> {
+  if (!workspace.snapshot) {
+    throw new ForgeError(
+      "unavailable",
+      "The workspace has not been prepared yet. An administrator can prepare it in Settings.",
+    );
+  }
+  return { image: workspace.image, snapshot: workspace.snapshot };
+}
 
 export interface SandboxStartOptions {
   /** What to boot: the managed base image, or a named image from the Worker's container configuration. */

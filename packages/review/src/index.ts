@@ -1,6 +1,8 @@
 import {
   type DismissalClass,
+  type FindingCategory,
   notImplemented,
+  type RepositoryId,
   type StageHandler,
   type Thread,
   type ThreadId,
@@ -95,4 +97,18 @@ export async function settleThread(
   _action: SettleAction,
 ): Promise<Thread> {
   return notImplemented("@gitflare/review settleThread");
+}
+
+/**
+ * How often each category of finding has been dismissed as "not a problem" in
+ * a repository, against how often it was raised. The review stage reads this
+ * before it writes findings: a category people keep dismissing is raised less
+ * readily, and the prompt is told so. Counted from settled threads; there is
+ * no separate tally to keep in step.
+ */
+export async function dismissalTally(
+  _deps: Pick<ReviewDeps, "db">,
+  _repositoryId: RepositoryId,
+): Promise<Partial<Record<FindingCategory, { raised: number; notAProblem: number }>>> {
+  return notImplemented("@gitflare/review dismissalTally");
 }

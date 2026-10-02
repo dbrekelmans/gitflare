@@ -71,7 +71,7 @@ function ChangePage() {
       <SectionHead title="Record" className="mt-s11" />
       <Text size="body-s" tone="muted">
         {data.author.name} · {data.session.kind} session · intent derived from the{" "}
-        {intent?.grade ?? "…"}
+        {intent?.grade ?? "…"} · capture {data.capture.state}
       </Text>
       <Evidence size="sm" kind="note" className="mt-s2 block">
         head {shortSha(change.headSha)} · base {shortSha(change.baseSha)} ·{" "}

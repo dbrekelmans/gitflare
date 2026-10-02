@@ -5,7 +5,9 @@ import { threadQueries } from "@/data/threads.queries";
 
 // The conversation on a change: review comments with their replies, and
 // chats with the agent. The change page places these components and knows
-// nothing about what is inside them. Build task: `web-threads`.
+// nothing about what is inside them. A reply being typed comes from
+// `useThreadDraft` in `@/data/live`, which shares the page's one connection.
+// Build task: `web-threads`.
 
 /** The comment threads pinned to one section, open ones first. */
 export function SectionThreads({

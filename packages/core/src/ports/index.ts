@@ -8,6 +8,7 @@ import type {
   IdentityProvider,
   IdGenerator,
   PipelineRunner,
+  Provisioner,
   ThreadHost,
 } from "./runtime";
 import type { SandboxHost } from "./sandbox";
@@ -35,6 +36,7 @@ export interface Ports {
   identity: IdentityProvider;
   live: ChangeLive;
   pipeline: PipelineRunner;
+  provisioning: Provisioner;
   threads: ThreadHost;
   cloudSessions: CloudSessions;
   capture: CapturePort;

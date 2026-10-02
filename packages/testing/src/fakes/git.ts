@@ -63,6 +63,12 @@ export class FakeGit implements GitHost, GitWriter {
   private readonly blobs = new Map<Sha, Uint8Array>();
   private readonly trees = new Map<Sha, TreeEntry[]>();
   private readonly commits = new Map<Sha, StoredCommit>();
+  /**
+   * Set to make forks and imports behave as slow ones do: `getRepo` reports
+   * them `forking` or `importing`, and their refs are not readable, until
+   * `finish(name)` is called.
+   */
+  holdCopies = false;
   /** Every token minted, including revoked ones. */
   readonly tokens: IssuedToken[] = [];
   /** Every ref update, in order, as the push event Artifacts would have sent. */
@@ -83,7 +89,9 @@ export class FakeGit implements GitHost, GitWriter {
   }
 
   async importRepo(name: string, source: { url: string }): Promise<HostedRepo> {
-    return this.addRepo(name, "main", source.url);
+    const info = this.addRepo(name, "main", source.url);
+    if (this.holdCopies) info.status = "importing";
+    return info;
   }
 
   async forkRepo(source: string, name: string): Promise<HostedRepo> {
@@ -91,6 +99,7 @@ export class FakeGit implements GitHost, GitWriter {
     const info = this.addRepo(name, parent.info.defaultBranch, `artifacts:gitflare/${source}`);
     // A fork is a full copy: every branch, tag and other ref of the source.
     for (const [ref, tip] of parent.refs) this.repo(name).refs.set(ref, tip);
+    if (this.holdCopies) info.status = "forking";
     return info;
   }
 
@@ -130,7 +139,7 @@ export class FakeGit implements GitHost, GitWriter {
 
   async resolveRef(repo: string, ref: string): Promise<Sha | null> {
     const state = this.repos.get(repo);
-    if (!state) return null;
+    if (state?.info.status !== "ready") return null;
     if (this.commits.has(ref)) return ref;
     return state.refs.get(fullRef(ref)) ?? null;
   }
@@ -278,6 +287,11 @@ export class FakeGit implements GitHost, GitWriter {
       options.author ?? fakeAuthor,
     );
     return this.setRef(repo, name, sha);
+  }
+
+  /** Ends a held fork or import: the repository becomes `ready`. */
+  finish(name: string): void {
+    this.repo(name).info.status = "ready";
   }
 
   /** The text of a file at a ref, or null. For assertions. */
