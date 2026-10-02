@@ -12,7 +12,7 @@ import { Button } from "@gitflare/ui/components/ui/button";
 import type { ReactNode } from "react";
 import { useMergeChange } from "@/data/changes.queries";
 import { formatTime, shortSha } from "@/lib/format";
-import { blockerCopy, plural } from "./copy";
+import { blockerCopy, mergedCopy, plural } from "./copy";
 import { sectionAnchor } from "./section";
 
 function Blocker({
@@ -72,10 +72,11 @@ function Card({
  */
 export function MergeCard({
   change,
+  mergedBy,
   readiness,
   sections,
   stages,
-}: Pick<ChangeDetail, "change" | "readiness" | "sections" | "stages">) {
+}: Pick<ChangeDetail, "change" | "mergedBy" | "readiness" | "sections" | "stages">) {
   const merge = useMergeChange();
 
   if (change.status === "merged") {
@@ -85,8 +86,8 @@ export function MergeCard({
           This change is in main.
         </Heading>
         <Text size="body-s" tone="muted">
-          Merged{change.mergedAt ? ` ${formatTime(change.mergedAt)}` : ""}. The session has ended
-          and its fork is gone.
+          {mergedCopy(mergedBy, change.mergedAt ? formatTime(change.mergedAt) : null)} The session
+          has ended and its fork is gone.
         </Text>
         {change.mergeSha && (
           <Evidence size="sm" kind="note">

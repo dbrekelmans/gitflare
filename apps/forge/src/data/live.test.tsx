@@ -1,44 +1,11 @@
 import type { ChangeId, ThreadId } from "@gitflare/core";
-import type { LiveServerMessage } from "@gitflare/core/api";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { keys } from "./keys";
 import { useChangeLive, useThreadDraft } from "./live";
-
-/** Stands in for a browser `WebSocket`: records what was sent, and lets a test play the server's part. */
-class FakeWebSocket extends EventTarget {
-  static instances: FakeWebSocket[] = [];
-  readonly url: string;
-  readonly sent: string[] = [];
-  closed = false;
-
-  constructor(url: string) {
-    super();
-    this.url = url;
-    FakeWebSocket.instances.push(this);
-  }
-
-  send(data: string): void {
-    this.sent.push(data);
-  }
-
-  close(): void {
-    this.closed = true;
-    this.dispatchEvent(new Event("close"));
-  }
-
-  open(): void {
-    this.dispatchEvent(new Event("open"));
-  }
-
-  receive(message: LiveServerMessage): void {
-    const event = new Event("message") as Event & { data: string };
-    event.data = JSON.stringify(message);
-    this.dispatchEvent(event);
-  }
-}
+import { FakeWebSocket } from "./live.fake";
 
 beforeEach(() => {
   FakeWebSocket.instances = [];
@@ -131,5 +98,73 @@ describe("useChangeLive", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("useThreadDraft", () => {
+  const threadId = "thr_draft" as ThreadId;
+
+  function watchDraft(changeId: ChangeId) {
+    const { result, unmount } = renderHook(() => useThreadDraft(changeId, threadId), {
+      wrapper: wrapper(new QueryClient()),
+    });
+    const socket = FakeWebSocket.instances[0];
+    if (!socket) throw new Error("no socket was opened");
+    act(() => socket.open());
+    act(() => socket.receive({ type: "hello", changeId, lastSeq: 0 }));
+    const delta = (text: string) =>
+      act(() =>
+        socket.receive({ type: "signal", signal: { type: "thread.delta", threadId, text } }),
+      );
+    return { result, unmount, socket, delta };
+  }
+
+  it("follows a reply as it is typed, and drops it when the message arrives", () => {
+    const changeId = "chg_draft_a" as ChangeId;
+    const { result, unmount, socket, delta } = watchDraft(changeId);
+    expect(result.current).toBeNull();
+
+    delta("Pushing");
+    expect(result.current).toBe("Pushing");
+    delta("Pushing the fix.");
+    expect(result.current).toBe("Pushing the fix.");
+
+    act(() =>
+      socket.receive({
+        type: "event",
+        event: { type: "thread.message", changeId, seq: 1, at: 0, threadId, messageSeq: 4 },
+      }),
+    );
+    expect(result.current).toBeNull();
+    unmount();
+  });
+
+  it("drops a draft whose turn was discarded, though no message came", () => {
+    const changeId = "chg_draft_b" as ChangeId;
+    const { result, unmount, socket, delta } = watchDraft(changeId);
+    delta("Half a reply");
+
+    act(() =>
+      socket.receive({ type: "signal", signal: { type: "thread.draft_discarded", threadId } }),
+    );
+
+    expect(result.current).toBeNull();
+    unmount();
+  });
+
+  it("keeps another thread's draft when one is discarded", () => {
+    const changeId = "chg_draft_c" as ChangeId;
+    const { result, unmount, socket, delta } = watchDraft(changeId);
+    delta("Still writing");
+
+    act(() =>
+      socket.receive({
+        type: "signal",
+        signal: { type: "thread.draft_discarded", threadId: "thr_other" as ThreadId },
+      }),
+    );
+
+    expect(result.current).toBe("Still writing");
+    unmount();
   });
 });

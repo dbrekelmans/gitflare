@@ -14,10 +14,11 @@
 set -eu
 
 # Pinned: the agent's flags and event format change between releases, and the
-# capture format is tied to the CLI that wrote it.
+# capture format is tied to the CLI that wrote it. pnpm to the release too: a
+# major alone is whatever was newest the day the workspace was prepared.
 CLAUDE_CODE_VERSION=2.1.280
 ENTIRE_VERSION=0.11.3
-PNPM_VERSION=11
+PNPM_VERSION=11.12.0
 
 export DEBIAN_FRONTEND=noninteractive
 

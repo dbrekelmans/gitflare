@@ -9,13 +9,12 @@ import type {
 } from "@gitflare/core/ports";
 import {
   type EgressProps,
+  MODEL_GATEWAY_HOST,
   noContainer,
   resolveEgressTargets,
   SandboxController,
 } from "@gitflare/sandbox";
 import { getServices } from "../services";
-
-const GATEWAY_HOST = "gateway.ai.cloudflare.com";
 
 /**
  * One per sandbox, named by sandbox id: the Durable Object that owns one
@@ -36,7 +35,7 @@ export class SandboxRoom extends DurableObject<Env> {
       // Every HTTPS request the container makes arrives at `SandboxEgress`,
       // which is given the grants and nothing else: no token is in the props.
       applyEgress: async (grants) => {
-        const gateway = { host: GATEWAY_HOST, gatewayId: env.AI_GATEWAY_ID };
+        const gateway = { host: MODEL_GATEWAY_HOST, gatewayId: env.AI_GATEWAY_ID };
         const targets = await resolveEgressTargets(getServices(), grants, gateway);
         const props: EgressProps = { grants, targets };
         await ctx.container?.interceptOutboundHttps("*", ctx.exports.SandboxEgress({ props }));

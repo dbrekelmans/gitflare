@@ -29,6 +29,7 @@ export {
   type EgressTargets,
   egressMode,
   forwardEgress,
+  MODEL_GATEWAY_HOST,
   type ModelEgressCall,
   resolveEgressTargets,
 } from "./egress";

@@ -97,6 +97,11 @@ function ThreadRecord({
   const { thread } = view;
   const ref = { threadId: thread.id };
   const error = resolve.error ?? reopen.error ?? reclassify.error;
+  // Only the latest move's error stands: a move that follows a failed one
+  // clears what the failure said.
+  const clearOthers = (mutation: { reset: () => void }) => {
+    for (const other of [resolve, reopen, reclassify]) if (other !== mutation) other.reset();
+  };
   const by = settledByName(view);
 
   if (thread.kind === "chat") {
@@ -166,7 +171,10 @@ function ThreadRecord({
             size="sm"
             variant="outline"
             disabled={resolve.isPending}
-            onClick={() => resolve.mutate(ref)}
+            onClick={() => {
+              clearOthers(resolve);
+              resolve.mutate(ref);
+            }}
           >
             {resolve.isPending ? "Resolving…" : "Resolve"}
           </Button>
@@ -180,12 +188,13 @@ function ThreadRecord({
           variant="link"
           size="xs"
           disabled={reclassify.isPending}
-          onClick={() =>
+          onClick={() => {
+            clearOthers(reclassify);
             reclassify.mutate({
               ...ref,
               classification: otherDismissal(thread.dismissal ?? "not_a_problem"),
-            })
-          }
+            });
+          }}
         >
           {reclassify.isPending
             ? "Reclassifying…"
@@ -197,7 +206,10 @@ function ThreadRecord({
           variant="link"
           size="xs"
           disabled={reopen.isPending}
-          onClick={() => reopen.mutate(ref)}
+          onClick={() => {
+            clearOthers(reopen);
+            reopen.mutate(ref);
+          }}
         >
           {reopen.isPending ? "Reopening…" : "Reopen"}
         </Button>
@@ -237,6 +249,9 @@ export function ThreadBlock({
   const draft = useThreadDraft(changeId, thread.id);
   const title = threadTitle(view);
   const open = thread.status === "open";
+  // An open thread is never folded away: when someone reopens one the reader
+  // had collapsed, it opens here too, since it now holds up the merge.
+  if (open && !expanded) setExpanded(true);
 
   // A reply being typed is shown even on a thread the reader had collapsed.
   if (!expanded && draft === null) {
@@ -274,7 +289,7 @@ export function ThreadBlock({
               {draft !== null && (
                 <li aria-label="Reply being written">
                   <ChatTurn author={AGENT_NAME} activity="replying" streaming>
-                    <span className="whitespace-pre-wrap">{draft}</span>
+                    <MessageBody>{draft}</MessageBody>
                   </ChatTurn>
                 </li>
               )}
