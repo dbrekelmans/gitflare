@@ -1,0 +1,6 @@
+node_modules/
+.wrangler/
+.secrets.json
+.env
+out/
+worker-configuration.d.ts
