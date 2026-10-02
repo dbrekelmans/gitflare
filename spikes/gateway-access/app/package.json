@@ -1,0 +1,8 @@
+{
+	"name": "gitflare-spike-g-app",
+	"private": true,
+	"type": "module",
+	"dependencies": {
+		"jose": "6.2.12"
+	}
+}
