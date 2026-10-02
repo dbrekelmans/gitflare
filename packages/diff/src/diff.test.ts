@@ -278,6 +278,51 @@ describe("diffCommits", () => {
     expect(file?.hunks.length).toBe(3);
   });
 
+  it("reports a file too large to diff without hunks instead of spending the CPU", async () => {
+    const clock = new ManualClock();
+    const git = new FakeGit(clock);
+    const repo = "example";
+    void git.createRepo(repo);
+    // 6,000 lines that all change: 36 million pairs, over the default ceiling.
+    const lines = (prefix: string) =>
+      `${Array.from({ length: 6000 }, (_, i) => `${prefix} ${i}`).join("\n")}\n`;
+    const base = git.push(repo, "main", { "gen.txt": lines("old"), "a.txt": "a\n" }).after;
+    const head = git.push(repo, "main", { "gen.txt": lines("new"), "a.txt": "b\n" }).after;
+
+    const started = performance.now();
+    const diff = await diffCommits({ git }, repo, base, head);
+
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(diff.find((file) => file.path === "gen.txt")).toMatchObject({
+      binary: true,
+      insertions: 0,
+      deletions: 0,
+      hunks: [],
+    });
+    expect(diff.find((file) => file.path === "a.txt")?.hunks).toHaveLength(1);
+  });
+
+  it("measures the ceiling on the changed lines only, and takes it as an option", async () => {
+    const clock = new ManualClock();
+    const git = new FakeGit(clock);
+    const repo = "example";
+    void git.createRepo(repo);
+    const big = (middle: string) =>
+      `${Array.from({ length: 5000 }, (_, i) => (i === 2500 ? middle : `line ${i}`)).join("\n")}\n`;
+    const base = git.push(repo, "main", { "big.txt": big("before"), "s.txt": "1\n2\n3\n" }).after;
+    const head = git.push(repo, "main", { "big.txt": big("after"), "s.txt": "4\n5\n6\n" }).after;
+
+    const diff = await diffCommits({ git }, repo, base, head, { maxDiffCells: 4 });
+
+    // One changed line in 5,000 is one pair; three against three is nine.
+    expect(diff.find((file) => file.path === "big.txt")).toMatchObject({
+      binary: false,
+      insertions: 1,
+      deletions: 1,
+    });
+    expect(diff.find((file) => file.path === "s.txt")).toMatchObject({ binary: true, hunks: [] });
+  });
+
   it("gives a mid-file insertion with no context lines a real oldStart, not 0", async () => {
     const clock = new ManualClock();
     const git = new FakeGit(clock);
@@ -342,6 +387,41 @@ describe("mergeBase", () => {
 
     expect(await mergeBase({ git }, repo, bTip, merge.sha)).toBe(m3);
     expect(await mergeBase({ git }, repo, merge.sha, bTip)).toBe(m3);
+  });
+});
+
+describe("mergeBase over a long history", () => {
+  /** 3,000 commits on main, a branch from the 2,990th, and main five further on. */
+  function longHistory(secondsApart: number) {
+    const clock = new ManualClock();
+    const git = new FakeGit(clock);
+    const repo = "example";
+    void git.createRepo(repo);
+    let fork = "";
+    for (let i = 0; i < 2990; i++) {
+      clock.advance(secondsApart * 1000);
+      fork = git.push(repo, "main", { "a.txt": `${i}` }).after;
+    }
+    clock.advance(secondsApart * 1000);
+    const branch = git.push(repo, "b", { "b.txt": "b" }).after;
+    let main = fork;
+    for (let i = 0; i < 5; i++) {
+      clock.advance(secondsApart * 1000);
+      main = git.push(repo, "main", { "a.txt": `m${i}` }).after;
+    }
+    const reads = vi.spyOn(git, "readCommit");
+    return { git, repo, fork, branch, main, reads };
+  }
+
+  it.each([
+    ["dated commits", 1],
+    ["commits that share one date", 0],
+  ])("reads the commits since the fork, not both histories, for %s", async (_name, apart) => {
+    const { git, repo, fork, branch, main, reads } = longHistory(apart);
+
+    expect(await mergeBase({ git }, repo, main, branch)).toBe(fork);
+    expect(await mergeBase({ git }, repo, branch, main)).toBe(fork);
+    expect(reads.mock.calls.length).toBeLessThan(60);
   });
 });
 
