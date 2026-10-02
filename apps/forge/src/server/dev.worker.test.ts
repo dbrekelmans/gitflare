@@ -38,7 +38,7 @@ it("signs the demo's viewer in from the seeded database", async () => {
 });
 
 it("reaches the Durable Objects and Workflows the config declares", async () => {
-  expect((await env.CHANGE_ROOM.getByName("chg_1").fetch("https://forge/live")).status).toBe(501);
+  expect((await env.CHANGE_ROOM.getByName("chg_1").fetch("https://forge/live")).status).toBe(426);
   expect(env.THREAD_ROOM.getByName("thr_1")).toBeDefined();
   expect(env.CHANGE_PIPELINE).toBeDefined();
   expect(env.CI).toBeDefined();
