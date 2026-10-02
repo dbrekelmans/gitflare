@@ -1,16 +1,24 @@
 import { mainRepoName } from "@gitflare/core";
 import { schema } from "@gitflare/db";
 import { eq } from "drizzle-orm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   approveSection,
   closeChange,
   endSession,
   handlePush,
   mergeChange,
+  type PushResult,
   revokeApproval,
 } from "./index";
-import { createWorld, findingOn, readyChange, type World } from "./world";
+import {
+  createWorld,
+  findingOn,
+  readyChange,
+  runStages,
+  sectionPerFile,
+  type World,
+} from "./world";
 
 const sections = (world: World) =>
   world.db.select().from(schema.sections).orderBy(schema.sections.position);
@@ -109,15 +117,75 @@ describe("mergeChange", () => {
     expect(live.events).toHaveLength(events);
   });
 
-  it("merges the reviewed head, not a later push nobody has seen", async () => {
+  it("waits for a push the change has not taken in, rather than delete it with the fork", async () => {
     const world = await createWorld();
+    const { git } = world.ports;
     const { changeId } = await readyChange(world, { "src/b.ts": "reviewed\n" });
     await approveAll(world, changeId);
-    world.push({ "src/b.ts": "unreviewed\n" });
+    const unseen = world.push({ "src/b.ts": "unreviewed\n" });
 
+    const refusal = await mergeChange(world.deps, world.reviewer, changeId).catch((error) => error);
+
+    expect(refusal).toMatchObject({ code: "not_ready" });
+    expect(refusal.message).toMatch(/a push that is not part of the change yet/);
+    expect(await git.resolveRef("app", "main")).toBe(world.base);
+    expect(await git.getRepo(world.session.forkRepo)).not.toBeNull();
+    expect(await world.change(changeId)).toMatchObject({ status: "ready", mergedAt: null });
+
+    // Once the push is a revision, its section needs approving again, and then it merges.
+    await runStages(world, await handlePush(world.deps, unseen), { sections: sectionPerFile });
+    await approveAll(world, changeId);
     await mergeChange(world.deps, world.reviewer, changeId);
+    expect(await git.text("app", "main", "src/b.ts")).toBe("unreviewed\n");
+  });
 
-    expect(await world.ports.git.text("app", "main", "src/b.ts")).toBe("reviewed\n");
+  it("records the merge when a push is handled while git is merging", async () => {
+    const world = await createWorld();
+    const { git, live } = world.ports;
+    const reviewed = await readyChange(world, { "src/b.ts": "reviewed\n" });
+    const { changeId } = reviewed;
+    await approveAll(world, changeId);
+    const before = await world.change(changeId);
+
+    // A comment's agent pushes a fix to the fork, and it is handled, mid-merge.
+    const merge = git.merge.bind(git);
+    let late: PushResult | undefined;
+    vi.spyOn(git, "merge").mockImplementation(async (request) => {
+      late = await handlePush(world.deps, world.push({ "src/b.ts": "late\n" }));
+      return merge(request);
+    });
+    const merged = await mergeChange(world.deps, world.reviewer, changeId);
+
+    expect(late).toMatchObject({ kind: "change", opened: false });
+    expect(merged).toMatchObject({
+      status: "merged",
+      mergedBy: world.reviewer.id,
+      mergeSha: await git.resolveRef("app", "main"),
+      // What merged is what was reviewed, and the change says so.
+      headSha: before.headSha,
+      headRevisionId: reviewed.revisionId,
+    });
+    expect(merged.mergedAt).not.toBeNull();
+    expect(await git.text("app", "main", "src/b.ts")).toBe("reviewed\n");
+    expect(await world.sessionRow()).toMatchObject({ status: "merged" });
+    expect(live.types(changeId).slice(-2)).toEqual(["change.merged", "change.status"]);
+
+    // The late push's stages have nothing to work on: they are skipped, not run.
+    let ran = false;
+    if (late?.kind !== "change") throw new Error("the late push was not handled");
+    await runStages(world, late, {
+      intent: async () => {
+        ran = true;
+        return { status: "succeeded" };
+      },
+    });
+    expect(ran).toBe(false);
+    const lateRuns = (await world.stageRuns(changeId)).filter(
+      (run) => run.revisionId !== reviewed.revisionId,
+    );
+    expect(lateRuns.map((run) => run.status)).toEqual(["skipped", "skipped", "skipped", "skipped"]);
+    expect(lateRuns[0]?.reason).toMatch(/merged/);
+    expect((await world.change(changeId)).status).toBe("merged");
   });
 });
 

@@ -198,6 +198,28 @@ describe("handlePush", () => {
     );
   });
 
+  it("leaves a change that was closed while its push was being handled as it was", async () => {
+    const world = await createWorld();
+    const first = changeOf(await handlePush(world.deps, world.push({ "src/b.ts": "1\n" })));
+    const { diffs, live } = world.ports;
+    const between = diffs.between.bind(diffs);
+    // The change is read as open, and is closed before the revision is written.
+    vi.spyOn(diffs, "between").mockImplementation(async (...args) => {
+      await world.db.update(schema.changes).set({ status: "closed" });
+      return between(...args);
+    });
+    const events = live.events.length;
+
+    const result = await handlePush(world.deps, world.push({ "src/b.ts": "2\n" }));
+
+    expect(result).toMatchObject({ kind: "ignored", reason: expect.stringMatching(/ended/) });
+    expect(await world.change(first.changeId)).toMatchObject({
+      status: "closed",
+      headRevisionId: first.revisionId,
+    });
+    expect(live.events).toHaveLength(events);
+  });
+
   it("ignores what is not a session's change", async () => {
     const world = await createWorld();
     const { git } = world.ports;

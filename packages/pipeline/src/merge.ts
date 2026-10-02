@@ -15,7 +15,7 @@ import {
   type User,
 } from "@gitflare/core";
 import { type Db, schema, toChange, toSection } from "@gitflare/db";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import {
   type ChangeRow,
   emit,
@@ -98,7 +98,18 @@ export async function mergeChange(
       .where(eq(repositories.id, change.repositoryId));
     if (!repository) throw new ForgeError("not_found", "Repository not found.");
 
-    // The reviewed head, not the fork's tip: a push not yet handled is not merged.
+    // What merges is what was reviewed. A push the change has not taken in yet would be
+    // deleted with the fork, so the merge waits for it to become a revision.
+    const tip = await deps.git.resolveRef(
+      session.forkRepo,
+      change.headRef.replace(/^refs\/heads\//, ""),
+    );
+    if (tip && tip !== change.headSha) {
+      throw new ForgeError(
+        "not_ready",
+        `Change #${change.number} cannot merge yet: its branch has a push that is not part of the change yet.`,
+      );
+    }
     const result = await deps.gitWriter.merge({
       target: { repo: mainRepoName(repository.slug), branch: repository.defaultBranch },
       source: { repo: session.forkRepo, sha: change.headSha },
@@ -118,10 +129,19 @@ export async function mergeChange(
         .update(repositories)
         .set({ headSha: result.sha })
         .where(eq(repositories.id, repository.id)),
+      // Main has the merge now, whatever happened to the change meanwhile. A push
+      // handled while git was merging moved the head: put it back on what merged.
       db
         .update(changes)
-        .set({ status, mergedAt: deps.clock.now(), mergedBy: user.id, mergeSha: result.sha })
-        .where(and(eq(changes.id, changeId), eq(changes.status, change.status)))
+        .set({
+          status,
+          headSha: change.headSha,
+          headRevisionId: change.headRevisionId,
+          mergedAt: deps.clock.now(),
+          mergedBy: user.id,
+          mergeSha: result.sha,
+        })
+        .where(and(eq(changes.id, changeId), ne(changes.status, status)))
         .returning({ id: changes.id }),
     ]);
     if (merged.length > 0) {

@@ -220,7 +220,7 @@ async function moveHead(
     transitionChange(change.status, "revision_pushed"),
     "pipeline_started",
   );
-  await commit(db, [
+  const results = await commit(db, [
     ...records,
     db.insert(stageRuns).values(stages),
     db
@@ -228,8 +228,14 @@ async function moveHead(
       .set({ headSha: revision.headSha, headRevisionId: revision.id, status, readyAt: null })
       .where(
         and(eq(changes.id, change.id), inArray(changes.status, ["open", "processing", "ready"])),
-      ),
+      )
+      .returning({ id: changes.id }),
   ]);
+  // Merged or closed since it was read: the head stays where it was, and the
+  // revision just written is never the head, so its stages are skipped.
+  if ((results.at(-1) as unknown[]).length === 0) {
+    return ignored("the change ended while the push was being handled");
+  }
   await emit(deps, change.id, {
     type: "revision.pushed",
     revisionId: revision.id,

@@ -197,17 +197,31 @@ describe("settleChange", () => {
     expect((await threads())[0]?.sectionId).toBe(section?.id);
   });
 
-  it("does not call a change ready for the stages of a revision that is no longer its head", async () => {
+  it("skips the stages of a revision a later push replaced, and does not call the change ready for them", async () => {
     const world = await createWorld();
     const first = await opened(world);
-    for (const stage of ["intent", "sections", "review"] as const) {
+    for (const stage of ["intent", "sections"] as const) {
       await runStage(world.deps, succeed, null, first.input(stage));
     }
+    // Review is half way through when the next push arrives.
+    await startStage(world.deps, first.input("review"));
     await handlePush(world.deps, world.push({ "src/b.ts": "export const b = 2;\n" }));
 
-    await runStage(world.deps, succeed, null, first.input("ci"));
+    let calls = 0;
+    const counting: StageHandler<unknown> = async () => {
+      calls++;
+      return { status: "succeeded" };
+    };
+    const review = await runStage(world.deps, counting, null, first.input("review"));
+    const ci = await startStage(world.deps, first.input("ci"));
     const change = await settleChange(world.deps, first.changeId);
 
+    expect(calls).toBe(0);
+    expect(review).toMatchObject({
+      status: "skipped",
+      reason: "A later push replaced this revision.",
+    });
+    expect(ci.status).toBe("skipped");
     expect(change.status).toBe("processing");
     expect(change.readyAt).toBeNull();
   });

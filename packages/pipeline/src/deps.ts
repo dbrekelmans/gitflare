@@ -45,9 +45,9 @@ export function emit(
 }
 
 /** `db.batch` for a list built at run time: D1's only way to commit statements together. */
-export async function commit(db: Db, statements: BatchItem<"sqlite">[]): Promise<void> {
+export async function commit(db: Db, statements: BatchItem<"sqlite">[]): Promise<unknown[]> {
   const [first, ...rest] = statements;
-  if (first) await db.batch([first, ...rest]);
+  return first ? db.batch([first, ...rest]) : [];
 }
 
 /** D1 allows 100 bound parameters per statement; this keeps a multi-row insert under it. */

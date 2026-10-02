@@ -1,5 +1,5 @@
 /// <reference types="@cloudflare/vitest-plugin/types" />
-import { introspectWorkflowInstance } from "cloudflare:test";
+import { introspectWorkflow } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   ARTIFACTS_PUSH_EVENT,
@@ -99,16 +99,27 @@ async function world(ci: CiFinishedPayload | null = { status: "succeeded" }) {
   };
   pipelineRuntime.create = () => runtime;
 
-  /** Starts an instance and waits for it to finish, with sleeps skipped. */
-  async function run(params: PipelineParams, options: { ciTimesOut?: boolean } = {}) {
-    const id = `test-${crypto.randomUUID()}`;
-    await using instance = await introspectWorkflowInstance(env.CHANGE_PIPELINE, id);
-    await instance.modify(async (modifier) => {
+  /**
+   * Starts one instance per delivery, all at once, and waits for them and for
+   * every instance they start in turn, with sleeps skipped.
+   */
+  async function run(
+    deliveries: PipelineParams | PipelineParams[],
+    options: { ciTimesOut?: boolean } = {},
+  ) {
+    await using introspector = await introspectWorkflow(env.CHANGE_PIPELINE);
+    await introspector.modifyAll(async (modifier) => {
       await modifier.disableSleeps();
       if (options.ciTimesOut) await modifier.forceEventTimeout({ name: "wait for ci" });
     });
-    await env.CHANGE_PIPELINE.create({ id, params });
-    await instance.waitForStatus("complete");
+    await Promise.all([deliveries].flat().map((params) => env.CHANGE_PIPELINE.create({ params })));
+    let waited = 0;
+    for (let instances = await introspector.get(); waited < instances.length; ) {
+      for (const instance of instances.slice(waited)) await instance.waitForStatus("complete");
+      waited = instances.length;
+      instances = await introspector.get();
+    }
+    return waited;
   }
 
   return {
@@ -177,6 +188,39 @@ it("accepts the raw Artifacts event, and does nothing the second time it is deli
   expect(calls).toHaveLength(ran);
   expect(await stages(opened.id)).toHaveLength(4);
   expect(await change()).toEqual(opened);
+});
+
+it("runs each stage once when the same push is delivered twice at the same time", async () => {
+  const { run, push, change, stages, calls } = await world();
+  const delivery: PipelineParams = { kind: "push", push: push({ "src/b.ts": "b\n" }) };
+
+  // Two deliveries, and the one instance they both hand the stages to.
+  expect(await run([delivery, delivery])).toBe(3);
+
+  expect([...calls].sort()).toEqual(["ci", "intent", "review", "sections"]);
+  const opened = await change();
+  expect(opened.status).toBe("ready");
+  expect(await stages(opened.id)).toHaveLength(4);
+});
+
+it("runs a re-run once when it is asked for twice at the same time", async () => {
+  const { run, push, change, stages, calls, runtime } = await world();
+  await run({ kind: "push", push: push({ "src/b.ts": "b\n" }) });
+  const opened = await change();
+  runtime.stages.review = async () => {
+    calls.push("review");
+    return { status: "succeeded" };
+  };
+  const before = calls.length;
+  const rerun: PipelineParams = { kind: "rerun", changeId: opened.id, stage: "review" };
+
+  await run([rerun, rerun]);
+
+  expect(calls.slice(before)).toEqual(["review"]);
+  expect((await stages(opened.id)).filter(([stage]) => stage === "review")).toEqual([
+    ["review", 1, "failed", "the model is unavailable"],
+    ["review", 2, "succeeded", null],
+  ]);
 });
 
 it("waits a bounded time for the checkpoints the commits name, then goes on", async () => {

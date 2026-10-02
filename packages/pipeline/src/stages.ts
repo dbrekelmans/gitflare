@@ -98,9 +98,27 @@ function settle(deps: StageDeps, run: StageRun, outcome: Settlement): Promise<St
   });
 }
 
-/** Marks a queued attempt as running: for a stage whose work happens elsewhere, as CI's does. */
+/** Why an attempt's work is no longer wanted, if it is not. */
+async function superseded(deps: StageDeps, run: StageRun): Promise<string | null> {
+  const change = await requireChange(deps.db, run.changeId);
+  if (change.status === "merged" || change.status === "closed") {
+    return `The change was ${change.status} before this stage ran.`;
+  }
+  if (change.headRevisionId !== run.revisionId) return "A later push replaced this revision.";
+  return null;
+}
+
+/**
+ * Marks a queued attempt as running: for a stage whose work happens elsewhere,
+ * as CI's does. An attempt for a revision that is no longer the change's head,
+ * or for a change that has ended, is skipped instead; the caller sees that in
+ * the returned status.
+ */
 export async function startStage(deps: StageDeps, input: StageInput): Promise<StageRun> {
   const run = await loadRun(deps, input);
+  if (isStageSettled(run.status)) return run;
+  const reason = await superseded(deps, run);
+  if (reason) return settle(deps, run, { status: "skipped", reason });
   return run.status === "queued" ? begin(deps, run) : run;
 }
 
@@ -110,9 +128,11 @@ export async function startStage(deps: StageDeps, input: StageInput): Promise<St
  * each transition. Never throws for a failing handler; the returned run says
  * what happened.
  *
- * An attempt that already settled is returned as it is. One found running is
- * run again: that is a Workflow step retried after it died half way, which is
- * why handlers must be idempotent.
+ * An attempt that already settled is returned as it is, and one that a later
+ * push or the end of the change made pointless is skipped. One found running
+ * is run again: that is a Workflow step retried after it died half way, which
+ * is why handlers must be idempotent, and why the caller must be the only one
+ * running the attempt (the Workflow sees to that; see `change-pipeline.ts`).
  */
 export async function runStage<Deps>(
   deps: PipelineDeps,

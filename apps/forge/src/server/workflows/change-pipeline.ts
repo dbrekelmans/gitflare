@@ -47,20 +47,27 @@ export const pipelineRuntime: { create: () => PipelineRuntime } = {
   create: () => ({
     services: getServices(),
     stages: { intent: runIntentStage, sections: runSectionsStage, review: runReviewStage },
-    async startCi(env, params) {
-      // The attempt's id is the instance's: a retried step finds the instance it already started.
-      try {
-        await env.CI.create({ id: params.stageRunId, params });
-      } catch (error) {
-        const started = await env.CI.get(params.stageRunId).catch(() => null);
-        if (!started) throw error;
-      }
-    },
+    // The attempt's id is the instance's: a retried step finds the instance it already started.
+    startCi: (env, params) => ensureInstance(env.CI, params.stageRunId, params),
   }),
 };
 
-// A stage that fails is recorded as failed by `runStage`; what is retried here is the bookkeeping.
-const stageStep = { timeout: "15 minutes" } as const;
+/** Creates the instance with this id unless it exists: an id can be used once. */
+async function ensureInstance<Params>(
+  workflow: Workflow<Params>,
+  id: string,
+  params: Params,
+): Promise<void> {
+  try {
+    await workflow.create({ id, params });
+  } catch (error) {
+    if (!(await workflow.get(id).catch(() => null))) throw error;
+  }
+}
+
+// A stage that fails is recorded as failed by `runStage`. A retry here is for the
+// bookkeeping around it, and one is enough: a handler that hangs is not asked a third time.
+const stageStep = { retries: { limit: 1, delay: "5 seconds" }, timeout: "15 minutes" } as const;
 // Capture is evidence, never a gate: one quick retry, then on without it.
 const checkpointStep = { retries: { limit: 1, delay: "1 second" }, timeout: "30 seconds" } as const;
 /** Long enough for any CI run; after it the stage is failed so the change is not left processing. */
@@ -90,6 +97,12 @@ function inputOf(run: StageRun): StageInput {
  * stage handlers: handle the push; wait briefly for checkpoints; run intent,
  * sections and review in parallel while the CI Workflow runs; settle the
  * change. All logic and every database write lives in the packages.
+ *
+ * Several instances can hold the same queued stage runs: the same push
+ * delivered twice, two pushes that both read the newer tip, a re-run asked
+ * for twice. Exactly one runs them: the instance whose id is derived from the
+ * runs. Any other instance creates that one, which the platform does at most
+ * once per id, and ends.
  * Build task: `pipeline`.
  */
 export class ChangePipelineWorkflow extends WorkflowEntrypoint<Env, PipelineParams> {
@@ -102,6 +115,7 @@ export class ChangePipelineWorkflow extends WorkflowEntrypoint<Env, PipelinePara
       const run = await step.do("queue the re-run", () =>
         once(() => queueStageRerun(services, params.changeId, params.stage)),
       );
+      if (await this.handOver(step, event.instanceId, run, params)) return;
       await this.runStages(runtime, step, event.instanceId, [run]);
       return;
     }
@@ -110,11 +124,28 @@ export class ChangePipelineWorkflow extends WorkflowEntrypoint<Env, PipelinePara
       once(() => handlePush(services, params.push)),
     );
     if (result.kind !== "change") return;
-    // A push delivered twice finds its stages already taken.
+    // A push delivered after its stages started has nothing left to run.
     const queued = result.stages.filter((run) => run.status === "queued");
-    if (queued.length === 0) return;
+    const [first] = result.stages;
+    if (queued.length === 0 || !first) return;
+    if (await this.handOver(step, event.instanceId, first, params)) return;
     await this.waitForCheckpoints(services, step, result.changeId);
     await this.runStages(runtime, step, event.instanceId, queued);
+  }
+
+  /** True when another instance runs these stages: this one has made sure it exists. */
+  private async handOver(
+    step: WorkflowStep,
+    instanceId: string,
+    first: StageRun,
+    params: PipelineParams,
+  ): Promise<boolean> {
+    const runner = `stages-${first.id}`;
+    if (instanceId === runner) return false;
+    await step.do("hand the stages to their runner", () =>
+      ensureInstance(this.env.CHANGE_PIPELINE, runner, params),
+    );
+    return true;
   }
 
   private async waitForCheckpoints(
@@ -132,8 +163,9 @@ export class ChangePipelineWorkflow extends WorkflowEntrypoint<Env, PipelinePara
         if (missing.length === 0 || waited >= CHECKPOINT_WAIT_MS) return;
         await step.sleep(`wait for checkpoints after ${waited} ms`, CHECKPOINT_POLL_MS);
       }
-    } catch {
+    } catch (error) {
       // The change page says which checkpoints are missing; the stages run without them.
+      console.warn(`change ${changeId}: gave up waiting for checkpoints`, error);
     }
   }
 
@@ -177,10 +209,14 @@ export class ChangePipelineWorkflow extends WorkflowEntrypoint<Env, PipelinePara
     input: StageInput,
   ): Promise<void> {
     const { services } = runtime;
-    await step.do("start ci", async () => {
-      await startStage(services, input);
+    const started = await step.do("start ci", async () => {
+      const run = await startStage(services, input);
+      if (run.status !== "running") return false;
       await runtime.startCi(this.env, { ...input, notifyInstanceId: instanceId });
+      return true;
     });
+    // Skipped: a later push replaced the revision, or the change ended.
+    if (!started) return;
     const outcome = await step
       .waitForEvent<CiFinishedPayload>("wait for ci", {
         type: CI_FINISHED_EVENT,
