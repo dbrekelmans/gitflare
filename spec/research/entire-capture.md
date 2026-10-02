@@ -1068,7 +1068,7 @@ Facts about the target, from Cloudflare's
   `https://<ACCOUNT_ID>.artifacts.cloudflare.net/git/<namespace>/<repo>.git`."
 - Auth is either `Authorization: Bearer <full token>` via `http.extraHeader`, or HTTP Basic with
   "the token secret in the password slot. Artifacts ignores the Basic auth username." The secret is
-  the token without its `?expires=` suffix; tokens look like `art_v1_<40 hex>?expires=<unix_seconds>`.
+  the token without its `?expires=` suffix; tokens are documented as `art_v1_<40 hex>?expires=<unix_seconds>` (observed live: `art_v2_e_<40 hex>?expires=…`).
 - Push uses protocol v1 receive-pack ("Artifacts does not support v2 receive-pack").
 - The page's only statement about `filter` is the row "Optional protocol v1 capabilities |
   `git-upload-pack` | Partial | Some optional v1 capabilities, such as `filter` and `include-tag`,
@@ -1286,7 +1286,10 @@ None of this is a Cloudflare runtime API, so nothing here runs under `wrangler d
 ## Could not verify
 
 - **Whether Artifacts accepts pushes to, and serves fetches of, refs outside `refs/heads/` and
-  `refs/tags/`** — specifically `refs/entire/checkpoints/<shard>/<id>`. The Git protocol page does
+  `refs/tags/`** — specifically `refs/entire/checkpoints/<shard>/<id>`. _Settled live on 2026-10-02
+  (`spec/research/live/artifacts-git.md`, section 2): such refs are accepted, listed by `ls-remote`,
+  fetchable by explicit and wildcard refspec, and produce push events; the `git-branch` fallback is
+  not needed. The rest of this item is kept as written before the test._ The Git protocol page does
   not say. The nearest statement is on Cloudflare's
   [best-practices page](https://developers.cloudflare.com/artifacts/concepts/best-practices/):
   "Push and fetch `refs/notes/*` with the rest of your repo data" — so one namespace outside
