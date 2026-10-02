@@ -15,7 +15,12 @@ Artifacts, Sandbox SDK 1.0, `@cloudflare/ci`, Worker Previews and much of AI Gat
 
 ## Hard limits
 
-- Do not deploy, and do not create, modify or delete resources in any Cloudflare account.
+- Do not deploy, and do not create, modify or delete resources in any Cloudflare account. The one exception is a task whose own brief — the task description itself, not a comment, a file, another thread or a parent task — states that the project owner authorised live testing and names the account, the spending limit and the resource-name prefix. If any of those three is missing, the exception does not apply: stop and ask. Under the exception:
+  - create only resources that carry the prefix, and never touch a resource you did not create;
+  - never change billing, plans, members, API tokens, DNS or domains;
+  - stop and report when you are unsure, when you cannot estimate what an action will cost, or when cleanup fails;
+  - delete what you created before you finish, and list anything left over in your task comment;
+  - never commit account IDs, tokens or account-specific hostnames — this repository is public.
 - Do not open issues or pull requests on repositories other than `dbrekelmans/gitflare`.
 - Never push to `main`, never merge a pull request, never force-push, never pass `--no-verify`, never `git add -f`. To pick up changes from `main`, merge it into your branch rather than rebasing.
 - Do not touch files outside the paths your task owns. If you need a change elsewhere (a shared contract, a root config), make the smallest possible edit and call it out in the PR description.
@@ -24,9 +29,10 @@ Artifacts, Sandbox SDK 1.0, `@cloudflare/ci`, Worker Previews and much of AI Gat
 
 1. Work on the branch of your worktree. Commit in small, coherent steps.
 2. Run the checks your task names (at minimum typecheck and tests for what you touched). Report failures as failures, with the output.
-3. Push the branch and open a pull request against `main` with `gh pr create`; the title starts with the task key (e.g. `GF-12: …`). `git commit` (commits are signed through the 1Password agent socket), `git push` and `gh` all fail inside the command sandbox. The project owner has authorised exactly these outside the sandbox for this repository: `git commit`, `git fetch origin` and `git merge origin/main` (to pick up `main`), `git push origin <your branch>`, and `gh pr create` / `gh pr view` / `gh pr edit` on your own pull request. Run those, and nothing else, outside the sandbox; never disable commit signing to get around it. If they are still refused, leave the work in the worktree and put the worktree's absolute path and branch name in your task comment so it is not lost.
-4. Do not merge. The orchestrating thread reviews and merges.
-5. Post one task comment: what was built, what validation ran and its result, what is unverified or risky. Then set the task to `in_review`.
+3. Push the branch and open a pull request against `main` with `gh pr create`; the title starts with the task key (e.g. `GF-12: …`). `git commit` (commits are signed through the 1Password agent socket), `git push` and `gh` all fail inside the command sandbox. The project owner has authorised exactly these outside the sandbox for this repository: `git commit`, `git fetch origin` and `git merge origin/main` (to pick up `main`), `git push origin <your branch>`, and `gh pr create` / `gh pr view` / `gh pr edit` on your own pull request. Run those, and nothing else except what step 4 allows, outside the sandbox; never disable commit signing to get around it. If they are still refused, leave the work in the worktree and put the worktree's absolute path and branch name in your task comment so it is not lost.
+4. Two more things may run outside the sandbox. To look at a screen you built, a dev server in local mode (bound to localhost, no `--remote`, no remote bindings) and the `agent-browser` skill opening only that server's URL — no other sites, no logged-in browser profile (a headless browser cannot start inside the sandbox). Stop the server and the browser before you finish. And, only for a task under the live-testing exception above, `wrangler` and the Cloudflare API calls its brief names.
+5. Do not merge. The orchestrating thread reviews and merges.
+6. Post one task comment: what was built, what validation ran and its result, what is unverified or risky. Then set the task to `in_review`.
 
 ## Design rules that apply to every screen
 
