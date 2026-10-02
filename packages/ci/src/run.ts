@@ -56,11 +56,35 @@ export type CiStart =
 export const CI_WORKDIR = "/workspace/repo";
 
 /**
- * The hosts a CI sandbox may read from besides its repository: the registry
- * of the package managers the workspace ships (npm and pnpm). Each is named;
+ * The hosts every CI sandbox may read from besides its repository: the
+ * registry of the package managers the workspace ships (npm and pnpm). A
+ * repository names any others in its CI file (`egress.hosts`). Each is named;
  * a host grant of `*` would open the whole Internet with nothing intercepted.
  */
 export const CI_REGISTRY_HOSTS = ["registry.npmjs.org"];
+
+/**
+ * The sandbox could not be asked, but has not stopped: the call that threw
+ * is safe to repeat and should be. Not a `ForgeError`, which the caller takes
+ * as a refusal that a retry would only repeat.
+ */
+export class CiInterrupted extends Error {
+  constructor(cause: unknown) {
+    super(describe(cause), { cause });
+    this.name = "CiInterrupted";
+  }
+}
+
+/** A start that will fail the same way however often it is tried: the run's own failure. */
+class CiRefusal extends ForgeError {}
+
+/**
+ * What a sandbox call threw, made safe to hand to the caller: the sandbox's
+ * `unavailable` is infrastructure, not a verdict on the run, so it is retried.
+ */
+function interrupted(error: unknown): unknown {
+  return error instanceof ForgeError ? new CiInterrupted(error) : error;
+}
 
 /**
  * Checks commit `$3` of remote `$2` out in a fresh directory `$1`. `$4` is
@@ -221,8 +245,12 @@ async function moveStep(
   return moved;
 }
 
-/** Closes a run: every step that has no result is cancelled, and the run takes its steps' verdict. */
-async function settleRun(deps: EventDeps, run: RunRow): Promise<CiStep[]> {
+/**
+ * Closes a run: every step that has no result is cancelled, and the run takes
+ * its steps' verdict. With a `reason`, the run failed before its steps could
+ * say anything, and it is kept as the run's answer.
+ */
+async function settleRun(deps: EventDeps, run: RunRow, reason?: string): Promise<CiStep[]> {
   const { db, clock } = deps;
   const cancelled = await db
     .update(ciSteps)
@@ -231,10 +259,11 @@ async function settleRun(deps: EventDeps, run: RunRow): Promise<CiStep[]> {
     .returning();
   for (const step of cancelled) await emitStep(deps, run, step);
   const steps = await stepsOf(db, run.id);
-  const status = steps.every((step) => step.status === "succeeded") ? "succeeded" : "failed";
+  const status =
+    !reason && steps.every((step) => step.status === "succeeded") ? "succeeded" : "failed";
   await db
     .update(ciRuns)
-    .set({ status, finishedAt: clock.now() })
+    .set({ status, reason: reason ?? null, finishedAt: clock.now() })
     .where(and(eq(ciRuns.id, run.id), inArray(ciRuns.status, ["queued", "running"])));
   return steps;
 }
@@ -245,6 +274,15 @@ async function settleRun(deps: EventDeps, run: RunRow): Promise<CiStep[]> {
  */
 async function sandboxIsUp(sandbox: Sandbox): Promise<boolean> {
   return sandbox.isRunning().catch(() => true);
+}
+
+async function stopSandbox(deps: Pick<CiDeps, "sandboxes">, runId: CiRunId): Promise<void> {
+  await deps.sandboxes
+    .get(sandboxIdOf(runId))
+    .stop()
+    .catch((error: unknown) => {
+      throw interrupted(error);
+    });
 }
 
 async function createRun(deps: CiDeps, input: StageInput, config: CiConfig): Promise<RunRow> {
@@ -299,13 +337,14 @@ async function prepareSandbox(
   const { pollMs = 2_000, setupTimeoutSeconds = 900 } = options;
   const repo = await deps.git.getRepo(source.forkRepo);
   if (!repo) {
-    throw new ForgeError("not_found", `The fork ${source.forkRepo} no longer exists.`);
+    throw new CiRefusal("not_found", `The fork ${source.forkRepo} no longer exists.`);
   }
   const sandbox = deps.sandboxes.get(sandboxIdOf(run.id));
   if (!(await sandbox.isRunning())) {
+    const hosts = new Set([...CI_REGISTRY_HOSTS, ...config.egress.hosts]);
     const egress: EgressGrant[] = [
       { kind: "git", repo: source.forkRepo, scope: "read" },
-      ...CI_REGISTRY_HOSTS.map((host): EgressGrant => ({ kind: "host", host })),
+      ...[...hosts].map((host): EgressGrant => ({ kind: "host", host })),
     ];
     await sandbox.start({ ...boot, instance: config.instance, egress });
   }
@@ -328,7 +367,7 @@ async function prepareSandbox(
       { timeoutSeconds: CHECKOUT_TIMEOUT_SECONDS },
     );
     if (checkout.exitCode !== 0) {
-      throw new ForgeError(
+      throw new CiRefusal(
         "unavailable",
         `CI could not check the commit out (exit code ${checkout.exitCode}): ${tail(checkout.stderr).trim()}`,
       );
@@ -348,7 +387,7 @@ async function prepareSandbox(
   if (setup?.exitCode !== 0) {
     const { text } = await sandbox.readLog(SETUP_PROCESS, "stdout", 0);
     const how = setup ? `exit code ${setup.exitCode}` : "the sandbox lost it";
-    throw new ForgeError(
+    throw new CiRefusal(
       "unavailable",
       `The setup command failed (${how}): ${text.slice(-2_000).trim()}`,
     );
@@ -361,8 +400,10 @@ async function prepareSandbox(
  *
  * Nothing is recorded for a change with no CI file, a CI file that does not
  * parse, or a workspace nobody has prepared: the first is skipped and the
- * others throw. A run whose sandbox, checkout or setup fails is closed, with
- * its steps cancelled, before the failure is thrown.
+ * others throw. A run whose checkout or setup fails is closed, with its steps
+ * cancelled and the failure as its `reason`, before the failure is thrown;
+ * calling again throws that reason again. A sandbox that could not be asked
+ * throws `CiInterrupted`, and the run is left for the retry.
  */
 export async function startCiRun(
   deps: CiDeps,
@@ -378,6 +419,11 @@ export async function startCiRun(
   const waves = planSteps(config);
 
   const [existing] = await db.select().from(ciRuns).where(eq(ciRuns.stageRunId, input.stageRunId));
+  if (existing?.reason) {
+    // Refused by an earlier call, whose stop may be what failed.
+    await stopSandbox(deps, existing.id);
+    throw new CiRefusal("unavailable", existing.reason);
+  }
   if (existing && existing.status !== "queued") {
     return { status: "started", run: toRun(existing), waves };
   }
@@ -393,9 +439,9 @@ export async function startCiRun(
     await prepareSandbox(deps, run, source, config, boot, options);
   } catch (error) {
     // A refusal will not go away on a retry; anything else is tried again.
-    if (!(error instanceof ForgeError)) throw error;
-    await settleRun(deps, run);
-    await deps.sandboxes.get(sandboxIdOf(run.id)).stop();
+    if (!(error instanceof CiRefusal)) throw interrupted(error);
+    await settleRun(deps, run, error.message);
+    await stopSandbox(deps, run.id);
     throw error;
   }
   await db
@@ -408,8 +454,9 @@ export async function startCiRun(
 /**
  * Starts one step's command in the run's sandbox. Returns at once; the
  * command runs in the background. A step whose needs did not succeed is
- * cancelled instead, and one that cannot be launched is failed: both are
- * results of the step, not errors of the run.
+ * skipped instead, and one whose sandbox has stopped is failed: both are
+ * results of the step, not errors of the run. A command that cannot be
+ * launched exits with `EXIT_NOT_LAUNCHED`, which `pollCiStep` records.
  */
 export async function startCiStep(deps: CiDeps, runId: CiRun["id"], name: string): Promise<CiStep> {
   const { db, git, clock } = deps;
@@ -433,7 +480,7 @@ export async function startCiStep(deps: CiDeps, runId: CiRun["id"], name: string
   const unmet = needs.filter((need) => need.status !== "succeeded").map((need) => need.name);
   if (unmet.length > 0) {
     return moveStep(deps, run, step, {
-      status: "cancelled",
+      status: "skipped",
       finishedAt: clock.now(),
       logTail: withNote("", `Not run: ${unmet.join(", ")} did not succeed.`),
     });
@@ -451,17 +498,11 @@ export async function startCiStep(deps: CiDeps, runId: CiRun["id"], name: string
       });
     }
   } catch (error) {
-    const up = await sandboxIsUp(sandbox);
-    if (up && !(error instanceof ForgeError)) throw error;
-    // The launcher is always `sh` in the checkout, so a refusal from a
-    // sandbox that is still up is this step's failure, not the run's.
-    const note = up
-      ? `The step could not be started: ${describe(error)}`
-      : "The sandbox stopped before this step could start.";
+    if (await sandboxIsUp(sandbox)) throw interrupted(error);
     return moveStep(deps, run, step, {
       status: "failed",
       finishedAt: clock.now(),
-      logTail: withNote("", note),
+      logTail: withNote("", "The sandbox stopped before this step could start."),
     });
   }
   return moveStep(deps, run, step, { status: "running", startedAt: clock.now() });
@@ -508,12 +549,13 @@ export async function pollCiStep(deps: CiDeps, stepId: CiStepId): Promise<CiStep
       }
     }
   } catch (error) {
-    // The real sandbox refuses every question once it has stopped; that is
-    // an answer. Any other error is retried by the caller.
-    if (await sandboxIsUp(sandbox)) throw error;
+    // A sandbox refuses every question once it has stopped; that is an
+    // answer. Any other error is retried by the caller.
+    if (await sandboxIsUp(sandbox)) throw interrupted(error);
     status = null;
   }
 
+  // A sandbox that does not know a step it started was replaced under it.
   // A killed command and a killed container both report 137: only a sandbox
   // that is still up makes a non-zero exit the step's own.
   const lost =
@@ -552,8 +594,9 @@ export async function finishCiRun(
 ): Promise<StageOutcome | { status: "failed"; reason: string }> {
   const run = await requireRun(deps.db, runId);
   const steps = await settleRun(deps, run);
-  await deps.sandboxes.get(sandboxIdOf(run.id)).stop();
+  await stopSandbox(deps, run.id);
 
+  if (run.reason) return { status: "failed", reason: run.reason };
   if (steps.every((step) => step.status === "succeeded")) return { status: "succeeded" };
   const failed = steps.filter((step) => step.status === "failed");
   const [first] = failed;
@@ -564,6 +607,22 @@ export async function finishCiRun(
       ? "did not finish: the sandbox stopped or could not run it"
       : `failed with exit code ${first.exitCode}`;
   return { status: "failed", reason: `Step ${first.name} ${how}${others}.` };
+}
+
+/**
+ * Closes the run of a stage attempt that could not be started or finished
+ * the ordinary way, with `reason` as its answer, and stops its sandbox. Does
+ * nothing to a run that is already closed, or when there is no run.
+ */
+export async function closeCiRun(
+  deps: Pick<CiDeps, "db" | "sandboxes" | "live" | "clock">,
+  stageRunId: StageInput["stageRunId"],
+  reason: string,
+): Promise<void> {
+  const [run] = await deps.db.select().from(ciRuns).where(eq(ciRuns.stageRunId, stageRunId));
+  if (!run) return;
+  await settleRun(deps, run, reason);
+  await stopSandbox(deps, run.id);
 }
 
 /** A step's output: the whole log while its sandbox is alive, the stored tail afterwards. */
@@ -578,7 +637,6 @@ export async function readStepLog(
   if (step.startedAt === null) return stored;
   const sandbox = deps.sandboxes.get(sandboxIdOf(step.runId));
   try {
-    if (!(await sandbox.isRunning())) return stored;
     let text = "";
     let offset = 0;
     for (let read = 0; read < CHUNKS_PER_READ; read++) {
@@ -590,7 +648,7 @@ export async function readStepLog(
     // Longer than is worth carrying through a Worker: the end is what a reader wants.
     return { ...stored, complete: false };
   } catch {
-    // The sandbox stopped between the two questions.
+    // A stopped sandbox refuses to be read.
     return stored;
   }
 }

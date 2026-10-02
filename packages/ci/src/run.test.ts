@@ -7,14 +7,16 @@ import {
   type SandboxId,
   type StageInput,
 } from "@gitflare/core";
-import { workspaceStart } from "@gitflare/core/ports";
+import { EXIT_NOT_LAUNCHED, workspaceStart } from "@gitflare/core/ports";
 import { schema } from "@gitflare/db";
 import { createTestDb } from "@gitflare/db/testing";
 import { createFakePorts } from "@gitflare/testing";
 import { describe, expect, it, vi } from "vitest";
 import {
   CI_WORKDIR,
+  CiInterrupted,
   type CiStart,
+  closeCiRun,
   finishCiRun,
   pollCiStep,
   readStepLog,
@@ -272,6 +274,26 @@ describe("a passing run", () => {
     );
   });
 
+  it("adds the hosts the CI file names to the grants, once each", async () => {
+    const world = await createWorld({
+      ci: `egress:
+  hosts: [pypi.org, "*.pythonhosted.org", registry.npmjs.org]
+steps:
+  - name: test
+    run: pytest
+`,
+    });
+
+    const start = await started(world);
+
+    expect(world.ports.sandboxes.startOptions(start.sandboxId)?.egress).toEqual([
+      { kind: "git", repo: world.forkRepo, scope: "read" },
+      { kind: "host", host: "registry.npmjs.org" },
+      { kind: "host", host: "pypi.org" },
+      { kind: "host", host: "*.pythonhosted.org" },
+    ]);
+  });
+
   it("checks out the revision's commit, then runs setup and each step in the checkout", async () => {
     const world = await createWorld();
 
@@ -311,8 +333,8 @@ describe("a failing step", () => {
     expect(await world.results()).toEqual([
       ["lint", "succeeded", 0],
       ["test", "failed", 1],
-      ["build", "cancelled", null],
-      ["deploy", "cancelled", null],
+      ["build", "skipped", null],
+      ["deploy", "skipped", null],
       ["docs", "succeeded", 0],
     ]);
     // A skipped step's command never reaches the sandbox.
@@ -324,8 +346,8 @@ describe("a failing step", () => {
     expect(world.stepEvents()).toEqual(
       expect.arrayContaining([
         ["test", "failed"],
-        ["build", "cancelled"],
-        ["deploy", "cancelled"],
+        ["build", "skipped"],
+        ["deploy", "skipped"],
       ]),
     );
   });
@@ -405,7 +427,7 @@ describe("a run that cannot start", () => {
 
     expect(message).toBe("The setup command failed (exit code 1): ERR_PNPM_OUTDATED_LOCKFILE");
     const [run] = await world.runs();
-    expect(run).toMatchObject({ status: "failed" });
+    expect(run).toMatchObject({ status: "failed", reason: message });
     expect(await world.results()).toEqual([
       ["lint", "cancelled", null],
       ["test", "cancelled", null],
@@ -427,6 +449,153 @@ describe("a run that cannot start", () => {
     );
     expect(await world.runs()).toMatchObject([{ status: "failed" }]);
     expect(world.ran("spawn")).toEqual([]);
+  });
+});
+
+describe("a refused start, asked again", () => {
+  const SETUP_FAILED = "The setup command failed (exit code 1): BOOM";
+
+  it("throws the same reason, and finishCiRun reports it", async () => {
+    const world = await createWorld();
+    world.ports.sandboxes.onCommand("pnpm install", { exitCode: 1, stdout: "BOOM\n" });
+
+    expect(await messageOf(startCiRun(world.deps, world.input))).toBe(SETUP_FAILED);
+    const second = startCiRun(world.deps, world.input);
+
+    expect(await messageOf(second)).toBe(SETUP_FAILED);
+    await expect(second).rejects.not.toBeInstanceOf(CiInterrupted);
+    const [run] = await world.runs();
+    if (!run) throw new Error("no run");
+    expect(await finishCiRun(world.deps, run.id)).toEqual({
+      status: "failed",
+      reason: SETUP_FAILED,
+    });
+    expect(world.ran("spawn")).toEqual(["pnpm install --frozen-lockfile"]);
+  });
+
+  it("keeps the reason when stopping the sandbox failed and the start is retried", async () => {
+    const world = await createWorld();
+    world.ports.sandboxes.onCommand("pnpm install", { exitCode: 1, stdout: "BOOM\n" });
+    // The first stop fails, as a lost connection to the container would.
+    const get = world.ports.sandboxes.get.bind(world.ports.sandboxes);
+    let stops = 0;
+    world.ports.sandboxes.get = (id) => {
+      const found = get(id);
+      const stop = found.stop.bind(found);
+      found.stop = async () => {
+        if (stops++ === 0) throw new Error("Network connection lost.");
+        await stop();
+      };
+      world.ports.sandboxes.get = get;
+      return found;
+    };
+
+    await expect(startCiRun(world.deps, world.input)).rejects.toThrow("Network connection lost.");
+    expect(await world.runs()).toMatchObject([{ status: "failed", reason: SETUP_FAILED }]);
+    const retried = await messageOf(startCiRun(world.deps, world.input));
+
+    expect(retried).toBe(SETUP_FAILED);
+    const [run] = await world.runs();
+    expect(await world.ports.sandboxes.get(`sbx_${run?.id.slice(4)}`).isRunning()).toBe(false);
+    if (!run) throw new Error("no run");
+    expect(await finishCiRun(world.deps, run.id)).toEqual({
+      status: "failed",
+      reason: SETUP_FAILED,
+    });
+  });
+});
+
+describe("a sandbox that could not be asked", () => {
+  const lost = () =>
+    new ForgeError("unavailable", "The sandbox was lost: Network connection lost.");
+
+  it("leaves the start for a retry instead of failing the run", async () => {
+    const world = await createWorld();
+    let hiccups = 1;
+    world.ports.sandboxes.on((command) => {
+      if (command.command.includes("gitflare-checkout") && hiccups-- > 0) throw lost();
+      return undefined;
+    });
+
+    const first = startCiRun(world.deps, world.input);
+
+    await expect(first).rejects.toBeInstanceOf(CiInterrupted);
+    await expect(first).rejects.not.toBeInstanceOf(ForgeError);
+    expect(await world.runs()).toMatchObject([{ status: "queued", reason: null }]);
+    const start = await started(world);
+    expect(start.run.status).toBe("running");
+  });
+
+  it("leaves a step queued for a retry when a live sandbox could not launch it", async () => {
+    const world = await createWorld();
+    const start = await started(world);
+    vi.spyOn(start.sandbox, "spawn").mockRejectedValueOnce(lost());
+
+    await expect(startCiStep(world.deps, start.run.id, "lint")).rejects.toBeInstanceOf(
+      CiInterrupted,
+    );
+
+    expect(await world.step("lint")).toMatchObject({ status: "queued" });
+    expect(await startCiStep(world.deps, start.run.id, "lint")).toMatchObject({
+      status: "running",
+    });
+  });
+
+  it("asks again when stopping the sandbox at the end failed", async () => {
+    const world = await createWorld();
+    const start = await started(world);
+    await runWaves(world, start);
+    vi.spyOn(start.sandbox, "stop").mockRejectedValueOnce(lost());
+
+    await expect(finishCiRun(world.deps, start.run.id)).rejects.toBeInstanceOf(CiInterrupted);
+
+    expect(await finishCiRun(world.deps, start.run.id)).toEqual({ status: "succeeded" });
+    expect(await start.sandbox.isRunning()).toBe(false);
+  });
+});
+
+describe("closeCiRun", () => {
+  it("closes a run whose start never finished, with the reason, and stops its sandbox", async () => {
+    const world = await createWorld();
+    world.ports.sandboxes.on((command) => {
+      if (command.command.includes("gitflare-checkout")) throw new Error("D1 is unavailable");
+      return undefined;
+    });
+    await expect(startCiRun(world.deps, world.input)).rejects.toThrow("D1 is unavailable");
+    const [queued] = await world.runs();
+
+    await closeCiRun(world.deps, world.input.stageRunId, "CI could not start: D1 is unavailable");
+    await closeCiRun(world.deps, world.input.stageRunId, "a second reason");
+
+    expect(await world.runs()).toMatchObject([
+      { status: "failed", reason: "CI could not start: D1 is unavailable" },
+    ]);
+    expect(await world.results()).toEqual([
+      ["lint", "cancelled", null],
+      ["test", "cancelled", null],
+    ]);
+    expect(await world.ports.sandboxes.get(`sbx_${queued?.id.slice(4)}`).isRunning()).toBe(false);
+    expect(await messageOf(startCiRun(world.deps, world.input))).toBe(
+      "CI could not start: D1 is unavailable",
+    );
+  });
+
+  it("does nothing when there is no run", async () => {
+    const world = await createWorld();
+    await closeCiRun(world.deps, world.input.stageRunId, "never started");
+    expect(await world.runs()).toEqual([]);
+  });
+
+  it("leaves a finished run as it was", async () => {
+    const world = await createWorld();
+    const start = await started(world);
+    await runWaves(world, start);
+    await finishCiRun(world.deps, start.run.id);
+    const before = await world.runs();
+
+    await closeCiRun(world.deps, world.input.stageRunId, "late");
+
+    expect(await world.runs()).toEqual(before);
   });
 });
 
@@ -615,26 +784,14 @@ describe("output", () => {
 });
 
 describe("a sandbox that stops under a run", () => {
-  /** What `SandboxController` does once its container is gone; the fake answers as if nothing ran. */
-  function stopLikeTheRealOne(sandbox: Awaited<ReturnType<typeof started>>["sandbox"]) {
-    const gone = new ForgeError("unavailable", "The sandbox is not running.");
-    vi.spyOn(sandbox, "isRunning").mockResolvedValue(false);
-    vi.spyOn(sandbox, "processStatus").mockRejectedValue(gone);
-    vi.spyOn(sandbox, "readLog").mockRejectedValue(gone);
-    vi.spyOn(sandbox, "spawn").mockRejectedValue(gone);
-  }
-
-  it.each([
-    ["as the real controller reports it", stopLikeTheRealOne],
-    ["as the fake reports it", (sandbox: { stop(): Promise<void> }) => sandbox.stop()],
-  ])("fails the step that was running, %s", async (_how, stop) => {
+  it("fails the step that was running", async () => {
     const world = await createWorld({ ci: BRANCHING });
     const start = await started(world);
     const lint = await startCiStep(world.deps, start.run.id, "lint");
     const test = await startCiStep(world.deps, start.run.id, "test");
     await pollCiStep(world.deps, lint.id);
 
-    await stop(start.sandbox);
+    await world.ports.sandboxes.lose(start.sandboxId);
     const polled = await pollCiStep(world.deps, test.id);
     // A step whose needs succeeded, started after the sandbox was gone.
     const docs = await startCiStep(world.deps, start.run.id, "docs");
@@ -697,27 +854,30 @@ describe("a sandbox that stops under a run", () => {
       new ForgeError("unavailable", "The sandbox was lost: Network connection lost."),
     );
 
-    await expect(pollCiStep(world.deps, id)).rejects.toThrow("Network connection lost.");
+    const poll = pollCiStep(world.deps, id);
+
+    await expect(poll).rejects.toThrow("Network connection lost.");
+    await expect(poll).rejects.toBeInstanceOf(CiInterrupted);
 
     expect(await world.step("test")).toMatchObject({ status: "running" });
     expect(await pollCiStep(world.deps, id)).toMatchObject({ status: "succeeded" });
   });
 
-  it("fails one step, not the run, when a live sandbox refuses to launch it", async () => {
+  it("fails one step, not the run, when its command cannot be launched", async () => {
     const world = await createWorld();
+    world.ports.sandboxes.onCommand("pnpm lint", {
+      exitCode: EXIT_NOT_LAUNCHED,
+      stdout: "sh: 1: pnpm: not found\n",
+    });
     const start = await started(world);
-    vi.spyOn(start.sandbox, "spawn").mockRejectedValueOnce(
-      new ForgeError("unavailable", "The sandbox was lost: no such file or directory"),
-    );
 
-    const lint = await startCiStep(world.deps, start.run.id, "lint");
-    const test = await startCiStep(world.deps, start.run.id, "test");
+    await runWaves(world, start);
 
-    expect(lint).toMatchObject({ status: "failed", exitCode: null });
-    expect(lint.logTail).toBe(
-      "[gitflare] The step could not be started: The sandbox was lost: no such file or directory\n",
-    );
-    expect(test.status).toBe("running");
+    expect(await world.results()).toEqual([
+      ["lint", "failed", EXIT_NOT_LAUNCHED],
+      ["test", "succeeded", 0],
+    ]);
+    expect((await world.step("lint")).logTail).toBe("sh: 1: pnpm: not found\n");
   });
 
   it("cancels what never ran when the run is finished early", async () => {
