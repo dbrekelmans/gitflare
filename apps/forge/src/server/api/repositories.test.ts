@@ -1,3 +1,4 @@
+import { failRepositoryImport } from "@gitflare/artifacts";
 import { schema } from "@gitflare/db";
 import { createTestDb } from "@gitflare/db/testing";
 import { createDemoPorts } from "@gitflare/testing";
@@ -16,7 +17,7 @@ async function demoServices() {
   const db = createTestDb();
   await seedDemo(db);
   const services = { ...ports, db, mode: "dev" } satisfies Services;
-  return { ...ports, db, api: repositoriesApi(services) };
+  return { ...ports, db, services, api: repositoriesApi(services) };
 }
 
 describe("repositories slice", () => {
@@ -92,6 +93,28 @@ describe("repositories slice", () => {
       remote: null,
       recentCommits: [],
     });
+  });
+
+  it("shows a failed import with its reason, and frees its slug for another try", async () => {
+    const { api, services } = await demoServices();
+    const first = await api.create(
+      { user: maya },
+      { slug: "legacy", description: "", importUrl: "https://example.com/legacy.git" },
+    );
+    await failRepositoryImport(services, first.repository.id, "The source answered 404.");
+    expect(await api.get({ user: maya }, { repoSlug: "legacy" })).toMatchObject({
+      repository: { readyAt: null, importError: "The source answered 404." },
+      remote: null,
+      contextRemote: null,
+    });
+
+    const second = await api.create(
+      { user: maya },
+      { slug: "legacy", description: "", importUrl: "https://example.com/legacy-2.git" },
+    );
+    expect(second.repository.id).not.toBe(first.repository.id);
+    const listed = (await api.list({ user: maya })).filter((v) => v.repository.slug === "legacy");
+    expect(listed.map((v) => v.repository.id)).toEqual([second.repository.id]);
   });
 
   it("issues a credential for the caller's own fork and refuses someone else's", async () => {

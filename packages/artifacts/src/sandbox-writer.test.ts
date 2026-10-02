@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GitWriter } from "@gitflare/core/ports";
+import { createTestDb } from "@gitflare/db/testing";
 import { FakeSandboxHost, type RecordedCommand, SequentialIds } from "@gitflare/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createArtifactsGitHost } from "./host";
@@ -54,13 +55,16 @@ function writerWith(options: {
   workspace?: typeof prepared;
 }): GitWriter {
   const git = createArtifactsGitHost(artifacts);
+  const db = createTestDb();
   return createSandboxGitWriter({
     git,
+    db,
     sandboxes,
     ids: new SequentialIds(),
     workspace: async () => options.workspace ?? prepared,
     worker: createWorkerGitWriter({
       git,
+      db,
       fetch: artifacts.fetch,
       maxMergeBytes: options.tooLargeForWorker ? 100 : undefined,
     }),
