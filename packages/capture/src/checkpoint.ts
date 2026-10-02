@@ -111,19 +111,27 @@ function toAttribution(raw: RawAttribution | undefined): Attribution | null {
   };
 }
 
-/** A checkpoint ref's tree, read at one commit: every session it holds, sliced to its own data. */
-export async function readCheckpoint(
+/**
+ * A checkpoint ref's tree, read at one commit: every session it holds, sliced
+ * to its own data. Null means the tip itself could not be read (the commit,
+ * its tree, or the root `metadata.json` is missing) — a caller that already
+ * knows the checkpoint's id should treat that as the checkpoint being
+ * missing, not as a checkpoint with zero sessions.
+ */
+export async function readCheckpointTree(
   deps: { git: GitHost },
   contextRepo: string,
   tipSha: Sha,
-): Promise<CapturedSession[]> {
+  /** Falls back to this when the root or a session's own metadata names no checkpoint id. */
+  knownCheckpointId?: string,
+): Promise<CapturedSession[] | null> {
   const commit = await deps.git.readCommit(contextRepo, tipSha);
-  if (!commit) return [];
+  if (!commit) return null;
   const rootEntries = (await deps.git.readTree(contextRepo, commit.treeSha)) ?? [];
   const rootMetaEntry = findEntry(rootEntries, "metadata.json");
-  if (!rootMetaEntry) return [];
+  if (!rootMetaEntry) return null;
   const rootMeta = await readJson<CheckpointSummary>(deps.git, contextRepo, rootMetaEntry.sha);
-  if (!rootMeta) return [];
+  if (!rootMeta) return null;
 
   const sessions: CapturedSession[] = [];
   for (const paths of rootMeta.sessions ?? []) {
@@ -139,18 +147,22 @@ export async function readCheckpoint(
     let turns: CapturedSession["turns"] = [];
     let agent = meta.agent ? (AGENT_DISPLAY_TO_REGISTRY[meta.agent] ?? meta.agent) : "";
 
-    if (paths.compact_transcript) {
-      const text = await readChunked(deps.git, contextRepo, dirEntries, "transcript.jsonl");
-      if (text) {
-        const lines = splitLines(text).slice(meta.compact_transcript_start ?? 0);
-        const parsed = parseCompactLines(lines);
-        turns = parsed.turns;
-        if (parsed.agent) agent = parsed.agent;
-      }
-    } else if (paths.transcript) {
-      const text = await readChunked(deps.git, contextRepo, dirEntries, "full.jsonl");
-      if (text) {
-        const lines = splitLines(text).slice(meta.checkpoint_transcript_start ?? 0);
+    // Prefer the compact transcript when it is actually there; a trailer
+    // naming `compact_transcript` does not guarantee compaction succeeded
+    // ("best-effort... omitted when compaction fails"), so fall back to the
+    // native transcript rather than yielding no turns at all.
+    const compactText = paths.compact_transcript
+      ? await readChunked(deps.git, contextRepo, dirEntries, "transcript.jsonl")
+      : null;
+    if (compactText) {
+      const lines = splitLines(compactText).slice(meta.compact_transcript_start ?? 0);
+      const parsed = parseCompactLines(lines);
+      turns = parsed.turns;
+      if (parsed.agent) agent = parsed.agent;
+    } else {
+      const fullText = await readChunked(deps.git, contextRepo, dirEntries, "full.jsonl");
+      if (fullText) {
+        const lines = splitLines(fullText).slice(meta.checkpoint_transcript_start ?? 0);
         turns = parseFullLines(lines);
       }
     }
@@ -161,7 +173,7 @@ export async function readCheckpoint(
       agentSessionId: meta.session_id,
       agent,
       model: meta.model ?? null,
-      checkpointIds: [meta.checkpoint_id ?? rootMeta.checkpoint_id ?? ""],
+      checkpointIds: [meta.checkpoint_id ?? rootMeta.checkpoint_id ?? knownCheckpointId ?? ""],
       turns,
       attribution: toAttribution(meta.initial_attribution),
     });

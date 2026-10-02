@@ -4,6 +4,19 @@
 // `git-refs`: it is what lets both checkpoint id shapes (ULID and legacy hex)
 // be read the same way, by ref tip, with no legacy branch to fall back to.
 
+/** Every command exits 0 silently on a machine without `entire` on `PATH`, as Entire's own hooks do. */
+function guardedCommand(subcommand: string): string {
+  return `sh -c 'if ! command -v entire >/dev/null 2>&1; then exit 0; fi; exec entire hooks claude-code ${subcommand}'`;
+}
+
+/** `SessionStart` is the one hook that prints a warning instead of exiting silently, as Entire's own does. */
+const sessionStartCommand =
+  'sh -c \'if ! command -v entire >/dev/null 2>&1; then printf "%s\\n" "{\\"systemMessage\\":\\"\\\\n\\\\nEntire CLI is enabled but not installed or not on PATH.\\\\nInstallation guide: https://docs.entire.io/cli/installation#installation-methods\\"}"; exit 0; fi; exec entire hooks claude-code session-start\'';
+
+function hook(matcher: string, command: string) {
+  return { matcher, hooks: [{ type: "command", command }] };
+}
+
 /**
  * The files gitflare commits to a repository so the unmodified Entire CLI
  * pushes checkpoints to its context repo: `.entire/settings.json`,
@@ -25,63 +38,33 @@ export function captureSettingsFiles(input: {
     },
   };
 
-  // Claude Code is the MVP's one supported agent. Every command exits 0
-  // silently on a machine without `entire` on `PATH`, as Entire's own
-  // generated hooks do.
+  // Claude Code is the MVP's one supported agent. All eight of Entire's hook
+  // entries, so `UserPromptSubmit` — the one that installs the git hooks on
+  // the first prompt in a fresh clone — is present; without it there is no
+  // trailer and no checkpoint push.
   const claudeCodeSettings = {
     hooks: {
+      SessionStart: [hook("", sessionStartCommand)],
+      UserPromptSubmit: [hook("", guardedCommand("user-prompt-submit"))],
+      Stop: [hook("", guardedCommand("stop"))],
+      SessionEnd: [hook("", guardedCommand("session-end"))],
+      PreToolUse: [hook("Agent", guardedCommand("pre-task"))],
       PostToolUse: [
-        {
-          matcher: "Agent",
-          hooks: [
-            {
-              type: "command",
-              command:
-                "sh -c 'if ! command -v entire >/dev/null 2>&1; then exit 0; fi; exec entire hooks claude-code post-task'",
-            },
-          ],
-        },
-        {
-          matcher: "TaskCreate|TaskUpdate",
-          hooks: [
-            {
-              type: "command",
-              command:
-                "sh -c 'if ! command -v entire >/dev/null 2>&1; then exit 0; fi; exec entire hooks claude-code post-todo'",
-            },
-          ],
-        },
+        hook("Agent", guardedCommand("post-task")),
+        hook("TaskCreate|TaskUpdate", guardedCommand("post-todo")),
       ],
-      SessionStart: [
-        {
-          matcher: "",
-          hooks: [
-            {
-              type: "command",
-              command:
-                'sh -c \'if ! command -v entire >/dev/null 2>&1; then printf "%s\\n" "{\\"systemMessage\\":\\"\\\\n\\\\nEntire CLI is enabled but not installed or not on PATH.\\\\nInstallation guide: https://docs.entire.io/cli/installation#installation-methods\\"}"; exit 0; fi; exec entire hooks claude-code session-start\'',
-            },
-          ],
-        },
-      ],
-      Stop: [
-        {
-          matcher: "",
-          hooks: [
-            {
-              type: "command",
-              command:
-                "sh -c 'if ! command -v entire >/dev/null 2>&1; then exit 0; fi; exec entire hooks claude-code stop'",
-            },
-          ],
-        },
-      ],
+      SubagentStop: [hook("", guardedCommand("subagent-stop"))],
     },
   };
 
+  // The required entries `entire enable` itself writes: `metadata/` holds the
+  // unredacted `full.jsonl` per session, so leaving it untracked matters, not
+  // just `settings.local.json`.
+  const gitignore = ["tmp/", "settings.local.json", "metadata/", "logs/", "redactors/local/"];
+
   return {
     ".entire/settings.json": `${JSON.stringify(settings, null, 2)}\n`,
-    ".entire/.gitignore": "settings.local.json\n",
+    ".entire/.gitignore": `${gitignore.join("\n")}\n`,
     ".claude/settings.json": `${JSON.stringify(claudeCodeSettings, null, 2)}\n`,
   };
 }

@@ -1,4 +1,5 @@
 import {
+  type Attribution,
   type ChangeCapture,
   type ChangeId,
   type CheckpointRef,
@@ -10,7 +11,7 @@ import {
 import type { CapturePort, Clock, GitHost } from "@gitflare/core/ports";
 import { type Db, schema } from "@gitflare/db";
 import { and, eq, inArray } from "drizzle-orm";
-import { readCheckpoint as readCheckpointTree } from "./checkpoint";
+import { readCheckpointTree } from "./checkpoint";
 import { captureSettingsFiles as buildSettingsFiles } from "./settings";
 
 // @gitflare/capture — reading what Entire's CLI recorded. A commit carries
@@ -43,7 +44,12 @@ export function createCapture(deps: CaptureDeps): CapturePort {
 
 // `parseCheckpointTrailers` is in `@gitflare/core`: the pipeline needs it too.
 
-/** Records the new tip of a checkpoint ref. Called for every push the pipeline classifies as `checkpoint`. */
+/**
+ * Records the new tip of a checkpoint ref. Called for every push the
+ * pipeline classifies as `checkpoint`. An upsert, not select-then-insert:
+ * two concurrent deliveries of the same push must not race each other onto
+ * the `(repositoryId, checkpointId)` primary key.
+ */
 export async function recordCheckpointPush(
   deps: Pick<CaptureDeps, "db" | "clock">,
   repositoryId: RepositoryId,
@@ -52,15 +58,6 @@ export async function recordCheckpointPush(
 ): Promise<CheckpointRef> {
   const { db, clock } = deps;
   const now = clock.now();
-  const where = and(
-    eq(schema.checkpoints.repositoryId, repositoryId),
-    eq(schema.checkpoints.checkpointId, checkpointId),
-  );
-  const existing = await db.select().from(schema.checkpoints).where(where).limit(1);
-  if (existing[0]) {
-    await db.update(schema.checkpoints).set({ tipSha: push.after, updatedAt: now }).where(where);
-    return { ...existing[0], tipSha: push.after, updatedAt: now };
-  }
   const row: CheckpointRef = {
     checkpointId,
     repositoryId,
@@ -69,8 +66,17 @@ export async function recordCheckpointPush(
     firstSeenAt: now,
     updatedAt: now,
   };
-  await db.insert(schema.checkpoints).values(row);
-  return row;
+  const [stored] = await db
+    .insert(schema.checkpoints)
+    .values(row)
+    .onConflictDoUpdate({
+      target: [schema.checkpoints.repositoryId, schema.checkpoints.checkpointId],
+      // `firstSeenAt` is deliberately left out of `set`: on conflict the
+      // existing row's value survives, which is what "first seen" means.
+      set: { tipSha: push.after, updatedAt: now },
+    })
+    .returning();
+  return stored ?? row;
 }
 
 /** Every checkpoint id a change's commits name, in the order its commits carry them, once each. */
@@ -113,6 +119,21 @@ export async function missingCheckpoints(
     );
   const arrivedIds = new Set(arrived.map((row) => row.checkpointId));
   return named.filter((id) => !arrivedIds.has(id));
+}
+
+/**
+ * Combines two checkpoints' attribution of the same session. Entire's
+ * `initial_attribution` counts the lines committed by that one checkpoint,
+ * not the session's running total, so a later checkpoint's figures must be
+ * added to the earlier one's, not replace them.
+ */
+function combineAttribution(a: Attribution | null, b: Attribution | null): Attribution | null {
+  if (!a) return b;
+  if (!b) return a;
+  const agentLines = a.agentLines + b.agentLines;
+  const humanLines = a.humanLines + b.humanLines;
+  const total = agentLines + humanLines;
+  return { agentLines, humanLines, agentPercentage: total > 0 ? (agentLines / total) * 100 : 0 };
 }
 
 async function persistCapturedSessions(db: Db, sessions: ChangeCapture["sessions"]): Promise<void> {
@@ -177,12 +198,18 @@ export async function captureChange(deps: CaptureDeps, changeId: ChangeId): Prom
   const missingCheckpointIds = named.filter((id) => !refByCheckpointId.has(id));
 
   // Merging across checkpoints: a later checkpoint of the same agent session
-  // only ever contributes its own slice, already sliced by `readCheckpoint`.
+  // only ever contributes its own slice, already sliced by `readCheckpointTree`.
   const sessionsById = new Map<string, ChangeCapture["sessions"][number]>();
   for (const checkpointId of named) {
     const ref = refByCheckpointId.get(checkpointId);
     if (!ref) continue;
-    const sessions = await readCheckpoint({ git }, contextRepo, ref.tipSha);
+    const sessions = await readCheckpointTree({ git }, contextRepo, ref.tipSha, checkpointId);
+    if (sessions === null) {
+      // The ref was recorded but its tip could not be read: report it as
+      // missing, the same as a checkpoint that never arrived.
+      missingCheckpointIds.push(checkpointId);
+      continue;
+    }
     for (const session of sessions) {
       const existing = sessionsById.get(session.agentSessionId);
       if (!existing) {
@@ -194,7 +221,7 @@ export async function captureChange(deps: CaptureDeps, changeId: ChangeId): Prom
         if (!existing.checkpointIds.includes(id)) existing.checkpointIds.push(id);
       }
       existing.model = session.model ?? existing.model;
-      existing.attribution = session.attribution ?? existing.attribution;
+      existing.attribution = combineAttribution(existing.attribution, session.attribution);
     }
   }
 
@@ -273,5 +300,5 @@ export async function readCheckpoint(
   contextRepo: string,
   tipSha: Sha,
 ): Promise<ChangeCapture["sessions"]> {
-  return readCheckpointTree(deps, contextRepo, tipSha);
+  return (await readCheckpointTree(deps, contextRepo, tipSha)) ?? [];
 }
