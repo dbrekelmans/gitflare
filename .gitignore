@@ -10,3 +10,6 @@ dist/
 worker-configuration.d.ts
 *.tsbuildinfo
 .DS_Store
+
+# The deploy config create-gitflare renders: it names the deployer's own resources.
+wrangler.gitflare.jsonc
