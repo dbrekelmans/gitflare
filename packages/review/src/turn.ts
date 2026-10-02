@@ -222,6 +222,7 @@ const failureWords: Record<ModelError["code"], string> = {
   budget_exceeded: "the model budget is spent",
   no_credits: "this deployment has no model credits",
   rate_limited: "the model is rate limited right now",
+  invalid_request: "the model refused the request",
   invalid_output: "the model's answer was not one I can act on",
   unavailable: "the model is unavailable right now",
 };

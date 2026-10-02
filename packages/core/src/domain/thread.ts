@@ -75,12 +75,27 @@ export interface Thread {
   /** The revision the anchor's line numbers refer to. */
   anchorRevisionId: RevisionId | null;
   dismissal: DismissalClass | null;
-  /** The decision recorded when the dismissal was a design decision. */
+  /**
+   * The decision recorded when the dismissal was a design decision. A thread
+   * records one once: it stays when the dismissal is reclassified or the
+   * thread reopened, because retiring a decision is a person's call.
+   */
   decisionId: DecisionId | null;
   createdBy: UserId | null;
   createdAt: Timestamp;
   settledAt: Timestamp | null;
+  /**
+   * The person who settled it. Null while the thread is open, and when the
+   * agent settled it: `settledAt` set with `settledBy` null means the agent.
+   */
   settledBy: UserId | null;
+  /**
+   * When the thread was last looked through for a decision worth keeping,
+   * whether or not one was found. It has been considered as it stands when
+   * this is at or after `settledAt`; a thread reopened and settled again is
+   * due another look.
+   */
+  learnedAt: Timestamp | null;
   messageCount: number;
   lastMessageAt: Timestamp;
 }

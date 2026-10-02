@@ -21,7 +21,10 @@ it("migrates and seeds local D1 once, and records the migrations as Wrangler wou
   expect((await deps.db.select().from(schema.changes)).length).toBe(demo.changes.length);
   expect((await deps.db.select().from(schema.threadMessages)).length).toBe(demo.messages.length);
   const applied = await env.DB.prepare("SELECT name FROM d1_migrations").all<{ name: string }>();
-  expect(applied.results.map((row) => row.name)).toEqual(["0000_initial.sql"]);
+  expect(applied.results.map((row) => row.name)).toEqual([
+    "0000_initial.sql",
+    "0001_contracts_round_two.sql",
+  ]);
 });
 
 it("signs the demo's viewer in from the seeded database", async () => {

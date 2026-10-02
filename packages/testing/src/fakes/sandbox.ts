@@ -1,13 +1,14 @@
-import type { SandboxId } from "@gitflare/core";
-import type {
-  ExecOptions,
-  ExecResult,
-  LogChunk,
-  ProcessStatus,
-  Sandbox,
-  SandboxHost,
-  SandboxSnapshot,
-  SandboxStartOptions,
+import { ForgeError, type SandboxId } from "@gitflare/core";
+import {
+  checkStartOptions,
+  type ExecOptions,
+  type ExecResult,
+  type LogChunk,
+  type ProcessStatus,
+  type Sandbox,
+  type SandboxHost,
+  type SandboxSnapshot,
+  type SandboxStartOptions,
 } from "@gitflare/core/ports";
 
 export interface RecordedCommand {
@@ -19,17 +20,32 @@ export interface RecordedCommand {
   options: ExecOptions;
 }
 
+/** What a handler answers with. Anything left out is the default: exit 0, no output. */
+export interface ScriptedResult extends Partial<ExecResult> {
+  /**
+   * For a `spawn`: the process is still running, with `stdout` and `stderr`
+   * as its output so far, until `FakeSandboxHost.finish` ends it.
+   */
+  running?: boolean;
+}
+
 /**
  * Decides what a command does. Return a result to answer it; return undefined
  * to let the next handler, and finally the default (exit 0, no output), answer.
+ * A command that cannot be launched is answered as the real sandbox answers
+ * it: `{ exitCode: EXIT_NOT_LAUNCHED, stderr: "…" }`, not by throwing.
  */
-export type CommandHandler = (command: RecordedCommand) => Partial<ExecResult> | undefined;
+export type CommandHandler = (command: RecordedCommand) => ScriptedResult | undefined;
+
+interface FakeProcess extends ExecResult {
+  running: boolean;
+}
 
 class FakeSandbox implements Sandbox {
   running = false;
   started: SandboxStartOptions | null = null;
   readonly files = new Map<string, string>();
-  private readonly processes = new Map<string, ExecResult>();
+  readonly processes = new Map<string, FakeProcess>();
 
   constructor(
     readonly id: SandboxId,
@@ -37,7 +53,8 @@ class FakeSandbox implements Sandbox {
   ) {}
 
   async start(options: SandboxStartOptions): Promise<void> {
-    if (this.running) throw new Error(`sandbox ${this.id} is already running`);
+    checkStartOptions(options);
+    if (this.running) throw new ForgeError("conflict", `Sandbox ${this.id} is already running.`);
     this.running = true;
     this.started = options;
   }
@@ -48,11 +65,20 @@ class FakeSandbox implements Sandbox {
 
   async exec(command: string[], options: ExecOptions = {}): Promise<ExecResult> {
     this.requireRunning();
-    return this.host.run({ sandboxId: this.id, kind: "exec", command, options });
+    const { running: _running, ...result } = this.host.run({
+      sandboxId: this.id,
+      kind: "exec",
+      command,
+      options,
+    });
+    return result;
   }
 
   async spawn(name: string, command: string[], options: ExecOptions = {}): Promise<void> {
     this.requireRunning();
+    if (this.processes.get(name)?.running) {
+      throw new ForgeError("conflict", `Process ${name} is still running in sandbox ${this.id}.`);
+    }
     this.processes.set(
       name,
       this.host.run({ sandboxId: this.id, kind: "spawn", name, command, options }),
@@ -60,11 +86,14 @@ class FakeSandbox implements Sandbox {
   }
 
   async processStatus(name: string): Promise<ProcessStatus | null> {
-    const result = this.processes.get(name);
-    return result ? { state: "exited", exitCode: result.exitCode } : null;
+    this.requireRunning();
+    const process = this.processes.get(name);
+    if (!process) return null;
+    return process.running ? { state: "running" } : { state: "exited", exitCode: process.exitCode };
   }
 
   async readLog(name: string, stream: "stdout" | "stderr", offset: number): Promise<LogChunk> {
+    this.requireRunning();
     const text = (this.processes.get(name)?.[stream] ?? "").slice(offset);
     return { text, nextOffset: offset + text.length };
   }
@@ -91,14 +120,19 @@ class FakeSandbox implements Sandbox {
   }
 
   private requireRunning(): void {
-    if (!this.running) throw new Error(`sandbox ${this.id} is not running`);
+    if (!this.running) throw new ForgeError("unavailable", `Sandbox ${this.id} is not running.`);
   }
 }
 
 /**
  * Sandboxes that run nothing. Commands are recorded and answered by handlers
  * the test registers; a background process finishes the moment it is spawned,
- * with its whole output already in the log.
+ * with its whole output already in the log, unless its handler says it is
+ * still `running`.
+ *
+ * It refuses what the real controller refuses: once a sandbox is not running
+ * (never started, stopped, or lost), every method except `isRunning`, `start`
+ * and `stop` throws `unavailable`.
  */
 export class FakeSandboxHost implements SandboxHost {
   /** Every command any sandbox was asked to run, in order. */
@@ -123,7 +157,7 @@ export class FakeSandboxHost implements SandboxHost {
   }
 
   /** Answers any command whose joined text contains `fragment`. */
-  onCommand(fragment: string, result: Partial<ExecResult>): this {
+  onCommand(fragment: string, result: ScriptedResult): this {
     return this.on((command) =>
       command.command.join(" ").includes(fragment) ? result : undefined,
     );
@@ -134,13 +168,28 @@ export class FakeSandboxHost implements SandboxHost {
     return this.sandboxes.get(id)?.started ?? null;
   }
 
-  run(command: RecordedCommand): ExecResult {
+  /**
+   * Ends a process a handler left `running`, optionally replacing its exit
+   * code and output: `finish(id, "agent", { exitCode: 1 })`.
+   */
+  finish(id: SandboxId, name: string, result: Partial<ExecResult> = {}): void {
+    const process = this.sandboxes.get(id)?.processes.get(name);
+    if (!process) throw new Error(`FakeSandboxHost: sandbox ${id} has no process named ${name}`);
+    Object.assign(process, result, { running: false });
+  }
+
+  /** The container went away on its own: the same as a stop nobody asked for. */
+  async lose(id: SandboxId): Promise<void> {
+    await this.sandboxes.get(id)?.stop();
+  }
+
+  run(command: RecordedCommand): FakeProcess {
     this.commands.push(command);
     for (const handler of this.handlers) {
       const result = handler(command);
-      if (result) return { exitCode: 0, stdout: "", stderr: "", ...result };
+      if (result) return { exitCode: 0, stdout: "", stderr: "", running: false, ...result };
     }
-    return { exitCode: 0, stdout: "", stderr: "" };
+    return { exitCode: 0, stdout: "", stderr: "", running: false };
   }
 
   takeSnapshot(sandbox: FakeSandbox): SandboxSnapshot {

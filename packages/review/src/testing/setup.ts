@@ -74,6 +74,7 @@ export async function addThread(
     createdAt: at,
     settledAt: null,
     settledBy: null,
+    learnedAt: null,
     messageCount: messages.length,
     lastMessageAt: at,
     ...overrides,

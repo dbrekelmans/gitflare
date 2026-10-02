@@ -4,6 +4,7 @@ import {
   type CloudSessionEvent,
   type CloudSessionState,
   type CloudSessionStatus,
+  ForgeError,
   type Id,
   type Identity,
   type IdKind,
@@ -90,7 +91,7 @@ export class RecordingLive implements ChangeLive {
 /** Records what the pipeline was asked to do. Set `onPush` to run something in its place. */
 export class RecordingPipeline implements PipelineRunner {
   readonly pushes: Push[] = [];
-  readonly reruns: { changeId: ChangeId; stage: StageName }[] = [];
+  readonly reruns: { changeId: ChangeId; stage: StageName; attempt: number }[] = [];
   onPush: ((push: Push) => Promise<void>) | null = null;
 
   async handlePush(push: Push): Promise<void> {
@@ -98,8 +99,8 @@ export class RecordingPipeline implements PipelineRunner {
     await this.onPush?.(push);
   }
 
-  async rerunStage(changeId: ChangeId, stage: StageName): Promise<void> {
-    this.reruns.push({ changeId, stage });
+  async rerunStage(changeId: ChangeId, stage: StageName, attempt: number): Promise<void> {
+    this.reruns.push({ changeId, stage, attempt });
   }
 }
 
@@ -172,19 +173,39 @@ type NewSessionEvent = CloudSessionEvent extends infer E
     : never
   : never;
 
-/** Hosted sessions with no sandbox behind them. Prompts are recorded; `emit` plays the agent. */
+/**
+ * Hosted sessions with no sandbox behind them. Prompts are recorded; `emit`
+ * plays the agent. Like the real one, a session is launched once (a second
+ * `launch` does nothing) and takes no prompt before it has been launched.
+ */
 export class FakeCloudSessions implements CloudSessions {
+  /** Every launch that took effect, in order. */
+  readonly launches: { sessionId: SessionId; prompt: string }[] = [];
+  /**
+   * Says whether a session's fork exists. The fake has no database to ask, so
+   * unset it takes every fork to exist; set it and `launch` refuses a session
+   * whose fork is not ready with `not_ready`, as the real one does.
+   */
+  forkReady: ((sessionId: SessionId) => boolean) | null = null;
   private readonly log = new Map<SessionId, CloudSessionEvent[]>();
   private readonly states = new Map<SessionId, CloudSessionState>();
 
   constructor(private readonly clock: Clock) {}
 
   async launch(sessionId: SessionId, prompt: string): Promise<void> {
+    if (this.forkReady && !this.forkReady(sessionId)) {
+      throw new ForgeError("not_ready", `The fork of session ${sessionId} is not ready.`);
+    }
+    if (this.launches.some((launch) => launch.sessionId === sessionId)) return;
+    this.launches.push({ sessionId, prompt });
     this.states.set(sessionId, "working");
     this.emit(sessionId, { type: "prompt", text: prompt });
   }
 
   async prompt(sessionId: SessionId, text: string): Promise<void> {
+    if (!this.launches.some((launch) => launch.sessionId === sessionId)) {
+      throw new ForgeError("not_ready", `Session ${sessionId} has not been launched.`);
+    }
     this.states.set(sessionId, "working");
     this.emit(sessionId, { type: "prompt", text });
   }

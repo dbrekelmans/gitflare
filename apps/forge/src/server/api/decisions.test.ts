@@ -96,8 +96,10 @@ describe("the decisions slice", () => {
     expect(edited.events[0]).toMatchObject({
       kind: "reshaped",
       userId: demoUsers.maya.id,
-      statementBefore: before.statement,
+      user: { name: demoUsers.maya.name },
+      wording: { before: { statement: before.statement } },
     });
+    expect(edited.repository).toEqual({ id: before.repositoryId, slug: "atlas-web" });
 
     const reverted = await api.revert(jonas, {
       decisionId,
@@ -107,7 +109,7 @@ describe("the decisions slice", () => {
     expect(reverted.events[0]).toMatchObject({
       kind: "reverted",
       userId: demoUsers.jonas.id,
-      statementAfter: before.statement,
+      wording: { after: { statement: before.statement } },
     });
     expect(await file(before.path)).toContain(before.statement);
   });

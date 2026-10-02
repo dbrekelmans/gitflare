@@ -423,8 +423,10 @@ describe("rewording and reverting", () => {
     const [, reshaped] = await events(deps, decision.id);
     expect(reshaped).toMatchObject({
       kind: "reshaped",
-      statementBefore: noEval.statement,
-      statementAfter: narrowed,
+      wording: {
+        before: { title: noEval.title, statement: noEval.statement },
+        after: { title: "No eval in application code", statement: narrowed },
+      },
       strengthBefore: 0.5,
       strengthAfter: 0.5,
     });
@@ -439,8 +441,10 @@ describe("rewording and reverting", () => {
     expect((await events(deps, decision.id)).at(-1)).toMatchObject({
       kind: "reverted",
       userId: demoUsers.priya.id,
-      statementBefore: narrowed,
-      statementAfter: noEval.statement,
+      wording: {
+        before: { title: "No eval in application code", statement: narrowed },
+        after: { title: noEval.title, statement: noEval.statement },
+      },
       strengthAfter: 0.5,
     });
   });
@@ -491,7 +495,9 @@ describe("rewording and reverting", () => {
       .orderBy(asc(schema.decisionEvents.createdAt));
     expect(all.at(-1)).toMatchObject({
       kind: "reverted",
-      statementAfter: "Never log access tokens.",
+      wording: {
+        after: { title: "Never log access tokens", statement: "Never log access tokens." },
+      },
     });
   });
 

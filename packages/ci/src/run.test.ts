@@ -223,6 +223,7 @@ describe("a passing run", () => {
       changeId,
       revisionId,
       status: "running",
+      reason: null,
       startedAt: world.ports.clock.now(),
       finishedAt: null,
     });

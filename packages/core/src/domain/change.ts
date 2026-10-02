@@ -113,11 +113,27 @@ export interface Intent {
   changeId: ChangeId;
   revisionId: RevisionId;
   version: number;
+  /** The intent stage attempt that produced this version. One attempt produces at most one. */
+  attempt: number;
   statement: string;
   grade: IntentGrade;
   /** Checkpoints the derivation read; empty for a diff-derived intent. */
   checkpointIds: string[];
   model: string | null;
+  createdAt: Timestamp;
+}
+
+/**
+ * That the review stage finished looking at a revision, and how many findings
+ * it raised: none is a result too. Without it a clean revision looks
+ * unreviewed and is reviewed, and paid for, again on every retry.
+ */
+export interface RevisionReview {
+  revisionId: RevisionId;
+  /** The review stage attempt that did the reviewing. */
+  attempt: number;
+  changeId: ChangeId;
+  findings: number;
   createdAt: Timestamp;
 }
 

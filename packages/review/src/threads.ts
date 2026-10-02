@@ -24,9 +24,18 @@ async function views(deps: Pick<ReviewDeps, "db">, threads: Thread[]): Promise<T
     deps.db,
     threads.map((thread) => thread.id),
   );
-  const authors = await authorsOf(deps.db, messages);
+  const authors = await authorsOf(
+    deps.db,
+    messages,
+    threads.flatMap((thread) => (thread.settledBy ? [thread.settledBy] : [])),
+  );
+  const settler = (thread: Thread) => {
+    const user = thread.settledBy ? authors.get(thread.settledBy) : null;
+    return user ? { id: user.id, name: user.name, email: user.email } : null;
+  };
   return threads.map((thread) => ({
     thread,
+    settledBy: settler(thread),
     messages: messages
       .filter((message) => message.threadId === thread.id)
       .map((message) => {
@@ -89,6 +98,7 @@ export async function openThread(
     createdAt: now,
     settledAt: null,
     settledBy: null,
+    learnedAt: null,
     messageCount: 0,
     lastMessageAt: now,
   };

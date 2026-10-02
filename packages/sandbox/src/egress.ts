@@ -1,5 +1,11 @@
 import { ForgeError, type GitTokenScope, type ModelAttribution } from "@gitflare/core";
-import type { Clock, EgressGrant, GitHost } from "@gitflare/core/ports";
+import {
+  type Clock,
+  checkStartOptions,
+  type EgressGrant,
+  type GitHost,
+  type SandboxStartOptions,
+} from "@gitflare/core/ports";
 
 /**
  * How a sandbox's network is set up. `intercepted`: Internet access is off
@@ -10,19 +16,16 @@ import type { Clock, EgressGrant, GitHost } from "@gitflare/core/ports";
 export type EgressMode = "open" | "intercepted";
 
 /**
- * A grant for the host `*` opens the network. It cannot be combined with a
- * git or model grant: with Internet access on, a container that can reach
- * anything must not also be handed a credential on the way out.
+ * The network is open only when the start options ask for it by name
+ * (`openInternet`). That excludes every grant: with Internet access on, a
+ * container that can reach anything must not also be handed a credential on
+ * the way out. A host grant of `*` is refused, not read as "open".
  */
-export function egressMode(grants: EgressGrant[]): EgressMode {
-  if (!grants.some((grant) => grant.kind === "host" && grant.host === "*")) return "intercepted";
-  if (grants.some((grant) => grant.kind !== "host")) {
-    throw new ForgeError(
-      "invalid",
-      "A sandbox with unrestricted Internet access cannot also be granted git or model access.",
-    );
-  }
-  return "open";
+export function egressMode(
+  options: Pick<SandboxStartOptions, "egress" | "openInternet">,
+): EgressMode {
+  checkStartOptions(options);
+  return options.openInternet ? "open" : "intercepted";
 }
 
 /** Where the forge's own services are, so a request for one can be recognised. */

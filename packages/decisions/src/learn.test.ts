@@ -115,7 +115,7 @@ describe("learnFromThread", () => {
       threadId,
       userId: priya.id,
       note: "Priya asked for moment to stay.",
-      statementBefore: null,
+      wording: null,
     });
   });
 
@@ -149,8 +149,13 @@ describe("learnFromThread", () => {
       {
         kind: "reshaped",
         threadId,
-        statementBefore: "Log the id of a token or invite, never its value, at any log level.",
-        statementAfter: statement,
+        wording: {
+          before: {
+            title: "Never log access tokens or invite codes",
+            statement: "Log the id of a token or invite, never its value, at any log level.",
+          },
+          after: { title: "Never log credentials", statement },
+        },
         note: "Widened to signing secrets after a reply in review.",
         strengthBefore: 0.83,
         strengthAfter: 0.83,

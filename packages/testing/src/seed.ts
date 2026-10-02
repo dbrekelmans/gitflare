@@ -1,3 +1,4 @@
+import { sectionStats } from "@gitflare/core";
 import type { Db } from "@gitflare/db";
 import { fromModelCall, fromRevision, fromThreadMessage, schema } from "@gitflare/db";
 import { type DemoData, demo } from "./demo";
@@ -48,6 +49,16 @@ export async function seedDemo(db: Db, data: DemoData = demo): Promise<boolean> 
     data.repositories.map((r) => ({ ...r, nextChangeNumber: nextNumber.get(r.id) ?? 1 })),
   );
   await insert(schema.sessions, data.sessions);
+  await insert(schema.sessionLaunches, data.sessionLaunches);
+  await insert(
+    schema.cloudSessionEvents,
+    data.cloudSessions.events.map(({ sessionId, seq, at, ...body }) => ({
+      sessionId,
+      seq,
+      at,
+      body: body as never,
+    })),
+  );
   await insert(
     schema.changes,
     data.changes.map((c) => ({ ...c, lastEventSeq: lastSeq.get(c.id) ?? 0 })),
@@ -73,7 +84,14 @@ export async function seedDemo(db: Db, data: DemoData = demo): Promise<boolean> 
     data.capturedSessions.map(({ turns, ...session }) => ({ ...session, turnCount: turns.length })),
   );
   await insert(schema.intents, data.intents);
-  await insert(schema.sections, data.sections);
+  await insert(schema.revisionReviews, data.revisionReviews);
+  await insert(
+    schema.sections,
+    data.sections.map((section) => ({
+      ...section,
+      stats: sectionStats(data.sectionDiffs[section.id] ?? [], section.files),
+    })),
+  );
   await insert(schema.approvals, data.approvals);
   await insert(schema.threads, data.threads);
   await insert(schema.threadMessages, data.messages.map(fromThreadMessage));

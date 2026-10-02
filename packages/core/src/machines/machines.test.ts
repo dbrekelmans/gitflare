@@ -76,6 +76,7 @@ function thread(id: string, overrides: Partial<Thread> = {}): Thread {
     createdAt: 1,
     settledAt: null,
     settledBy: null,
+    learnedAt: null,
     messageCount: 1,
     lastMessageAt: 1,
     ...overrides,

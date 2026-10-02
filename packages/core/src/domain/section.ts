@@ -67,6 +67,13 @@ export interface Section {
   updatedRevisionId: RevisionId;
 }
 
+/** The size of the part of the diff a section presents. */
+export interface SectionStats {
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+}
+
 export const ApprovalWithdrawalReason = z.enum(["content_changed", "section_removed", "revoked"]);
 export type ApprovalWithdrawalReason = z.infer<typeof ApprovalWithdrawalReason>;
 

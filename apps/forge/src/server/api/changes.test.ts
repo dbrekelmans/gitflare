@@ -169,7 +169,7 @@ describe("the changes slice, acting on the demo", () => {
       attempt: 2,
       status: "queued",
     });
-    expect(ports.pipeline.reruns).toEqual([{ changeId, stage: "review" }]);
+    expect(ports.pipeline.reruns).toEqual([{ changeId, stage: "review", attempt: 2 }]);
   });
 
   it("closes a change for its author or an administrator only", async () => {

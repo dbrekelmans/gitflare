@@ -222,16 +222,23 @@ describe("hosts", () => {
 });
 
 describe("the network mode", () => {
-  it("is intercepted unless every host is granted", () => {
-    expect(egressMode([])).toBe("intercepted");
-    expect(egressMode([forkWrite, models, registry])).toBe("intercepted");
-    expect(egressMode([{ kind: "host", host: "*.npmjs.org" }])).toBe("intercepted");
-    expect(egressMode([{ kind: "host", host: "*" }, registry])).toBe("open");
+  it("is intercepted unless open Internet access is asked for by name", () => {
+    expect(egressMode({ egress: [] })).toBe("intercepted");
+    expect(egressMode({ egress: [forkWrite, models, registry] })).toBe("intercepted");
+    expect(egressMode({ egress: [{ kind: "host", host: "*.npmjs.org" }] })).toBe("intercepted");
+    expect(egressMode({ egress: [], openInternet: true })).toBe("open");
   });
 
-  it("is never open for a sandbox that is also handed a credential", () => {
-    for (const grant of [forkWrite, models]) {
-      expect(() => egressMode([{ kind: "host", host: "*" }, grant])).toThrow(ForgeError);
+  it("refuses a grant of every host, which used to mean open", () => {
+    expect(() => egressMode({ egress: [{ kind: "host", host: "*" }] })).toThrow(ForgeError);
+    expect(() => egressMode({ egress: [{ kind: "host", host: "*" }, registry] })).toThrow(
+      ForgeError,
+    );
+  });
+
+  it("is never open for a sandbox that is also handed a grant", () => {
+    for (const grant of [forkWrite, models, registry]) {
+      expect(() => egressMode({ egress: [grant], openInternet: true })).toThrow(ForgeError);
     }
   });
 });

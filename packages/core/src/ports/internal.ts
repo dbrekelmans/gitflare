@@ -63,13 +63,16 @@ export interface DecisionsPort {
   /**
    * The active decisions of a repository closest in meaning to `query`,
    * nearest first. When `changeId` is given, what was retrieved is recorded
-   * against the change.
+   * against the change. When `paths` is given (the files a change touches), a
+   * decision tied to paths is returned only if it applies to one of them
+   * (`decisionApplies`); without `paths` every active decision is a candidate.
    */
   retrieve(input: {
     repositoryId: RepositoryId;
     query: string;
     limit: number;
     changeId?: ChangeId;
+    paths?: string[];
   }): Promise<RetrievedDecision[]>;
   /** Writes the decision's file, indexes it, and records `created`. */
   record(input: NewDecision): Promise<Decision>;
@@ -80,7 +83,13 @@ export interface DecisionsPort {
     relation: "followed" | "cited" | "contradicted";
     threadId?: ThreadId;
   }): Promise<void>;
-  /** Looks through a settled thread for a decision worth keeping; records or reinforces it. */
+  /**
+   * Looks through a settled thread for a decision worth keeping; records or
+   * reinforces it. Whatever it finds, it sets the thread's `learnedAt`, and a
+   * thread already considered as it stands is answered without a model call.
+   * Called off the request path by whoever settled the thread: the agent's
+   * turn, or the thread's Durable Object after a person resolves or dismisses.
+   */
   learnFromThread(threadId: ThreadId): Promise<Decision | null>;
   /** Called when a change merges: reinforces what it followed or cited, weakens what it contradicted. */
   settleChange(changeId: ChangeId): Promise<void>;

@@ -27,6 +27,9 @@ export async function capture(ctx: CliContext, args: string[]): Promise<number> 
 
   // Entire pushes checkpoints to the context repository with git, so git needs
   // this program as its credential helper for that remote too.
+  if (!detail.contextRemote) {
+    throw new CliError(`${repoSlug} is not ready yet. Try again in a minute.`);
+  }
   await configureHost(ctx, forge, detail.contextRemote);
   if (ctx.env.ENTIRE_CHECKPOINT_TOKEN) {
     ctx.stderr(

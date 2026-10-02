@@ -73,6 +73,15 @@ export class FakeGit implements GitHost, GitWriter {
   readonly tokens: IssuedToken[] = [];
   /** Every ref update, in order, as the push event Artifacts would have sent. */
   readonly pushes: Push[] = [];
+  /**
+   * Called with the push each `commitFiles` produced. Artifacts raises an
+   * event for every ref update, gitflare's own commits included, and that
+   * event is what starts the pipeline; here nothing does unless this is set
+   * (local development can set it to `pipeline.handlePush`). The `push`
+   * helper does not call it: a test hands that push over itself.
+   */
+  onPush: ((push: Push) => Promise<void>) | null = null;
+  private nextCommitFailure: ForgeError | null = null;
 
   constructor(
     private readonly clock: Clock,
@@ -194,6 +203,11 @@ export class FakeGit implements GitHost, GitWriter {
     const state = this.repo(request.repo);
     const ref = fullRef(request.branch);
     const tip = state.refs.get(ref) ?? null;
+    const failure = this.nextCommitFailure;
+    if (failure) {
+      this.nextCommitFailure = null;
+      throw failure;
+    }
     if (tip !== request.expectedParent) {
       throw new ForgeError(
         "conflict",
@@ -206,7 +220,8 @@ export class FakeGit implements GitHost, GitWriter {
       request.message,
       request.author,
     );
-    this.setRef(request.repo, ref, sha);
+    const push = this.setRef(request.repo, ref, sha);
+    await this.onPush?.(push);
     return { sha };
   }
 
@@ -287,6 +302,16 @@ export class FakeGit implements GitHost, GitWriter {
       options.author ?? fakeAuthor,
     );
     return this.setRef(repo, name, sha);
+  }
+
+  /**
+   * Makes the next `commitFiles` fail and write nothing: by default with the
+   * `conflict` a branch that moved underneath the writer gives.
+   */
+  failNextCommit(
+    error = new ForgeError("conflict", "The branch moved while the commit was being written."),
+  ): void {
+    this.nextCommitFailure = error;
   }
 
   /** Ends a held fork or import: the repository becomes `ready`. */

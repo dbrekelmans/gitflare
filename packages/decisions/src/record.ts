@@ -6,6 +6,7 @@ import {
   type DecisionEventKind,
   type DecisionId,
   type DecisionOrigin,
+  decisionWording,
   ForgeError,
   initialDecisionState,
   type ThreadId,
@@ -115,8 +116,7 @@ export async function recordDecision(deps: DecisionsDeps, input: NewDecision): P
     userId: input.userId,
     strengthBefore: state.strength,
     strengthAfter: state.strength,
-    statementBefore: null,
-    statementAfter: null,
+    wording: null,
     note: createdNote[input.origin],
     createdAt: now,
   };
@@ -187,8 +187,7 @@ async function applyEvent(
       userId: input.userId,
       strengthBefore: row.strength,
       strengthAfter: next.strength,
-      statementBefore: rewords ? row.statement : null,
-      statementAfter: rewords ? wording.statement : null,
+      wording: rewords ? { before: decisionWording(row), after: wording } : null,
       note: input.note,
       createdAt: now,
     };
@@ -206,9 +205,11 @@ async function applyEvent(
       eq(decisions.statement, row.statement),
       eq(decisions.rationale, row.rationale),
     );
-    const eventValues = Object.keys(getTableColumns(decisionEvents)).map(
-      (column) => sql`${event[column as keyof DecisionEvent]}`,
-    );
+    const eventValues = Object.entries(getTableColumns(decisionEvents)).map(([name, column]) => {
+      const value = event[name as keyof DecisionEvent];
+      // This insert bypasses Drizzle's own encoding, so a JSON column is encoded here.
+      return sql`${value === null ? null : column.mapToDriverValue(value)}`;
+    });
     const [, updated] = await deps.db.batch([
       deps.db
         .insert(decisionEvents)

@@ -25,6 +25,14 @@ export interface Repository {
    * importing is slow and can fail, so it happens after the request that asked.
    */
   readyAt: Timestamp | null;
+  /**
+   * Set when the import gave up for good: the source could not be read, or
+   * is too large. The repository will never become ready; creating one with
+   * the same slug replaces it.
+   */
+  importFailedAt: Timestamp | null;
+  /** Why the import failed, in words its creator can act on. Set with `importFailedAt`. */
+  importError: string | null;
   archivedAt: Timestamp | null;
 }
 

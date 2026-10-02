@@ -61,6 +61,12 @@ export interface ForgeApi {
   repositories: {
     list(ctx: ApiContext): Promise<RepositoryView[]>;
     get(ctx: ApiContext, input: In<typeof inputs.RepoRef>): Promise<RepositoryDetail>;
+    /**
+     * An import runs after this returns: the view comes back with `readyAt`
+     * null, and later shows either that or `importFailedAt` with the reason.
+     * A slug held by a repository whose import failed is free: creating it
+     * again replaces that repository. Any other existing slug is a `conflict`.
+     */
     create(
       ctx: ApiContext,
       input: In<typeof inputs.CreateRepositoryInput>,
@@ -77,7 +83,9 @@ export interface ForgeApi {
      * Records a session and starts forking the repository for it. The fork
      * takes seconds to most of a minute: the view comes back with
      * `session.forkReadyAt` null, and callers poll `get` until it is set. A
-     * cloud session's workspace boots once the fork is ready.
+     * cloud session's first prompt is kept with the session; the provisioning
+     * step that completes the fork boots the workspace and sends it. This
+     * operation never launches anything itself.
      */
     start(ctx: ApiContext, input: In<typeof inputs.StartSessionInput>): Promise<SessionView>;
     get(ctx: ApiContext, input: In<typeof inputs.SessionRef>): Promise<SessionView>;
@@ -127,8 +135,17 @@ export interface ForgeApi {
     list(ctx: ApiContext, input: In<typeof inputs.ListDecisionsInput>): Promise<Decision[]>;
     get(ctx: ApiContext, input: In<typeof inputs.DecisionRef>): Promise<DecisionDetail>;
     create(ctx: ApiContext, input: In<typeof inputs.CreateDecisionInput>): Promise<DecisionDetail>;
+    /**
+     * Rewords a decision and records `reshaped` with the whole wording before
+     * and after. An edit that changes nothing records nothing.
+     */
     edit(ctx: ApiContext, input: In<typeof inputs.EditDecisionInput>): Promise<DecisionDetail>;
-    /** Puts the wording back to what it was before one reshaping. */
+    /**
+     * Puts the whole wording (title, statement and rationale) back to what it
+     * was before one event changed it, and records `reverted`. `invalid` for
+     * an event that did not change the wording; `conflict` when the decision
+     * already reads that way, so there is nothing to put back.
+     */
     revert(ctx: ApiContext, input: In<typeof inputs.RevertDecisionInput>): Promise<DecisionDetail>;
     /** Brings a dormant decision back into reviews. */
     revive(ctx: ApiContext, input: In<typeof inputs.DecisionRef>): Promise<DecisionDetail>;

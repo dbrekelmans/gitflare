@@ -173,6 +173,7 @@ export function findingOn(path: string): StageHandler<PipelineDeps> {
       createdAt: deps.clock.now(),
       settledAt: null,
       settledBy: null,
+      learnedAt: null,
       messageCount: 0,
       lastMessageAt: deps.clock.now(),
     };

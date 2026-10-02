@@ -89,7 +89,7 @@ describe("repositories slice", () => {
       { repositoryId: view.repository.id, url: "https://example.com/legacy.git" },
     ]);
     expect(await api.get({ user: maya }, { repoSlug: "legacy" })).toMatchObject({
-      remote: "",
+      remote: null,
       recentCommits: [],
     });
   });

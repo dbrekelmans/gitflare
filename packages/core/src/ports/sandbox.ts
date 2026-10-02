@@ -15,8 +15,34 @@ export type EgressGrant =
   | { kind: "git"; repo: string; scope: GitTokenScope }
   /** Model calls through the deployment's gateway, tagged with this attribution. */
   | { kind: "models"; attribution: ModelAttribution }
-  /** Plain outbound HTTPS to one host, for package registries. Globs allowed. */
+  /**
+   * Plain outbound HTTPS to one host, read-only, for package registries. A
+   * `*` inside the name is a glob (`*.npmjs.org`). A bare `*` is not a grant:
+   * it is `invalid`. Reaching anything at all is `openInternet`.
+   */
   | { kind: "host"; host: string };
+
+/**
+ * Refuses start options that do not mean one thing. Every `Sandbox`
+ * implementation calls this first, so the fake and the container agree on
+ * what is `invalid`.
+ */
+export function checkStartOptions(
+  options: Pick<SandboxStartOptions, "egress" | "openInternet">,
+): void {
+  if (options.egress.some((grant) => grant.kind === "host" && grant.host.trim() === "*")) {
+    throw new ForgeError(
+      "invalid",
+      "A host grant of * is not allowed. Ask for open Internet access by name: openInternet.",
+    );
+  }
+  if (options.openInternet && options.egress.length > 0) {
+    throw new ForgeError(
+      "invalid",
+      "A sandbox with open Internet access cannot also be given egress grants.",
+    );
+  }
+}
 
 /**
  * What to boot a sandbox from: the deployment's prepared workspace. Throws
@@ -39,7 +65,14 @@ export interface SandboxStartOptions {
   /** What to boot: the managed base image, or a named image from the Worker's container configuration. */
   image: string;
   instance: SandboxInstance;
+  /** Everything the sandbox may reach. With none, and no `openInternet`, it reaches nothing. */
   egress: EgressGrant[];
+  /**
+   * Unrestricted outbound access with nothing intercepted, for preparing the
+   * workspace. Because nothing is intercepted no credential can be added on
+   * the way out, so it excludes every grant: `egress` must be empty.
+   */
+  openInternet?: boolean;
   /** Start from a saved filesystem instead of the image. */
   snapshot?: SandboxSnapshot;
 }
@@ -65,6 +98,12 @@ export interface ExecResult {
 
 export type ProcessStatus = { state: "running" } | { state: "exited"; exitCode: number };
 
+/**
+ * The exit code of a command that could not be launched at all: no such
+ * binary, or a `cwd` that does not exist. The shell's own convention.
+ */
+export const EXIT_NOT_LAUNCHED = 127;
+
 export interface LogChunk {
   text: string;
   /** Pass back as `offset` to read what was written since. */
@@ -75,21 +114,33 @@ export interface LogChunk {
  * One container. Nothing running inside it keeps it alive and its disk does
  * not survive a stop, so long work is started with `spawn`, which writes its
  * output to files, and progress is read back with `processStatus` and `readLog`.
+ *
+ * Two failures are kept apart. A sandbox that is not running (never started,
+ * stopped, or lost) makes every method except `isRunning`, `start` and `stop`
+ * throw `unavailable`: that is the infrastructure failing, and the caller may
+ * retry on a fresh sandbox. A command that fails is a result, not a throw: a
+ * non-zero `exitCode`, and `EXIT_NOT_LAUNCHED` with the reason in `stderr`
+ * when it could not be launched at all.
  */
 export interface Sandbox {
   readonly id: SandboxId;
+  /** Throws `conflict` when it is already running, and `invalid` for options `checkStartOptions` refuses. */
   start(options: SandboxStartOptions): Promise<void>;
   isRunning(): Promise<boolean>;
   /** Runs a short command to completion and buffers its output. Not for builds or agents. */
   exec(command: string[], options?: ExecOptions): Promise<ExecResult>;
-  /** Starts a named background process. A name can be reused once its process has exited. */
+  /**
+   * Starts a named background process. A name can be reused once its process
+   * has exited. One that could not be launched has exited with `EXIT_NOT_LAUNCHED`.
+   */
   spawn(name: string, command: string[], options?: ExecOptions): Promise<void>;
+  /** Null when no process of that name was ever spawned in this sandbox. */
   processStatus(name: string): Promise<ProcessStatus | null>;
   readLog(name: string, stream: "stdout" | "stderr", offset: number): Promise<LogChunk>;
   writeFile(path: string, content: string): Promise<void>;
   readFile(path: string): Promise<string | null>;
   snapshot(): Promise<SandboxSnapshot>;
-  /** Stops the container and discards its disk. */
+  /** Stops the container and discards its disk. Safe to call on one that is not running. */
   stop(): Promise<void>;
 }
 

@@ -93,6 +93,8 @@ export async function provisionRepository(
     captureEnabled: false,
     createdAt: deps.clock.now(),
     readyAt: null,
+    importFailedAt: null,
+    importError: null,
     archivedAt: null,
   };
 

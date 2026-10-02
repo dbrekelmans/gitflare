@@ -27,16 +27,34 @@ export interface CloudSessionStatus {
   updatedAt: Timestamp;
 }
 
-/** One thing the hosted agent did, in the order it happened. `seq` starts at 1. */
-export type CloudSessionEvent = {
+/**
+ * A hosted session's first prompt, kept from the request that starts the
+ * session until its fork exists. The provisioning step that completes the
+ * fork hands it to `CloudSessions.launch` and sets `launchedAt`; a launch
+ * with `launchedAt` set has been delivered and is never sent again.
+ */
+export interface SessionLaunch {
   sessionId: SessionId;
-  seq: number;
-  at: Timestamp;
-} & (
+  prompt: string;
+  requestedAt: Timestamp;
+  launchedAt: Timestamp | null;
+}
+
+/**
+ * One thing the hosted agent did, in the order it happened. `seq` starts at 1
+ * and keeps counting across a stop and a resume. An `assistant` event is one
+ * complete block of the agent's reply, never a partial one to append to.
+ */
+export type CloudSessionEventBody =
   | { type: "prompt"; text: string }
   | { type: "assistant"; text: string }
   | { type: "tool"; name: string; summary: string }
   | { type: "pushed"; sha: string }
   | { type: "state"; state: CloudSessionState }
-  | { type: "error"; message: string }
-);
+  | { type: "error"; message: string };
+
+export type CloudSessionEvent = {
+  sessionId: SessionId;
+  seq: number;
+  at: Timestamp;
+} & CloudSessionEventBody;

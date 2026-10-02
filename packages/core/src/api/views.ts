@@ -37,10 +37,13 @@ export interface RepositoryView {
 }
 
 export interface RepositoryDetail extends RepositoryView {
-  /** What to `git clone`. Read access comes from the credential helper. */
-  remote: string;
-  /** The sibling repo holding checkpoints and decision files. */
-  contextRemote: string;
+  /**
+   * What to `git clone`. Read access comes from the credential helper. Null
+   * while the host has nothing to clone: the import is still running or failed.
+   */
+  remote: string | null;
+  /** The sibling repo holding checkpoints and decision files. Null with `remote`. */
+  contextRemote: string | null;
   recentCommits: GitCommit[];
 }
 
@@ -72,6 +75,8 @@ export interface ChangeDetail {
   change: Change;
   repository: RepositoryRef;
   author: UserRef;
+  /** Who merged it. Null until it is merged. */
+  mergedBy: UserRef | null;
   session: Session;
   capture: CaptureSummary;
   revisions: Revision[];
@@ -109,6 +114,8 @@ export interface ThreadView {
   thread: Thread;
   /** Oldest first. `user` is set for a person's message. */
   messages: (ThreadMessage & { user: UserRef | null })[];
+  /** The person behind `thread.settledBy`. Null while open, and when the agent settled it. */
+  settledBy: UserRef | null;
 }
 
 export interface CiView {
@@ -125,8 +132,9 @@ export interface CiLog {
 
 export interface DecisionDetail {
   decision: Decision;
-  /** Newest first. */
-  events: DecisionEvent[];
+  repository: RepositoryRef;
+  /** Newest first. `user` is the person behind `userId`; null when gitflare recorded the event. */
+  events: (DecisionEvent & { user: UserRef | null })[];
 }
 
 export interface SessionView {
@@ -134,8 +142,11 @@ export interface SessionView {
   repository: RepositoryRef;
   /** The change the session's pushes opened, once there is one. */
   change: Pick<Change, "id" | "number" | "title" | "status"> | null;
-  /** Where the session pushes: the fork's git remote. */
-  pushRemote: string;
+  /**
+   * Where the session pushes: the fork's git remote. Null until the fork is
+   * ready, and again once it has been deleted.
+   */
+  pushRemote: string | null;
   /** Null for a local session. */
   cloud: CloudSessionStatus | null;
 }

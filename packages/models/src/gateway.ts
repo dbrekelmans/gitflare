@@ -389,7 +389,11 @@ export function createGatewayModels(
 
     async embed(request): Promise<EmbedResult> {
       const metadata = attributionMetadata(request.attribution);
-      if (request.texts.length === 0) return { vectors: [], model: request.model, costMicroUsd: 0 };
+      // Token counts are not read yet: the hardening task takes them from the gateway log.
+      const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+      if (request.texts.length === 0) {
+        return { vectors: [], model: request.model, usage, costMicroUsd: 0, gatewayLogId: null };
+      }
       const { raw, logId } = await run(request.model, { text: request.texts }, metadata);
       const embeddings = Embeddings.safeParse(raw);
       if (!embeddings.success || embeddings.data.data.length !== request.texts.length) {
@@ -401,7 +405,9 @@ export function createGatewayModels(
       return {
         vectors: embeddings.data.data,
         model: request.model,
+        usage,
         costMicroUsd: (await loggedCost(logId)) ?? 0,
+        gatewayLogId: logId ?? null,
       };
     },
   };
