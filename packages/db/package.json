@@ -1,0 +1,29 @@
+{
+  "name": "@gitflare/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts",
+    "./migrations": "./src/migrations.ts",
+    "./d1": "./src/d1.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --root ../.. packages/db/",
+    "generate": "drizzle-kit generate"
+  },
+  "dependencies": {
+    "@gitflare/core": "workspace:*",
+    "drizzle-orm": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "drizzle-kit": "^0.31.11",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "vite": "^8.3.2"
+  }
+}

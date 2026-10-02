@@ -9,21 +9,6 @@ const outlineDisabled =
   "data-disabled:border-border-disabled data-disabled:bg-transparent data-disabled:text-faint"
 const ghostDisabled = "data-disabled:bg-transparent data-disabled:text-faint"
 
-/**
- * Two primaries, split by what the action is.
- *
- * - `default` is ink: a standing action that is always available (nav,
- *   toolbars, page headers).
- * - `flare` is a moment the system is waiting on: a dialog, a question, an
- *   inline decision. At most one flare button per view. On a flare field it
- *   turns white, because flare on flare stops reading as an action.
- * - `outline` is the secondary; `secondary` is an alias kept for shadcn
- *   blocks. `ghost` and `link` are the quiet ones.
- * - `tone` swaps ink for a status colour on `default`, `outline` and `ghost`.
- *   `destructive` is shorthand for a filled danger button. At most one
- *   status-toned button per view, and never on a flare field: status is
- *   semantic, not a second accent.
- */
 const buttonVariants = cva(
   cn(
     "group/button inline-flex shrink-0 cursor-pointer items-center justify-center gap-s2 rounded-pill font-medium whitespace-nowrap transition-colors select-none data-disabled:pointer-events-none on-flare:focus-visible:outline-on-flare [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
@@ -175,6 +160,21 @@ const buttonVariants = cva(
   }
 )
 
+/**
+ * Two primaries, split by what the action is.
+ *
+ * - `default` is ink: a standing action that is always available (nav,
+ *   toolbars, page headers).
+ * - `flare` is a moment the system is waiting on: a dialog, a question, an
+ *   inline decision. At most one flare button per view. On a flare field it
+ *   turns white, because flare on flare stops reading as an action.
+ * - `outline` is the secondary; `secondary` is an alias kept for shadcn
+ *   blocks. `ghost` and `link` are the quiet ones.
+ * - `tone` swaps ink for a status colour on `default`, `outline` and `ghost`.
+ *   `destructive` is shorthand for a filled danger button. At most one
+ *   status-toned button per view, and never on a flare field: status is
+ *   semantic, not a second accent.
+ */
 function Button({
   className,
   variant = "default",

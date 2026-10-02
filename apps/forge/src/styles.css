@@ -1,0 +1,5 @@
+/*
+ * The app's one stylesheet. The UI package's globals bring Tailwind, the
+ * fonts and the theme; importing "tailwindcss" here as well would load it twice.
+ */
+@import "@gitflare/ui/globals.css";

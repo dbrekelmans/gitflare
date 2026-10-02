@@ -1,2 +1,12 @@
 /CONTEXT.md
 /docs/
+
+node_modules/
+.pnpm-store/
+dist/
+.wrangler/
+.dev.vars*
+!.dev.vars.example
+worker-configuration.d.ts
+*.tsbuildinfo
+.DS_Store

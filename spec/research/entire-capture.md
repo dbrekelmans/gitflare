@@ -12,6 +12,10 @@ checkpoints fetched from the public repository
 run (no Go toolchain); statements about runtime behaviour are from reading code unless marked
 "observed".
 
+Updated 2026-10-02 after a live test of the released v0.11.3 binary against two Artifacts
+repositories: [`live/entire-on-artifacts.md`](live/entire-on-artifacts.md). Statements below marked
+"Observed live" come from that test and replace the earlier inference.
+
 ## What this forces
 
 - **There is no `Entire-Attribution` commit trailer.** Only
@@ -35,12 +39,12 @@ run (no Go toolchain); statements about runtime behaviour are from reading code 
   `{"provider": string, "repo": "owner/name"}`; the URL is built from the *push remote's* scheme and
   host plus `repo`. There is no generic "any git URL" value. The only provider-specific code is a
   `provider → public host` switch, the CLI flag validator, and the claim-command printer.
-- **An unmodified CLI can probably already target a sibling repo on a non-GitHub/GitLab host.**
+- **An unmodified CLI can target a sibling repo on a non-GitHub/GitLab host.**
   For an HTTPS push remote on a host other than `github.com`/`gitlab.com` the derived URL is
   `https://<that host>/<repo>.git`, the provider string is not validated when read from the settings
-  file, and `repo` may contain more than one `/`. This is an inference from reading the code, not
-  an executed test, and it holds for pushes and for fetches only while `ENTIRE_CHECKPOINT_TOKEN` is
-  unset — see "What an Artifacts provider needs".
+  file, and `repo` may contain more than one `/`. Observed live against Artifacts with v0.11.3
+  (pushes, and reads through `entire checkpoint explain`, with a git credential helper). It holds for fetches only while
+  `ENTIRE_CHECKPOINT_TOKEN` is unset — see "What an Artifacts provider needs".
 - **Checkpoints are pushed with the system `git` binary**, from the `pre-push` hook, as
   `git push --no-verify --porcelain <target> <ref>:<ref>…`. Credential helpers and git config
   therefore apply; the CLI has no credential logic of its own beyond one env var
@@ -843,7 +847,9 @@ refSpecs = append(refSpecs, ref.String()+":"+ref.String())
 - `strategy_options.push_sessions: false` disables pushing entirely.
 - With the legacy branch backend, the v1 branch is not pushed to a remote that has no
   remote-tracking refs yet, so it cannot become the default branch. Per-checkpoint refs are exempt
-  because they are not under `refs/heads/`.
+  because they are not under `refs/heads/`. Observed live (one run): this guard did not apply to a
+  `checkpoint_remote`. The v1 branch was pushed to a sibling Artifacts repository that had no branch
+  (only `refs/entire/*` refs), whose `HEAD` then resolved to `refs/heads/entire/checkpoints/v1`.
 
 ### Configuration
 
@@ -1068,13 +1074,16 @@ Facts about the target, from Cloudflare's
   `https://<ACCOUNT_ID>.artifacts.cloudflare.net/git/<namespace>/<repo>.git`."
 - Auth is either `Authorization: Bearer <full token>` via `http.extraHeader`, or HTTP Basic with
   "the token secret in the password slot. Artifacts ignores the Basic auth username." The secret is
-  the token without its `?expires=` suffix; tokens look like `art_v1_<40 hex>?expires=<unix_seconds>`.
+  the token without its `?expires=` suffix; tokens are documented as `art_v1_<40 hex>?expires=<unix_seconds>` (observed live: `art_v2_e_<40 hex>?expires=…`).
+  In an unrestricted namespace the prefix was `art_v2_x_`, and the token was accepted with or without
+  the suffix in both the Bearer and the Basic form (`live/entire-on-artifacts.md`).
 - Push uses protocol v1 receive-pack ("Artifacts does not support v2 receive-pack").
 - The page's only statement about `filter` is the row "Optional protocol v1 capabilities |
   `git-upload-pack` | Partial | Some optional v1 capabilities, such as `filter` and `include-tag`,
   are not supported." It says nothing about `filter` under protocol v2.
 
-Applying the Entire code above to such a remote (derived by reading; **not executed**):
+Applying the Entire code above to such a remote (derived by reading; the live test with
+v0.11.3 observed the outcome — step 5's push, to the URL of step 4 — not the internal steps 1–3):
 
 1. `ParseURL("https://<acct>.artifacts.cloudflare.net/git/<ns>/<repo>.git")` yields
    `Owner = "git"`, `Repo = "<ns>/<repo>"`, `Forge = ""`.
@@ -1104,7 +1113,10 @@ The provider name still matters, in two places:
   side behaves as in steps 1–5.
 
 So the no-code-change route covers pushes, and covers fetches (`entire resume`, `explain`,
-on-demand ref fetch, push recovery by fetch + replay) only when the env var is unset.
+on-demand ref fetch, push recovery by fetch + replay) only when the env var is unset. Observed live:
+with the variable set and provider `artifacts`, `entire checkpoint explain` ran `git ls-remote` and
+`git fetch` against the code repository and reported "checkpoint not found"; with provider `gitlab`
+it targeted `https://gitlab.com/git/<ns>/<other-repo>.git`.
 
 Without `checkpoint_remote` at all, checkpoints go to the elected remote as-is, whatever its URL —
 that is the "any git URL" case, and it already works, but only for storing checkpoints in the *same*
@@ -1134,9 +1146,10 @@ What a real `artifacts` provider (a fork or an upstream PR in the shape of #2528
   origin's host for this provider instead of `providerHost`.
 - Tests alongside each, as in #2528.
 
-Leave `strategy_options.filtered_fetches` unset. It adds `--filter=blob:none` to checkpoint
-fetches; that this fails or degrades on Artifacts is an **inference** from the v1-capability row
-quoted above, not something Cloudflare states for protocol v2 and not something tested here.
+`strategy_options.filtered_fetches` adds `--filter=blob:none` to checkpoint fetches. Observed live
+(`live/artifacts-git.md`): blobless partial clone works over protocol v2, so the earlier inference
+that this would fail on Artifacts was wrong. The setting itself was not exercised with Entire; leave
+it unset until it is.
 
 ### Redaction
 
@@ -1286,7 +1299,10 @@ None of this is a Cloudflare runtime API, so nothing here runs under `wrangler d
 ## Could not verify
 
 - **Whether Artifacts accepts pushes to, and serves fetches of, refs outside `refs/heads/` and
-  `refs/tags/`** — specifically `refs/entire/checkpoints/<shard>/<id>`. The Git protocol page does
+  `refs/tags/`** — specifically `refs/entire/checkpoints/<shard>/<id>`. _Settled live on 2026-10-02
+  (`spec/research/live/artifacts-git.md`, section 2): such refs are accepted, listed by `ls-remote`,
+  fetchable by explicit and wildcard refspec, and produce push events; the `git-branch` fallback is
+  not needed. The rest of this item is kept as written before the test._ The Git protocol page does
   not say. The nearest statement is on Cloudflare's
   [best-practices page](https://developers.cloudflare.com/artifacts/concepts/best-practices/):
   "Push and fetch `refs/notes/*` with the rest of your repo data" — so one namespace outside
@@ -1295,28 +1311,30 @@ None of this is a Cloudflare runtime API, so nothing here runs under `wrangler d
   Cloudflare resources is out of bounds for this task. If it does not, the fallback is the
   `git-branch` backend (`checkpoints.primary.type: "git-branch"`, one branch
   `entire/checkpoints/v1`).
+- **The `git-branch` backend with a `checkpoint_remote` on Artifacts** worked in one live run
+  (`live/entire-on-artifacts.md`): the v1 branch was pushed to the sibling and became its `HEAD`.
 - **Whether an Artifacts push event is emitted for such refs, and what it carries.** Out of scope
   here; belongs to the Artifacts note.
-- **The no-code-change route end to end.** Steps 1–5 under "What an Artifacts provider needs" are
+- **The no-code-change route end to end.** _Settled live (`live/entire-on-artifacts.md`): the unmodified v0.11.3 CLI pushed checkpoints to the sibling Artifacts repository with a hand-written settings file; `entire status` accepts the unknown provider name, and `entire enable --checkpoint-remote artifacts:…` only warns (`unsupported provider "artifacts" (supported: github, gitlab)`) and enables without the remote. The rest of this item is kept as written before the test._ Steps 1–5 under "What an Artifacts provider needs" are
   from reading `util.go`, `settings.go` and `gitremote.go`; no Go toolchain was available to run the
   CLI against an Artifacts remote, and the repo has no test for a non-forge HTTPS host with a
   three-segment path. `entire status`/`entire enable` messages for an unknown provider name were not
   traced.
-- **`ENTIRE_CHECKPOINT_TOKEN` against Artifacts.** Cloudflare documents Basic auth with any
+- **`ENTIRE_CHECKPOINT_TOKEN` against Artifacts.** _Settled live (`live/entire-on-artifacts.md`): Artifacts accepted it for the push; with it set, the one read command tested (`entire checkpoint explain`) went to the code repository and reported "checkpoint not found" (provider `gitlab` with a dummy token and a blocked connection addressed `gitlab.com`; provider `github` not run). The rest of this item is kept as written before the test._ Cloudflare documents Basic auth with any
   username and the token secret as password; Entire sends `x-access-token:<token>`. The combination
   was not exercised, and applies to pushes only — the fetch path is redirected (see above). The Entire code itself notes that the equivalent GitLab behaviour is "an
   external contract verified manually against gitlab.com, not enforced by CI".
-- **Credential-helper behaviour inside the `pre-push` hook.** Inferred from the CLI invoking plain
+- **Credential-helper behaviour inside the `pre-push` hook.** _Settled live (`live/entire-on-artifacts.md`): the helper was consulted for the checkpoint push inside the hook and by `entire checkpoint explain`; `session resume` and the other fetch paths were not run. The rest of this item is kept as written before the test._ Inferred from the CLI invoking plain
   `git push` with only `GIT_TERMINAL_PROMPT=0` and stdin detached; not run.
 - **Whether upstream would accept an Artifacts provider.** No issue or discussion was searched for
   beyond PR #2528; only that PR's size and shape are verified.
-- **`--filter=blob:none` against Artifacts.** Cloudflare documents `filter` as unsupported only
+- **`--filter=blob:none` against Artifacts.** _Settled live (`live/entire-on-artifacts.md`): one blobless bare clone completed; `live/artifacts-git.md` tested partial clone more thoroughly (works over protocol v2). Entire's `filtered_fetches` itself was not exercised. The rest of this item is kept as written before the test._ Cloudflare documents `filter` as unsupported only
   among optional protocol v1 upload-pack capabilities; v2 behaviour is unstated and nothing was
   tested.
 - **What the `v1/main`, `v1/full`, `v2/main` and `v2/full/*` refs under `refs/entire/checkpoints/`
   in `entireio/cli-checkpoints` are.** They exist on the remote; the pinned code does not mention
   them and their contents were not inspected.
-- **Fast-forward-only assumption on the server.** Entire never force-pushes checkpoint refs and
+- **Fast-forward-only assumption on the server.** _Settled live (`live/entire-on-artifacts.md`): Artifacts did not reject a forced non-fast-forward update or a delete of a ref under `refs/entire/`. The rest of this item is kept as written before the test._ Entire never force-pushes checkpoint refs and
   recovers from non-fast-forward rejection by fetch + replay. Whether Artifacts rejects
   non-fast-forward pushes to arbitrary refs was not checked.
 - **Native transcript formats of agents other than Claude Code**, and the compact converter output
