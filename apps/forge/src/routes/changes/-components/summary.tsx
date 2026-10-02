@@ -6,6 +6,7 @@ import {
   stageNames,
 } from "@gitflare/core";
 import type { ChangeDetail } from "@gitflare/core/api";
+import { Row } from "@gitflare/ui/components/row";
 import { StatusDot } from "@gitflare/ui/components/status";
 import { Evidence, Text } from "@gitflare/ui/components/typography";
 import { Button } from "@gitflare/ui/components/ui/button";
@@ -20,7 +21,6 @@ import {
   stageStatusCopy,
   stageTone,
 } from "./copy";
-import { Fact } from "./fact";
 
 /** A claim and what qualifies it: the first sentence in ink, the rest quieter. */
 function Statement({ headline, detail }: { headline: string; detail: string }) {
@@ -47,16 +47,16 @@ function EvidenceLines({ lines }: { lines: string[] }) {
 export function IntentFact({ intent }: Pick<ChangeDetail, "intent">) {
   if (!intent) {
     return (
-      <Fact label="Intent">
+      <Row label="Intent">
         <Statement
           headline="Not derived yet."
           detail="The intent stage has not produced a statement of what this change is for."
         />
-      </Fact>
+      </Row>
     );
   }
   return (
-    <Fact
+    <Row
       label="Intent"
       annotation={
         <EvidenceLines
@@ -68,7 +68,7 @@ export function IntentFact({ intent }: Pick<ChangeDetail, "intent">) {
       }
     >
       <Statement {...intentGradeCopy[intent.grade]} />
-    </Fact>
+    </Row>
   );
 }
 
@@ -89,12 +89,12 @@ export function CaptureFact({ capture }: Pick<ChangeDetail, "capture">) {
     ),
   ];
   return (
-    <Fact
+    <Row
       label="Capture"
       annotation={lines.length > 0 ? <EvidenceLines lines={lines} /> : undefined}
     >
       <Statement {...captureCopy(capture)} />
-    </Fact>
+    </Row>
   );
 }
 
@@ -148,7 +148,7 @@ export function PipelineFact({
   const head = revisions.find((revision) => revision.id === change.headRevisionId);
   const ordered = stageNames.flatMap((stage) => stages.filter((run) => run.stage === stage));
   return (
-    <Fact
+    <Row
       label="Pipeline"
       annotation={
         <EvidenceLines
@@ -176,6 +176,6 @@ export function PipelineFact({
           ))}
         </ul>
       )}
-    </Fact>
+    </Row>
   );
 }
