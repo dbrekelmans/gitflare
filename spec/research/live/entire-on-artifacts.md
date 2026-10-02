@@ -503,9 +503,12 @@ Claude Code's environment variables (`CLAUDECODE`, `CLAUDE_CODE_*`) showed no pr
   ```
 
   So the server honoured the filter on clone. Fetching a missing blob on demand (a checkout, or
-  `git cat-file` of a missing object) was not tried, and neither was Entire's `filtered_fetches`.
+  `git cat-file` of a missing object) was not tried here, and neither was Entire's
+  `filtered_fetches`. The Artifacts live test (`artifacts-git.md`) did test on-demand fetching and
+  found partial clone working over protocol v2.
 - **The token format is not the documented one.** Tokens from `wrangler artifacts repos create` look
-  like `art_v2_x_<40 hex>?expires=<unix seconds>`. The `expires` value of the initial token was
+  like `art_v2_x_<40 hex>?expires=<unix seconds>` in this unrestricted namespace (`artifacts-git.md`
+  saw `art_v2_e_` in an `eu` namespace). The `expires` value of the initial token was
   24 hours after creation (`2026-10-03T16:34:47Z` for a repository created at
   `2026-10-02T16:34:47Z`); the test ended long before that, so expiry itself was not observed.
 - **Namespaces can be deleted.** `DELETE /accounts/<account-id>/artifacts/namespaces/<namespace>`
@@ -567,10 +570,9 @@ command sandbox does not allow deleting there. The sessions only read and edited
 - The Artifacts token format quoted from Cloudflare's page (`art_v1_…`) is annotated with the
   observed `art_v2_x_…`.
 
-`spec/research/artifacts.md` (smallest possible edits; the Artifacts live test owns the rest):
+`spec/research/artifacts.md` — the Artifacts live test (`artifacts-git.md`) merged first and
+corrected the same facts more thoroughly; its wording is kept. What this test adds there:
 
-- Token format, and the statement that Basic auth needs the suffix stripped (both forms work).
-- "Partial clone may not work" / "Whether `--filter=blob:none` works": a blobless clone completed;
-  lazy fetching is still untested, so the shallow-fetch plan stands.
-- The initial token's `expires` value (24 hours after creation), and the existence of a namespace
-  delete route.
+- The token prefix in an unrestricted namespace (`art_v2_x_`, next to the `art_v2_e_` seen in `eu`).
+- Basic auth accepts the token with or without its `?expires=` suffix, and a valid token against a
+  repository name that does not exist gets the same 403 as a wrong token.

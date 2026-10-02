@@ -4,6 +4,8 @@ Verified 2026-10-02 against live docs.
 
 Method: every page was fetched as raw markdown (`<url>/index.md`), signatures were read from the published npm tarballs, and API payloads from the API reference. **Nothing here was executed against a live Cloudflare account** — no model was called and no resource was created. Where a conclusion combines two documented facts but the combination itself is not documented, it is marked _(composed, untested)_ and repeated under [Could not verify](#could-not-verify).
 
+**Live test, 2026-10-02:** a subset of this note was then run against a real account; results are in [live/gateway-access.md](live/gateway-access.md). Where an observation contradicts or settles a statement here, the statement is annotated in place with "Live:".
+
 Package versions read: `@cloudflare/workers-types` 5.20261002.1, `wrangler` 4.147.0, `workers-ai-provider` 4.0.0, `ai-gateway-provider` 4.0.1, `jose` 6.2.12, `@anthropic-ai/sdk` 0.131.0, `ai` 7.0.127, `@cloudflare/vitest-pool-workers` 0.22.0.
 
 Shorthand for source URLs: `CF` = `https://developers.cloudflare.com`.
@@ -16,7 +18,7 @@ Shorthand for source URLs: `CF` = `https://developers.cloudflare.com`.
 4. **Budget fallback through Dynamic Routing is only reachable in OpenAI chat-completions format.** Documented: a route is called as `dynamic/<name>` through the OpenAI-compatible `/compat/chat/completions` endpoint, "Dynamic routing is not currently available on the REST API", and both routing pages ask for BYOK. Also documented: the spend-limits page describes exactly this fallback with `anthropic/claude-opus-4.7` as the primary model, so a Claude model _can_ sit inside a route. _Inference (untested):_ a caller that sends Anthropic Messages — Claude Code on the provider-native endpoint, or the binding call in bullet 3 — is not calling a route, so on breach it receives the documented `429` rather than a fallback. Either call Claude through a route in OpenAI format, or catch the `429` and downgrade in our own code. Whether routes work with Unified Billing is unresolved (see Could not verify).
 5. **There is no documented cost response header.** Per-request cost exists only on the gateway log entry (`cost`), is documented as an estimate, and is read after the fact by log id or by metadata filter. Per-change cost in the UI is therefore a sum over log entries and must be labelled an estimate.
 6. **`gitflare login` does not need `cloudflared`.** Access Managed OAuth (beta) turns the Access application into a standard OAuth 2.0 authorization server: authorization code + PKCE, loopback redirect, dynamic client registration, refresh tokens. The CLI gets an opaque bearer token; the Worker still receives the normal `Cf-Access-Jwt-Assertion`.
-7. **One Access application can cover a Worker on workers.dev, custom domains and previews (`destinations: [{ type: "worker" }]`), but Worker-level Access rejects WebSocket upgrades with `403`.** If live status uses WebSockets, protect by hostname instead (or stream over SSE). `ctx.access` exists but is not passed to a Worker that has Static Assets (including via the Vite plugin), so validating the JWT header with `jose` is the portable path.
+7. **One Access application can cover a Worker on workers.dev, custom domains and previews (`destinations: [{ type: "worker" }]`), but the docs say Worker-level Access rejects WebSocket upgrades with `403`.** If live status uses WebSockets, protect by hostname instead (or stream over SSE). _Live: not reproduced with a service token — an upgrade to a Durable Object returned `101` behind a `worker` destination as well as behind a hostname one, while unauthenticated upgrades were refused. No browser session was tested, so the documented limitation stands as unconfirmed, not disproved; keep this fallback._ `ctx.access` exists but is not passed to a Worker that has Static Assets (including via the Vite plugin), so validating the JWT header with `jose` is the portable path. _Live: confirmed — the header reaches a Worker with Static Assets and verifies; `ctx.access` is `undefined` there and present (also under a hostname application) without assets._
 8. **New Zero Trust organisations default to the Cloudflare identity provider restricted to account members; one-time PIN is no longer added automatically.** _Inference (untested):_ with only that provider available, a person who is not a member of the Cloudflare account has no way to log in, whatever the policy allows, until an identity provider such as `onetimepin` is added (one API call). This is in tension with the Workers page's policy option, which says Email domain "Allows anyone with a verified email address at the domain you enter … even if they are not Cloudflare account members"; the docs do not say which login method those people use on a fresh organisation. Creating the organisation asks for a plan and payment details even on the free plan.
 9. **AI Gateway tokens are account-scoped.** Any token with `AI Gateway Run` can use every gateway in the account, including its stored provider keys. Never place one inside a sandbox; inject credentials and metadata in Worker code on egress. Unified Billing is also rate limited to 200 requests per 60 seconds per gateway (BYOK is exempt).
 10. **No vector database for the decision record.** A few hundred short records fit in Worker memory; Vectorize and the AI binding have no local simulation, so every added binding is another thing to fake in tests. Embed with Workers AI, store vectors next to the index, compute cosine in the Worker.
@@ -137,9 +139,10 @@ Each model has a catalog page whose slug is the identifier. Read on 2026-10-02 (
 | `anthropic/claude-fable-5.1` | 1,000,000 | $10.00 / $50.00 | $0.25 / $12.50 |
 | `anthropic/claude-opus-5.5` | 1,000,000 | $4.00 / $20.00 | $0.20 / $5.00 |
 | `anthropic/claude-sonnet-5` | 1,000,000 | $2.00 / $10.00 | $0.20 / $2.50 |
+| `anthropic/claude-sonnet-5.5` | not read | not read | not read |
 | `anthropic/claude-haiku-4.5` | 200,000 | $1.00 / $5.00 | $0.10 / $1.25 |
 
-The catalog index (`CF/ai/models/`) also lists `claude-fable-5`, `claude-opus-5`, `claude-opus-4.8`, `-4.7`, `-4.6`, `-4.5`, `claude-sonnet-4.6`, `-4.5`. Prices are the catalog's and can change; read them from the catalog, do not hard-code.
+The catalog index (`CF/ai/models/`) also lists `claude-fable-5`, `claude-opus-5`, `claude-opus-4.8`, `-4.7`, `-4.6`, `-4.5`, `claude-sonnet-4.6`, `-4.5`. Prices are the catalog's and can change; read them from the catalog, do not hard-code. _Live: `anthropic/claude-sonnet-5.5` (added to the table above without catalog figures) and all twelve slugs named here got past the gateway's model lookup — none could be served, for lack of credits, so that is all it shows; hyphenated and dated forms (`anthropic/claude-haiku-4-5`, `…-20251001`) were rejected with `404`, `7003`, `Model not found`._
 
 - Identifier spelling is inconsistent across docs: the catalog and the 2026-09-01 changelog entry (`CF/ai-gateway/changelog/`) use dots (`anthropic/claude-haiku-4.5`), while examples on `CF/ai-gateway/usage/rest-api/` use hyphens (`anthropic/claude-sonnet-4-5`). Use the catalog slug. The provider-native endpoint (below) takes Anthropic's own ids without a prefix (its examples use `claude-sonnet-4-5`).
 - Every Anthropic catalog page states "Request formats: Anthropic Messages". The binding takes the Anthropic body directly (source: `CF/ai/models/anthropic/claude-sonnet-5/`):
@@ -192,6 +195,7 @@ const resp = await env.AI.run(
   - `claude-sonnet-5` declares `messages`, `max_tokens`, `system`, `stream`, `metadata`; `claude-haiku-4.5` adds `temperature`, `top_p`, `top_k`.
   - `claude-opus-5.5` additionally declares `thinking` (`type: "adaptive"`, `display: "summarized" | "omitted"`), `output_config` (`effort: "low" | "medium" | "high" | "xhigh" | "max"`, and `format: {}` with no further constraint), `tools` (array of objects, open), and `tool_choice` as `oneOf` `{ type: "auto", disable_parallel_tool_use? }` or `{ type: "none" }`.
   - All three set top-level `additionalProperties: {}` (undeclared fields are allowed by the schema) and declare `system` as `type: "string"`.
+  - _Live: these schemas are enforced before billing. `system` as an array is rejected on all five models tried; `tool_choice` of type `tool` or `any` is rejected on `claude-opus-5.5` only; `temperature` is rejected on every model except `claude-haiku-4.5`; `output_config.format` and client-defined `tools` pass on all._
 - `workers-ai-provider` 4.0.0 README confirms the pass-through: the unified catalog "normalizes most providers to OpenAI chat-completions … but **passes Anthropic through natively**".
 
 ### REST endpoints and their auth
@@ -316,6 +320,7 @@ curl https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/ai-gateway/gatewa
 - **Forbid silent fall-through to Unified Billing**: set `byok_only: true` on the gateway (dashboard: "Require provider credentials"), or per request `cf-aig-no-wholesale: true`. Requests without credentials then return HTTP `400`. Workers AI requests are unaffected.
 - **Workers AI billing through a gateway**: `workers_ai_billing_mode` is `"postpaid"` (default, billed to the account) or `"unified"` (deducts credits).
 - **Zero Data Retention** (`zdr` on the gateway) applies only to Unified Billing requests, not BYOK, and does not control gateway logging.
+- _Live: on the test account (credit balance 0, no stored key) every `anthropic/…` call failed with HTTP `402`, code `2021` (thrown by the binding as `AiGatewayError: 2021: Insufficient AI Gateway credits`). No account with credits or a stored key was tested._
 - **Limits**: Unified Billing is limited to 200 requests per 60 seconds per gateway (`429` beyond), not applied to BYOK. Gateways per account: 10 free, 20 paid. (`CF/ai-gateway/reference/limits/`)
 
 ### Creating a gateway and its rules through the API
@@ -384,7 +389,7 @@ Source: `CF/ai-gateway/features/spend-limits/`.
 - "Spend limits are eventually consistent. The current request's cost is recorded after completion, so a burst of concurrent requests can briefly exceed the limit before enforcement catches up."
 - Per user, per agent, per change: one rule per dimension with the metadata key in `partition` mode. Dimensions combine: a rule with two partitioned keys has one bucket per combination.
 - **Deployment-wide budget**: a rule with no dimensions is "One shared bucket" ("Global budget for everyone").
-- What the caller sees on breach: `429 Too Many Requests` until the window resets.
+- What the caller sees on breach: `429 Too Many Requests` until the window resets. _Live (Workers AI requests): code `2045`, message `Spend limit exceeded: rule '<id>' (cost limit <n> per <window>s, <technique>) for …`; the rate limit is `2003`. `window` is seconds. A cache hit was still served to a blocked caller, and one overspend in nine was never enforced._
 - Fallback: "Create a Dynamic Route with a primary model and a fallback … Then set a spend limit on the primary model … When the primary model's budget is exceeded, AI Gateway automatically routes requests to the fallback model instead of blocking them." Subject to the Dynamic Routing constraints below.
 - The account-level endpoints `GET|POST|DELETE /accounts/{account_id}/ai-gateway/billing/spending-limit` are marked **deprecated** in the API reference; per-gateway `spend_limits` is the current mechanism. Credit balance and auto top-up are readable and settable under `/ai-gateway/billing/credit-balance` and `/ai-gateway/billing/topup/config`. (`CF/api/resources/ai_gateway/`)
 
@@ -392,7 +397,7 @@ Source: `CF/ai-gateway/features/spend-limits/`.
 
 Source: `CF/ai-gateway/observability/custom-metadata/`.
 
-- Up to **five** entries per request; extras are dropped. Values are string, number or boolean; objects are not supported.
+- Up to **five** entries per request; extras are dropped. Values are string, number or boolean; objects are not supported. _Live: the first five are kept; a single `null` or object value makes the whole metadata object disappear from the log, without an error._
 - Keys beginning `cf.` are reserved and stripped if sent by the caller.
 - Binding: `gateway: { id, metadata: { team: "AI", user: 12345, test: true } }`. HTTP: header `cf-aig-metadata: {"team": "AI", "user": 12345, "test":true}`.
 
@@ -475,10 +480,10 @@ type AiGatewayLog = {
 
 - From a Worker: `const myLogId = env.AI.aiGatewayLogId;` ("Returns the log ID from the most recent `env.AI.run()` request"), then `await env.AI.gateway("my-gateway").getLog("my-log-id")`. (`CF/ai-gateway/usage/worker-binding-methods/`) Because the property is "most recent", read it immediately after the awaited call and do not share one `env.AI` call site across concurrent requests without care.
 - Over HTTP the id is the `cf-aig-log-id` response header. (`CF/ai-gateway/glossary/`)
-- REST: `GET /accounts/{account_id}/ai-gateway/gateways/{gateway_id}/logs` and `…/logs/{id}`; permission `AI Gateway Read`. Entries include `cost`, `tokens_in`, `tokens_out`, `model`, `provider`, `metadata` (a string), `created_at`. List supports `filters: [{ key, operator, value }]` where `key` includes `metadata.key`, `metadata.value`, `cost`, `model`, `provider`, `created_at`, and `operator` is `eq | neq | contains | lt | gt`; `per_page` max 50; `search` is free text over metadata. This is how traffic that did not go through the binding (a coding agent) is attributed. (`CF/api/resources/ai_gateway/subresources/logs/methods/list/`)
+- REST: `GET /accounts/{account_id}/ai-gateway/gateways/{gateway_id}/logs` and `…/logs/{id}`; permission `AI Gateway Read`. Entries include `cost`, `tokens_in`, `tokens_out`, `model`, `provider`, `metadata` (the API reference types it as a string; _live: it is returned as a JSON object_), `created_at`. List supports `filters: [{ key, operator, value }]` where `key` includes `metadata.key`, `metadata.value`, `cost`, `model`, `provider`, `created_at`, and `operator` is `eq | neq | contains | lt | gt`; `per_page` max 50; `search` is free text over metadata. _Live: `metadata.key` and `metadata.value` filters are matched independently, not as a pair — a log with `user: "u-bob"` matches `metadata.key = agent` AND `metadata.value = u-bob`._ This is how traffic that did not go through the binding (a coding agent) is attributed. (`CF/api/resources/ai_gateway/subresources/logs/methods/list/`)
 - No response header carrying cost is listed in the header glossary. The Anthropic response body carries `usage` token counts, so cost can also be computed locally from catalog prices as a cross-check.
 - Reliability: "The cost metric is an **estimation** based on the number of tokens sent and received in requests … refer to your provider's dashboard for the most **accurate** cost details." "Cost metrics are only available for endpoints where the models return token data and the model name in their responses." (`CF/ai-gateway/observability/costs/`)
-- Cache hits: "If a response is served from cache (cache hit), the cost is always `0`, even if you specified a custom cost." (closing note on `CF/ai-gateway/configuration/custom-costs/`, re-fetched 2026-10-02)
+- Cache hits: "If a response is served from cache (cache hit), the cost is always `0`, even if you specified a custom cost." (closing note on `CF/ai-gateway/configuration/custom-costs/`, re-fetched 2026-10-02) _Live: a gateway created with `cache_ttl: 0` still served identical requests from cache (`cf-aig-cache-status: HIT`, across different metadata; an entry lasted between 296 and 306 s in one run and between 226 and 304 s in another); only `skipCache: true` avoided it. Observed on Workers AI requests through the binding, not on a Claude request._
 - Logs must be on (`collect_logs`, or per request `cf-aig-collect-log`). `cf-aig-collect-log-payload: false` keeps cost and token metadata while not storing prompt and response bodies. (`CF/ai-gateway/observability/logging/`)
 - Log storage: accounts whose first gateway was created on or after 2026-09-24 follow Workers Logs pricing and retention; earlier accounts keep legacy limits (10 million logs per gateway on paid). (`CF/ai-gateway/reference/limits/`)
 - Aggregates: dashboard analytics, the GraphQL dataset `aiGatewayRequestsAdaptiveGroups` (documented example returns `count` by `model`, `provider`, `gateway`), and User Insights, which attributes spend per identity from custom metadata or Access. (`CF/ai-gateway/observability/analytics/`, `…/user-insights/`)
@@ -520,9 +525,9 @@ Workers AI text-embedding models (`CF/workers-ai/models/<name>/`, read 2026-10-0
 | `@cf/baai/bge-small-en-v1.5` | 384 | 512 | $0.0202 | English; batch |
 | `@cf/baai/bge-base-en-v1.5` | 768 | 512 | $0.0666 | English; batch |
 | `@cf/baai/bge-large-en-v1.5` | 1,024 | 512 | $0.204 | English; batch; 1,500 req/min |
-| `@cf/baai/bge-m3` | not stated | context window 60,000 | $0.0118 | multilingual |
-| `@cf/qwen/qwen3-embedding-0.6b` | not stated | context window 8,192 | $0.0118 | |
-| `@cf/google/embeddinggemma-300m` | not stated | not stated | not stated | beta; 100+ languages |
+| `@cf/baai/bge-m3` | not stated (_live: 1,024_) | context window 60,000 | $0.0118 | multilingual |
+| `@cf/qwen/qwen3-embedding-0.6b` | not stated (_live: 1,024_) | context window 8,192 | $0.0118 | |
+| `@cf/google/embeddinggemma-300m` | not stated (_live: 768_) | not stated | not stated | beta; 100+ languages |
 | `@cf/pfnet/plamo-embedding-1b` | not stated | not stated | $0.0186 | Japanese |
 
 - Call and result shape differ per model in `@cloudflare/workers-types` 5.20261002.1. `@cf/baai/bge-base-en-v1.5` (the `-small-` and `-large-` types have the same form):
@@ -553,7 +558,7 @@ interface Ai_Cf_Baai_Bge_Base_En_V1_5_AsyncResponse {
 
   (doc comments omitted). Every output field is optional and the result is a union with the async-batch response, so code must narrow before reading `data`. `@cf/google/embeddinggemma-300m` instead maps to the generic `BaseAiTextEmbeddings`, whose types are `{ text: string | string[] }` in and `{ shape: number[]; data: number[][] }` out. `bge-m3` and `qwen3-embedding-0.6b` have their own generated types, not copied here.
 - Elsewhere in the same file a `shape` field is documented as "Shape of the embedding data as [number_of_embeddings, embedding_dimension]", so where `shape` is present the dimension can be read at runtime instead of assumed.
-- On `pooling`, the type comment says `cls` "will generate more accurate embeddings on larger inputs - however, embeddings created with cls pooling are not compatible with embeddings generated with mean pooling" and that the default is `mean`. Fix one and record it with the stored vectors.
+- On `pooling`, the type comment says `cls` "will generate more accurate embeddings on larger inputs - however, embeddings created with cls pooling are not compatible with embeddings generated with mean pooling" and that the default is `mean`. Fix one and record it with the stored vectors. _Live: the `bge-*-en-v1.5` models returned `pooling: "mean"` by default, but `@cf/baai/bge-m3` returned `pooling: "cls"`._
 - Rate limit: 3,000 requests per minute for text embeddings. Pricing unit: $0.011 per 1,000 neurons, 10,000 neurons per day free. (`CF/workers-ai/platform/limits/`, `…/pricing/`)
 - **Vectorize** (`CF/vectorize/platform/limits/`, `…/pricing/`): up to 1,536 dimensions, 20,000,000 vectors per index, `topK` 50 with values or metadata, 10 KiB metadata per vector; paid plans include 50 million queried vector dimensions per month. No local simulation — remote binding only (`CF/workers/local-development/bindings-per-env/`).
 - **AI Search** (`CF/ai-search/platform/limits-pricing/`): billing starts 2026-11-01; included per month are 5 million ingestion tokens, 10 GB-month storage, 1,000 semantic and 1,000 full-text queries; then $0.75 per 1M ingestion tokens, $2.00 per GB-month, $0.75 per 1,000 semantic/vector/hybrid queries. Its embedding usage "does not appear on your Workers AI bill or in your AI Gateway logs". Local development, from a different page (`CF/ai-search/api/search/workers-binding/`): "Local development is supported by proxying requests to your deployed AI Search instance. Add `remote: true` to your binding configuration".
@@ -566,7 +571,7 @@ Source: `CF/workers/configuration/cloudflare-access/`.
 - Requires a Zero Trust organisation on the account.
 - Options and their API destination types: all Workers (`all_workers`), all previews (`all_preview_workers`), one Worker (`worker`), one Worker's previews (`preview_worker`), or a specific hostname/path (a self-hosted application domain).
 - Protecting one Worker "automatically protects every domain associated with the Worker, including its routes, Custom Domains, `workers.dev` hostname, and previews".
-- **"Worker-level Access policies do not currently support WebSocket connections. WebSocket upgrade requests to a Worker protected by a worker-level Access policy will fail with a `403` error."** The documented alternative is a hostname-based Access application.
+- **"Worker-level Access policies do not currently support WebSocket connections. WebSocket upgrade requests to a Worker protected by a worker-level Access policy will fail with a `403` error."** The documented alternative is a hostname-based Access application. _Live: the `403` did not occur — see the annotation on item 7 of "What this forces"._
 - Precedence when several apply: hostname or path first, then Worker-level, then account-level.
 
 ### Cloudflare Access: validating the JWT in a Worker
@@ -915,7 +920,14 @@ curl "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/access/identity_
 
 ## Could not verify
 
-Nothing was run against a live account (project rule: no Cloudflare resources created or modified, and a model call is real spend). Everything below would be settled by one short script on a real deployment.
+Nothing was run against a live account when this note was written (project rule: no Cloudflare resources created or modified, and a model call is real spend).
+
+**What the live test added** ([live/gateway-access.md](live/gateway-access.md)), with its strength:
+
+- _Observed directly:_ the published schemas are enforced before billing (forced tool choice rejected on `claude-opus-5.5`; `system` as an array rejected on five models; client-defined tools and `output_config.format` not rejected); the spend rule `window` unit (seconds) and the `429` on breach (code `2045`); no `cf.user_id` on binding calls; embedding dimensions; `ctx.access` for a service token (present without Static Assets, `getIdentity()` is `undefined`); `worker_id` is the `id` from `GET /accounts/{account_id}/workers/workers`.
+- _Observed only on Workers AI requests, small samples:_ the runtime return type with `stream: true` (a `ReadableStream`); log latency (`cost` present on the first read in 13 of 14 calls, within 0.5 s in the other).
+- _Observed only on the error path:_ `returnRawResponse: true` for a third-party model returns a `Response` (seen for `402`/`400`/`404`, never for a served call); `env.AI.gateway(id).run({ provider: "anthropic" })` was refused for credits rather than for authentication, which is consistent with it being pre-authenticated but does not prove it.
+- _Still open,_ because the account had no Unified Billing credits or stored key and no human login could be driven: whether Claude honours `output_config.format`, Claude streaming, cost on Claude logs, whether Claude requests are cached and budgeted the same way, everything about Dynamic Routing, Managed OAuth, and all browser-login behaviour.
 
 - **Structured (JSON schema) output for Claude through the gateway.** Only `claude-opus-5.5`'s published schema names `output_config.format`, as an unconstrained object; there is no documented example on any Anthropic catalog page or on the REST page. Tried: all four fetched catalog pages, their `schema-input.json`, the REST, binding and web-search pages. Not confirmed that the field is honoured on `env.AI.run` or `/ai/v1/messages`.
 - **Forced tool choice.** The `claude-opus-5.5` schema lists only `{ type: "auto" }` and `{ type: "none" }` for `tool_choice`. Whether `{ type: "tool", name }` or `{ type: "any" }` is rejected is unknown.

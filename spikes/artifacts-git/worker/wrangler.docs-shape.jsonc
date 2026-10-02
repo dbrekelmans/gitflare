@@ -1,0 +1,29 @@
+{
+	// The trigger shape printed in the "Build and deploy on push" guide (2026-10-02).
+	// Kept only to record what `wrangler deploy --dry-run -c wrangler.docs-shape.jsonc` says about it.
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "gitflare-spike-a-git",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"artifacts": [{ "binding": "ARTIFACTS", "namespace": "gitflare-spike-a-eu" }],
+	"workflows": [
+		{
+			"name": "gitflare-spike-a-push-events",
+			"binding": "PUSH_EVENTS",
+			"class_name": "PushEvents"
+		}
+	],
+	"triggers": {
+		"events": [
+			{
+				"type": "cf.artifacts.repo.pushed",
+				"filter": { "namespace": "gitflare-spike-a-eu", "repoName": "gitflare-spike-a-main" },
+				"target": {
+					"scriptName": "gitflare-spike-a-git",
+					"workflowName": "gitflare-spike-a-push-events"
+				}
+			}
+		]
+	}
+}

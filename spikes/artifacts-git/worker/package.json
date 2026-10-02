@@ -1,0 +1,17 @@
+{
+  "name": "gitflare-spike-a-git",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "types": "wrangler types",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "isomorphic-git": "1.42.6"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "wrangler": "4.147.0"
+  }
+}

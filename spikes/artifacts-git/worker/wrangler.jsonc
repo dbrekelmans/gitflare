@@ -1,0 +1,29 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "gitflare-spike-a-git",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": true,
+	"preview_urls": false,
+	"observability": { "enabled": true },
+	"limits": { "cpu_ms": 300000 },
+	"artifacts": [{ "binding": "ARTIFACTS", "namespace": "gitflare-spike-a-eu" }],
+	"workflows": [
+		{
+			"name": "gitflare-spike-a-push-events",
+			"binding": "PUSH_EVENTS",
+			"class_name": "PushEvents"
+		}
+	],
+	"triggers": {
+		"events": [
+			{
+				"type": "cf.artifacts.repo.pushed",
+				// Namespace only: every repository in it, including forks created later.
+				"filter": { "namespace": "gitflare-spike-a-eu" },
+				"targets": [{ "type": "workflow", "workflow_name": "gitflare-spike-a-push-events" }]
+			}
+		]
+	}
+}
