@@ -1,5 +1,5 @@
 import { commands } from "./commands.ts";
-import type { CliContext } from "./context.ts";
+import { type CliContext, UsageError } from "./context.ts";
 
 export function usage(): string {
   const width = Math.max(...commands.map((command) => command.name.length));
@@ -26,6 +26,10 @@ export async function run(ctx: CliContext, argv: string[]): Promise<number> {
   try {
     return await command.run(ctx, args);
   } catch (error) {
+    if (error instanceof UsageError) {
+      ctx.stderr(`Usage: ${command.usage}\n`);
+      return 1;
+    }
     ctx.stderr(`gitflare ${name}: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }

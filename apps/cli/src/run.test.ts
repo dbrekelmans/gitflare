@@ -31,7 +31,10 @@ describe("gitflare", () => {
 
   it("reports a failing command instead of throwing", async () => {
     const { ctx, err } = context();
+    ctx.exec = async () => {
+      throw new Error("git went away");
+    };
     expect(await run(ctx, ["status"])).toBe(1);
-    expect(err.join("")).toContain("gitflare status: not implemented");
+    expect(err.join("")).toBe("gitflare status: git went away\n");
   });
 });

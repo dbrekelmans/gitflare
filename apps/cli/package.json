@@ -5,10 +5,11 @@
   "description": "The gitflare command line: log in, git credentials, sessions and capture.",
   "type": "module",
   "bin": {
-    "gitflare": "./src/cli.ts"
+    "gitflare": "./dist/gitflare.js"
   },
   "scripts": {
-    "dev": "node --experimental-strip-types src/cli.ts",
+    "build": "node --experimental-strip-types scripts/build.ts",
+    "dev": "pnpm build && node dist/gitflare.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --root ../.. apps/cli/"
   },
@@ -17,7 +18,9 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@gitflare/testing": "workspace:*",
     "@types/node": "catalog:",
+    "esbuild": "0.28.1",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
