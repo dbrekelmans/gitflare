@@ -129,6 +129,18 @@ describe("git", () => {
     ).toBe(false);
     expect(allows([wide, forkWrite], "GET", `${HOST}/anything`)).toBe(false);
   });
+
+  it("does not let a host grant open the git host when no repository is granted", () => {
+    const wide: EgressGrant = { kind: "host", host: "*.artifacts.cloudflare.net" };
+    const exact: EgressGrant = { kind: "host", host: new URL(HOST).hostname };
+    const none: EgressTargets = { gitRemotes: {}, models: targets.models };
+    for (const grant of [wide, exact]) {
+      for (const url of [`${mainRemote}/info/refs?service=git-upload-pack`, `${HOST}/anything`]) {
+        const decision = decideEgress([grant], { method: "GET", url }, none);
+        expect([grant.host, url, decision.allow]).toEqual([grant.host, url, false]);
+      }
+    }
+  });
 });
 
 describe("model calls", () => {
@@ -145,6 +157,12 @@ describe("model calls", () => {
         endpoint: "v1/messages?beta=true",
       },
     });
+  });
+
+  it("does not let a host grant open the gateway, even where its target is unknown", () => {
+    const gateway: EgressGrant = { kind: "host", host: "gateway.ai.cloudflare.com" };
+    expect(allows([gateway], "GET", url)).toBe(false);
+    expect(decideEgress([gateway], { method: "GET", url }, { gitRemotes: {} }).allow).toBe(false);
   });
 
   it("refuses them without a model grant, whatever else is granted", () => {

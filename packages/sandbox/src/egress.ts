@@ -51,6 +51,17 @@ export interface EgressDecision {
   credential?: EgressCredential;
 }
 
+/** Where every deployment's AI gateway answers. */
+export const MODEL_GATEWAY_HOST = "gateway.ai.cloudflare.com";
+
+/**
+ * The hosts of the forge's own services, as host patterns: the git host
+ * (`<account>.artifacts.cloudflare.net`) and the AI gateway. A request for one
+ * is decided by its own grant; a host grant never reaches them, even when no
+ * repository is granted and so the git host is not among the targets.
+ */
+const FORGE_HOSTS = ["*.artifacts.cloudflare.net", MODEL_GATEWAY_HOST];
+
 const GIT_SERVICES = ["git-upload-pack", "git-receive-pack"];
 
 /** Headers a container may have set to authenticate itself; none of them is forwarded. */
@@ -173,6 +184,9 @@ export function decideEgress(
     return decideModels(grants, { method, url }, targets.models.gatewayId);
   }
 
+  if (FORGE_HOSTS.some((pattern) => matchesHost(pattern, url.hostname))) {
+    return deny("gitflare's own services are reached through their own grants only");
+  }
   if (method !== "GET" && method !== "HEAD") return deny("a host grant allows GET and HEAD only");
   const granted = grants.some(
     (grant) => grant.kind === "host" && url.port === "" && matchesHost(grant.host, url.hostname),
