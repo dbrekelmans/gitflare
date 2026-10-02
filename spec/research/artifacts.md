@@ -15,7 +15,7 @@ Sources were read directly: the Artifacts docs as markdown (`developers.cloudfla
 - **The binding reads content now** (`readFile`, `readBlob`, `readTree`, `readCommit`, `log`), so a file browser and commit list need neither REST nor a container. Still absent everywhere: diff, compare, merge, ref/branch listing, search, and any write to repo contents.
 - **`fork()` copies only the default branch by default** (`defaultBranchOnly` defaults to `true`) and takes no target namespace. A fork is an independent repo: there is no sync or merge-back API, only git with two remotes.
 - **Jurisdiction must be set by explicitly creating the namespace before the first repo exists.** Creating a repo in an unknown namespace creates that namespace implicitly and unrestricted. The only documented way to pass a jurisdiction is the REST call; Wrangler has no `namespaces create` command, and the dashboard can create namespaces but whether it offers a jurisdiction there is undocumented.
-- **Partial clone may not work.** The git protocol page lists `filter` among unsupported capabilities, while the ArtifactFS page says it starts with a blobless clone of an Artifacts remote. Until tested, plan on a shallow fetch (`--depth=1` of a SHA, which is what Cloudflare's CI does), not `--filter=blob:none`.
+- **Partial clone works for `blob:none`, but shallow is what to use.** The git protocol page lists `filter` among unsupported capabilities, while the ArtifactFS page says it starts with a blobless clone of an Artifacts remote. Observed 2026-10-02 (`spec/research/live/container-git.md`): protocol v2 advertises `fetch=shallow filter sideband-all`; `--filter=blob:none` works, `--filter=tree:0` returns HTTP 400. On a 33 MB, 7,198-commit repository a full clone took ~60 s, blobless 26.5 s and `--depth=1` 1.9 s, so plan on shallow fetches.
 
 ## Verified facts
 
@@ -317,7 +317,7 @@ Source: https://developers.cloudflare.com/artifacts/api/git-protocol/
 
 - Remote: `https://<ACCOUNT_ID>.artifacts.cloudflare.net/git/<namespace>/<repo>.git`. "Use the exact hostname from the repo `remote` returned by the Workers binding or REST API." (The 2026-04-16 changelog entry shows an older host form; do not build the URL by hand.)
 - HTTPS smart protocol only. No SSH endpoint is documented anywhere in the docset.
-- Token format: `art_v1_<40 hex>?expires=<unix_seconds>`.
+- Token format: `art_v1_<40 hex>?expires=<unix_seconds>` in the docs. Observed 2026-10-02: a token minted with `repo.createToken()` was `art_v2_x_<40 hex>?expires=<unix_seconds>`. Do not parse the prefix.
 - Two ways to present it:
 
 ```sh
@@ -345,7 +345,7 @@ Sources: https://developers.cloudflare.com/artifacts/concepts/how-artifacts-work
 - "A fork creates a new repo that starts from an existing repo's history, then diverges independently with its own tokens, routing, and lifecycle."
 - Neither `fork()` nor `POST …/fork` accepts a target namespace; the fork lands in the source repo's namespace.
 - `defaultBranchOnly` defaults to `true` (type comment). Pass `false` to copy every branch.
-- Forking is asynchronous: the fork can be in `forking` status and `get()` throws `FORK_IN_PROGRESS`. The REST status code for a repo still forking is not documented (the `409` statement on the REST page is about the import route).
+- Forking is asynchronous: the fork can be in `forking` status and `get()` throws `FORK_IN_PROGRESS`. Observed 2026-10-02: `repo.fork()` through the binding returned only once the fork was usable — after 3.4 s for a tiny repository and 41.3 s for a 33 MB one — and `FORK_IN_PROGRESS` was never seen. The REST status code for a repo still forking is not documented (the `409` statement on the REST page is about the import route).
 - `source` on the fork's info reads `"artifacts:namespace/repo"`.
 - `readOnly` / `read_only` can be set on create, fork and import. No route or method changes it afterwards.
 - No API fetches from the parent or merges back. With a normal git client it is two remotes and two repo tokens.
@@ -475,7 +475,7 @@ curl --request POST \
   }'
 ```
 
-- Wrangler has `artifacts namespaces list` and `get` only; namespaces can also be created in the dashboard (Storage & databases > Artifacts).
+- Wrangler has `artifacts namespaces list` and `get` only; namespaces can also be created in the dashboard (Storage & databases > Artifacts). Observed 2026-10-02: `DELETE /artifacts/namespaces/:namespace` on an empty namespace returned `204` and removed it, although the route is not in the documented list.
 
 | Limit | Value |
 | --- | --- |
@@ -560,7 +560,7 @@ const push = await git.push({
 
 - **Fork storage accounting.** No page says whether a fork shares objects with its parent or counts in full against the 1 GB repo and 1 TB account limits. The fork response's `objects` count and "diverges independently" suggest a copy, but that is inference. Tried: the Artifacts docset, the two Artifacts blog posts (2026-04 beta, 2026-10 open beta), the pricing and limits pages. Needs a measurement on a real account.
 - **Cross-namespace forks.** The `repo.forked` example event shows different source and target namespaces, but no API accepts a target namespace. Possibly dashboard-only or an example artefact.
-- **Whether `--filter=blob:none` works.** The protocol page says `filter` is unsupported (worded as a v1 capability); the ArtifactFS page describes a blobless clone against Artifacts. No capability advertisement could be inspected without a repo.
+- **Whether `--filter=blob:none` works.** Resolved 2026-10-02: it does (see "What this forces"). The protocol page says `filter` is unsupported (worded as a v1 capability); the ArtifactFS page describes a blobless clone against Artifacts. No capability advertisement could be inspected without a repo.
 - **How to scope a Queue subscription to one repo.** The guide says the `artifacts.repo` source takes `namespace` and `repo_name`; Wrangler 4.147.0 sends neither, and the Queues REST reference (https://developers.cloudflare.com/api/resources/queues/subresources/subscriptions/methods/create/) lists no Artifacts source at all. Also unknown: whether `--events` takes `pushed` or `cf.artifacts.repo.pushed`, and whether an unscoped `artifacts.repo` subscription is accepted.
 - **What a Workflow receives from `triggers.events`.** `cloudflare/ci` parses the same `{ type, source, payload }` shape (plus an optional `id`), but the Workflow `event.payload` contract is not documented. Delivery guarantees, ordering and latency are not documented for either route.
 - **Undocumented fields on the push event.** Absence of an actor or token id is established from the documented example and Cloudflare's own parser, not from a captured live event.
