@@ -17,6 +17,7 @@ import { SettingsPage } from "./settings-page";
 const server = vi.hoisted(() => ({
   api: undefined as unknown as ForgeApi,
   user: undefined as unknown as User,
+  failPrepare: false,
 }));
 
 vi.mock("@/data/account.functions", () => ({
@@ -27,7 +28,10 @@ vi.mock("@/data/account.functions", () => ({
   getSettings: () => server.api.account.getSettings({ user: server.user }),
   updateSettings: ({ data }: { data: unknown }) =>
     server.api.account.updateSettings({ user: server.user }, UpdateSettingsInput.parse(data)),
-  prepareWorkspace: () => server.api.account.prepareWorkspace({ user: server.user }),
+  prepareWorkspace: () => {
+    if (server.failPrepare) return Promise.reject(new Error("workspace preparation refused"));
+    return server.api.account.prepareWorkspace({ user: server.user });
+  },
   getBudget: () => server.api.account.budget({ user: server.user }),
 }));
 
@@ -60,7 +64,10 @@ async function renderSettings({
   await screen.findByRole("heading", { level: 1 });
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  server.failPrepare = false;
+});
 
 describe("members, for an administrator", () => {
   it("lists every member with their role, and can change one", async () => {
@@ -119,6 +126,28 @@ describe("the workspace, for an administrator", () => {
     });
     expect(screen.getByText("prepared")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Prepare again" })).toBeTruthy();
+  });
+
+  it("re-preparing an already-prepared workspace does not get stuck on 'Preparing…'", async () => {
+    await renderSettings({
+      data: demoWith((data) => {
+        data.organisation.settings.workspace.snapshot = { id: "snap_demo", image: "debian" };
+      }),
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Prepare again" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Prepare again" })).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Preparing…" })).toBeNull();
+    expect(screen.getByText("prepared")).toBeTruthy();
+  });
+
+  it("does not get stuck on 'Preparing…' when the request is refused", async () => {
+    server.failPrepare = true;
+    await renderSettings();
+    fireEvent.click(screen.getByRole("button", { name: "Prepare workspace" }));
+    await waitFor(() => expect(screen.getByText("workspace preparation refused")).toBeTruthy());
+    expect(screen.getByRole("button", { name: "Prepare workspace" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Preparing…" })).toBeNull();
+    expect(screen.getByText("not prepared")).toBeTruthy();
   });
 });
 
