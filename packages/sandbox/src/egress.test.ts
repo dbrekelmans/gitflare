@@ -358,6 +358,62 @@ describe("forwarding", () => {
     expect(fetched[0]?.headers.get("authorization")).toBe("Bearer the-users-own");
   });
 
+  describe("a redirect", () => {
+    /** `fetch` as the runtime does it: a `follow` request is followed with every header it had. */
+    function redirecting(location: string) {
+      const sent: Request[] = [];
+      const fetch = async (request: Request): Promise<Response> => {
+        sent.push(request);
+        if (sent.length > 1) return new Response("followed");
+        const moved = new Response(null, { status: 302, headers: { location } });
+        if (request.redirect !== "follow") return moved;
+        return fetch(new Request(location, request));
+      };
+      return { sent, fetch };
+    }
+
+    it("goes back to the container, so a git token never follows it to another host", async () => {
+      const { deps, minted } = setup();
+      const { sent, fetch } = redirecting("https://evil.example/steal");
+      const request = new Request(`${forkRemote}/info/refs?service=git-upload-pack`);
+
+      const response = await forwardEgress(
+        { ...deps, fetch },
+        { grants: [forkWrite], targets },
+        request,
+      );
+
+      expect(minted).toEqual([`read ${FORK}`]);
+      expect(sent.map((one) => one.url)).toEqual([
+        `${forkRemote}/info/refs?service=git-upload-pack`,
+      ]);
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe("https://evil.example/steal");
+    });
+
+    it("from a granted host is not followed to a host nobody granted", async () => {
+      const { deps } = setup();
+      const { sent, fetch } = redirecting("https://evil.example/payload");
+      const request = new Request("https://registry.npmjs.org/left-pad");
+
+      const response = await forwardEgress(
+        { ...deps, fetch },
+        { grants: [registry], targets },
+        request,
+      );
+
+      expect(sent.map((one) => one.url)).toEqual(["https://registry.npmjs.org/left-pad"]);
+      expect(response.status).toBe(302);
+      // Followed by the container, the next request meets the policy again.
+      const next = await forwardEgress(
+        deps,
+        { grants: [registry], targets },
+        new Request(response.headers.get("location") ?? ""),
+      );
+      expect(next.status).toBe(403);
+    });
+  });
+
   it("answers 502 when the request cannot be forwarded", async () => {
     const { deps } = setup({
       gitToken: async () => {

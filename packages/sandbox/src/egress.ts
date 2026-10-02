@@ -229,7 +229,7 @@ function refuse(status: number, message: string): Response {
 /**
  * Handles one intercepted request: refuses it with `403`, or forwards it with
  * the credential its grant calls for. A git body is passed through unread, so
- * a pack of any size streams.
+ * a pack of any size streams. A redirect is answered, never followed.
  */
 export async function forwardEgress(
   deps: EgressDeps,
@@ -260,7 +260,10 @@ export async function forwardEgress(
       const token = await deps.gitToken(credential.repo, credential.scope);
       headers.set("Authorization", `Bearer ${token}`);
     }
-    return await deps.fetch(new Request(request, { headers }));
+    // A followed redirect would skip the policy and carry the git token to
+    // wherever it points. Returned instead, it is the container's to follow,
+    // and that request is intercepted and decided like any other.
+    return await deps.fetch(new Request(request, { headers, redirect: "manual" }));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return refuse(502, `gitflare could not forward the request: ${message}`);
