@@ -90,6 +90,22 @@ describe("account slice", () => {
     ).rejects.toMatchObject({ code: "forbidden" });
   });
 
+  it("refuses demoting the last administrator, including by themselves", async () => {
+    const { services, admin } = await setup();
+    const api = accountApi(services as Services);
+    await expect(
+      api.setMemberRole(ctxFor(admin), { userId: admin.id, role: "member" }),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("allows demoting an administrator when another one remains", async () => {
+    const { services, admin, member } = await setup();
+    const api = accountApi(services as Services);
+    await api.setMemberRole(ctxFor(admin), { userId: member.id, role: "admin" });
+    const demoted = await api.setMemberRole(ctxFor(admin), { userId: admin.id, role: "member" });
+    expect(demoted.role).toBe("member");
+  });
+
   it("refuses a member updating settings or preparing the workspace", async () => {
     const { services, member } = await setup();
     const api = accountApi(services as Services);
@@ -111,6 +127,17 @@ describe("account slice", () => {
     await api.prepareWorkspace(ctxFor(admin));
     const provisioning = services.provisioning as RecordingProvisioner;
     expect(provisioning.workspacePreparations).toBe(1);
+  });
+
+  it("ignores an explicit undefined instead of erasing the field", async () => {
+    const { services, admin } = await setup();
+    const api = accountApi(services as Services);
+    const updated = await api.updateSettings(ctxFor(admin), {
+      monthlyBudgetMicroUsd: undefined,
+      perChangeBudgetMicroUsd: 7,
+    });
+    expect(updated.monthlyBudgetMicroUsd).toBe(settings.monthlyBudgetMicroUsd);
+    expect(updated.perChangeBudgetMicroUsd).toBe(7);
   });
 
   it("sums spend by agent and by change for the current month", async () => {
@@ -165,5 +192,24 @@ describe("account slice", () => {
     expect(budget.topChanges).toEqual([
       { change: { id: "chg_000001", number: 1, title: "Add widgets" }, costMicroUsd: 500 },
     ]);
+  });
+
+  it("skips a model call whose change no longer exists, rather than showing a blank one", async () => {
+    const { services, clock } = await setup();
+    await services.db.insert(schema.modelCalls).values({
+      id: "mdl_000003",
+      agent: "review",
+      changeId: "chg_dangling",
+      model: "m",
+      requestedModel: "m",
+      usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      costMicroUsd: 999,
+      createdAt: clock.now(),
+    });
+
+    const api = accountApi(services as Services);
+    const budget = await api.budget(ctxFor({ id: "usr_admin", role: "admin" }));
+    expect(budget.topChanges).toEqual([]);
+    expect(budget.byAgent).toEqual([{ agent: "review", costMicroUsd: 999 }]);
   });
 });

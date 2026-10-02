@@ -1,5 +1,7 @@
 import { schema } from "@gitflare/db";
 import { createTestDb } from "@gitflare/db/testing";
+import { ManualClock, SequentialIds } from "@gitflare/testing";
+import { eq } from "drizzle-orm";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createAccessIdentity, provisionUser } from "./index";
@@ -125,10 +127,29 @@ describe("createAccessIdentity", () => {
     });
     expect(await identity.identify(headers({}))).toBeNull();
   });
+
+  it("returns null for a token forged with a different key", async () => {
+    const identity = createAccessIdentity({
+      teamDomain: TEAM_DOMAIN,
+      audience: AUDIENCE,
+      fetch: fetchKeySet,
+    });
+    const forger = await generateKeyPair("RS256");
+    // Signed with the right claims and the right `kid`, but the wrong key:
+    // the published JWKS entry for `kid` still points at the real public key.
+    const token = await new SignJWT({ sub: "user-sub-6", email: "a@example.com" })
+      .setProtectedHeader({ alg: "RS256", kid: KID })
+      .setIssuedAt()
+      .setIssuer(TEAM_DOMAIN)
+      .setAudience(AUDIENCE)
+      .setExpirationTime("5m")
+      .sign(forger.privateKey);
+    expect(await identity.identify(headers({ "Cf-Access-Jwt-Assertion": token }))).toBeNull();
+  });
 });
 
 describe("provisionUser", () => {
-  it("makes the first-administrator address an admin, and anyone else a member", async () => {
+  async function setup() {
     const db = createTestDb();
     await db.insert(schema.organisations).values({
       id: "org_000001",
@@ -151,11 +172,16 @@ describe("provisionUser", () => {
       },
       createdAt: 0,
     });
+    return { db, clock: new ManualClock(1000), ids: new SequentialIds() };
+  }
 
-    const clock = { now: () => 1000 };
-    let nextId = 0;
-    const ids = { next: () => `usr_${String(++nextId).padStart(6, "0")}` };
-    const deps = { db, clock, ids } as Parameters<typeof provisionUser>[0];
+  async function userBySubject(db: Awaited<ReturnType<typeof setup>>["db"], subject: string) {
+    const [row] = await db.select().from(schema.users).where(eq(schema.users.subject, subject));
+    return row;
+  }
+
+  it("makes the first-administrator address an admin, and anyone else a member", async () => {
+    const deps = await setup();
 
     const admin = await provisionUser(
       deps,
@@ -163,6 +189,9 @@ describe("provisionUser", () => {
       { firstAdminEmail: "admin@example.com" },
     );
     expect(admin.role).toBe("admin");
+    // A test that only checks the returned role still passes if the insert
+    // never happened; check the row landed in the database too.
+    await expect(userBySubject(deps.db, "sub-admin")).resolves.toMatchObject({ role: "admin" });
 
     const member = await provisionUser(
       deps,
@@ -170,5 +199,33 @@ describe("provisionUser", () => {
       { firstAdminEmail: "admin@example.com" },
     );
     expect(member.role).toBe("member");
+    await expect(userBySubject(deps.db, "sub-member")).resolves.toMatchObject({ role: "member" });
+  });
+
+  it("matches the first-administrator address regardless of case", async () => {
+    const deps = await setup();
+    const admin = await provisionUser(
+      deps,
+      { subject: "sub-admin", email: "Ada@Acme.example" },
+      { firstAdminEmail: "ada@acme.example" },
+    );
+    expect(admin.role).toBe("admin");
+  });
+
+  it("provisions exactly one user for concurrent requests from the same identity", async () => {
+    const deps = await setup();
+    const identity = { subject: "sub-concurrent", email: "concurrent@example.com" };
+    const [a, b, c] = await Promise.all([
+      provisionUser(deps, identity, { firstAdminEmail: null }),
+      provisionUser(deps, identity, { firstAdminEmail: null }),
+      provisionUser(deps, identity, { firstAdminEmail: null }),
+    ]);
+    expect(a.id).toBe(b.id);
+    expect(b.id).toBe(c.id);
+    const rows = await deps.db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.subject, "sub-concurrent"));
+    expect(rows).toHaveLength(1);
   });
 });

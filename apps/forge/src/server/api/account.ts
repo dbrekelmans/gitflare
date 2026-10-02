@@ -45,6 +45,21 @@ export function accountApi(services: Services): ForgeApi["account"] {
       if (!can(ctx.user, { type: "members.manage" })) {
         throw new ForgeError("forbidden", "Administrators only.");
       }
+      const [target] = await services.db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.id, input.userId))
+        .limit(1);
+      if (!target) throw new ForgeError("not_found", "User not found.");
+      if (target.role === "admin" && input.role !== "admin") {
+        const admins = await services.db
+          .select({ id: schema.users.id })
+          .from(schema.users)
+          .where(eq(schema.users.role, "admin"));
+        if (admins.length <= 1) {
+          throw new ForgeError("conflict", "The deployment must keep at least one administrator.");
+        }
+      }
       const [user] = await services.db
         .update(schema.users)
         .set({ role: input.role })
@@ -61,7 +76,13 @@ export function accountApi(services: Services): ForgeApi["account"] {
     async updateSettings(ctx, input) {
       requireAdmin(ctx.user);
       const org = await organisation();
-      const settings: OrganisationSettings = { ...org.settings, ...input };
+      // `UpdateSettingsInput` is `.partial()`, so a caller can send a key with
+      // an explicit `undefined`; spreading that over the stored settings
+      // would erase the field, so only defined keys are applied.
+      const changes = Object.fromEntries(
+        Object.entries(input).filter(([, value]) => value !== undefined),
+      );
+      const settings: OrganisationSettings = { ...org.settings, ...changes };
       await services.db
         .update(schema.organisations)
         .set({ settings })
@@ -93,22 +114,27 @@ export function accountApi(services: Services): ForgeApi["account"] {
       const byChange = new Map<ChangeId, { number: number; title: string; costMicroUsd: number }>();
       for (const row of rows) {
         byAgent.set(row.agent, (byAgent.get(row.agent) ?? 0) + row.costMicroUsd);
-        if (row.changeId) {
+        // The left join leaves `changeNumber`/`changeTitle` null when the
+        // call's `changeId` names no change (a session-level call, or a
+        // dangling reference); skip those rather than showing "#0".
+        if (row.changeId && row.changeNumber != null && row.changeTitle != null) {
           const existing = byChange.get(row.changeId);
           byChange.set(row.changeId, {
-            number: row.changeNumber ?? 0,
-            title: row.changeTitle ?? "",
+            number: row.changeNumber,
+            title: row.changeTitle,
             costMicroUsd: (existing?.costMicroUsd ?? 0) + row.costMicroUsd,
           });
         }
       }
 
+      const TOP_CHANGES = 10;
       return {
         summary: await budgetSummary(services.db, org.settings, services.clock.now()),
         perChangeBudgetMicroUsd: org.settings.perChangeBudgetMicroUsd,
         byAgent: [...byAgent].map(([agent, costMicroUsd]) => ({ agent, costMicroUsd })),
         topChanges: [...byChange]
           .sort((a, b) => b[1].costMicroUsd - a[1].costMicroUsd)
+          .slice(0, TOP_CHANGES)
           .map(([id, { number, title, costMicroUsd }]) => ({
             change: { id, number, title },
             costMicroUsd,

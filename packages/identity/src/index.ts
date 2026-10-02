@@ -2,6 +2,7 @@ import { ForgeError, type Identity, type User, type UserRole } from "@gitflare/c
 import type { Clock, IdentityProvider, IdGenerator } from "@gitflare/core/ports";
 import type { Db } from "@gitflare/db";
 import { schema } from "@gitflare/db";
+import { eq } from "drizzle-orm";
 import { createRemoteJWKSet, customFetch, jwtVerify } from "jose";
 
 // @gitflare/identity — who a request is from, and the user record that
@@ -62,7 +63,11 @@ export function createAccessIdentity(options: AccessOptions): IdentityProvider {
         const identity: Identity = { subject: payload.sub, email: payload.email };
         if (typeof payload.name === "string") identity.name = payload.name;
         return identity;
-      } catch {
+      } catch (error) {
+        // Never throws for a bad token, but a key-set fetch failure or a
+        // misconfigured `teamDomain` looks identical to a forged token
+        // without this: worth a log line to tell them apart.
+        console.error("@gitflare/identity: token did not validate", error);
         return null;
       }
     },
@@ -82,7 +87,11 @@ export async function provisionUser(
   const [organisation] = await deps.db.select().from(schema.organisations).limit(1);
   if (!organisation) throw new ForgeError("not_found", "No organisation for this deployment.");
 
-  const role: UserRole = identity.email === options.firstAdminEmail ? "admin" : "member";
+  const role: UserRole =
+    options.firstAdminEmail &&
+    identity.email.toLowerCase() === options.firstAdminEmail.toLowerCase()
+      ? "admin"
+      : "member";
   const now = deps.clock.now();
   const user: User = {
     id: deps.ids.next("user"),
@@ -94,6 +103,18 @@ export async function provisionUser(
     createdAt: now,
     lastSeenAt: now,
   };
-  await deps.db.insert(schema.users).values(user);
-  return user;
+  // Two concurrent requests for the same unseen identity both reach here;
+  // only one insert wins the `users_subject` unique index, so the loser
+  // re-reads instead of surfacing a constraint failure.
+  await deps.db
+    .insert(schema.users)
+    .values(user)
+    .onConflictDoNothing({ target: schema.users.subject });
+  const [stored] = await deps.db
+    .select()
+    .from(schema.users)
+    .where(eq(schema.users.subject, identity.subject))
+    .limit(1);
+  if (!stored) throw new ForgeError("unavailable", "Could not provision the user.");
+  return stored;
 }
