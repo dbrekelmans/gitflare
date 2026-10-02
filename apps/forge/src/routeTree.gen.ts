@@ -18,6 +18,7 @@ import { Route as ReposIndexRouteImport } from './routes/repos/index'
 import { Route as ReposNewRouteImport } from './routes/repos/new'
 import { Route as SessionsIndexRouteImport } from './routes/sessions/index'
 import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessionId'
+import { Route as SessionsNewRouteImport } from './routes/sessions/new'
 import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as ApiDevPushRouteImport } from './routes/api/dev/push'
 import { Route as ApiGitCredentialsRouteImport } from './routes/api/git/credentials'
@@ -71,6 +72,11 @@ const SessionsIndexRoute = SessionsIndexRouteImport.update({
 const SessionsSessionIdRoute = SessionsSessionIdRouteImport.update({
   id: '/sessions/$sessionId',
   path: '/sessions/$sessionId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SessionsNewRoute = SessionsNewRouteImport.update({
+  id: '/sessions/new',
+  path: '/sessions/new',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsIndexRoute = SettingsIndexRouteImport.update({
@@ -128,6 +134,7 @@ export interface FileRoutesByFullPath {
   '/decisions/$decisionId': typeof DecisionsDecisionIdRoute
   '/repos/new': typeof ReposNewRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
+  '/sessions/new': typeof SessionsNewRoute
   '/repos/': typeof ReposIndexRoute
   '/sessions/': typeof SessionsIndexRoute
   '/settings/': typeof SettingsIndexRoute
@@ -148,6 +155,7 @@ export interface FileRoutesByTo {
   '/decisions/$decisionId': typeof DecisionsDecisionIdRoute
   '/repos/new': typeof ReposNewRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
+  '/sessions/new': typeof SessionsNewRoute
   '/repos': typeof ReposIndexRoute
   '/sessions': typeof SessionsIndexRoute
   '/settings': typeof SettingsIndexRoute
@@ -169,6 +177,7 @@ export interface FileRoutesById {
   '/decisions/$decisionId': typeof DecisionsDecisionIdRoute
   '/repos/new': typeof ReposNewRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
+  '/sessions/new': typeof SessionsNewRoute
   '/repos/': typeof ReposIndexRoute
   '/sessions/': typeof SessionsIndexRoute
   '/settings/': typeof SettingsIndexRoute
@@ -191,6 +200,7 @@ export interface FileRouteTypes {
     | '/decisions/$decisionId'
     | '/repos/new'
     | '/sessions/$sessionId'
+    | '/sessions/new'
     | '/repos/'
     | '/sessions/'
     | '/settings/'
@@ -211,6 +221,7 @@ export interface FileRouteTypes {
     | '/decisions/$decisionId'
     | '/repos/new'
     | '/sessions/$sessionId'
+    | '/sessions/new'
     | '/repos'
     | '/sessions'
     | '/settings'
@@ -231,6 +242,7 @@ export interface FileRouteTypes {
     | '/decisions/$decisionId'
     | '/repos/new'
     | '/sessions/$sessionId'
+    | '/sessions/new'
     | '/repos/'
     | '/sessions/'
     | '/settings/'
@@ -252,6 +264,7 @@ export interface RootRouteChildren {
   DecisionsDecisionIdRoute: typeof DecisionsDecisionIdRoute
   ReposNewRoute: typeof ReposNewRoute
   SessionsSessionIdRoute: typeof SessionsSessionIdRoute
+  SessionsNewRoute: typeof SessionsNewRoute
   ReposIndexRoute: typeof ReposIndexRoute
   SessionsIndexRoute: typeof SessionsIndexRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
@@ -330,6 +343,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SessionsSessionIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/sessions/new': {
+      id: '/sessions/new'
+      path: '/sessions/new'
+      fullPath: '/sessions/new'
+      preLoaderRoute: typeof SessionsNewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings/': {
       id: '/settings/'
       path: '/settings'
@@ -404,6 +424,7 @@ const rootRouteChildren: RootRouteChildren = {
   DecisionsDecisionIdRoute: DecisionsDecisionIdRoute,
   ReposNewRoute: ReposNewRoute,
   SessionsSessionIdRoute: SessionsSessionIdRoute,
+  SessionsNewRoute: SessionsNewRoute,
   ReposIndexRoute: ReposIndexRoute,
   SessionsIndexRoute: SessionsIndexRoute,
   SettingsIndexRoute: SettingsIndexRoute,
