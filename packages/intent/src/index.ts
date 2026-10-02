@@ -1,4 +1,10 @@
-import { forkRepoName, type Intent, type IntentGrade, type StageHandler } from "@gitflare/core";
+import {
+  forkRepoName,
+  type Intent,
+  type IntentGrade,
+  type StageHandler,
+  type StageInput,
+} from "@gitflare/core";
 import type {
   CapturePort,
   ChangeLive,
@@ -7,8 +13,14 @@ import type {
   IdGenerator,
   ModelGateway,
 } from "@gitflare/core/ports";
-import { type Db, schema } from "@gitflare/db";
-import { desc, eq, sql } from "drizzle-orm";
+import {
+  changeEventStatements,
+  type Db,
+  publishChangeEvent,
+  schema,
+  storedChangeEvent,
+} from "@gitflare/db";
+import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { buildIntentPrompt } from "./prompt";
 
@@ -42,6 +54,10 @@ const SKIP_REASON = "Intent is derived once, when the change opens.";
  * change's head revision) queues attempt 2 or later. That makes `attempt`,
  * not whether `revisionId` matches the existing intent, what tells a later
  * revision's first (and only ever skipped) attempt apart from a re-run.
+ *
+ * One attempt writes at most one version (`intents_revision_attempt`). An
+ * attempt that finds its version already written is a retried Workflow step:
+ * it succeeds without asking the model again.
  */
 export const runIntentStage: StageHandler<IntentDeps> = async (deps, input) => {
   const { changeId, revisionId, attempt } = input;
@@ -52,21 +68,11 @@ export const runIntentStage: StageHandler<IntentDeps> = async (deps, input) => {
     .where(eq(schema.changes.id, changeId));
   if (!change) throw new Error(`intent stage: change ${changeId} does not exist`);
 
+  if (await attemptWrote(deps.db, input)) return { status: "succeeded" };
   const latest = await currentIntent(deps, changeId);
-  if (attempt === 1) {
-    // Idempotent: a Workflow retry of the attempt that already wrote this
-    // revision's intent lands here again and does nothing further.
-    if (latest?.revisionId === revisionId) return { status: "succeeded" };
-    // A later revision's automatic first attempt, with the intent already
-    // derived (on an earlier revision, necessarily): intent runs once.
-    if (latest) return { status: "skipped", reason: SKIP_REASON };
-  }
-  // attempt > 1 is a requested re-run and always derives a fresh intent. A
-  // Workflow retry of the *same* re-run attempt can still add a duplicate
-  // version: telling it apart from a second, deliberate re-run needs `intents`
-  // to record which attempt produced a version, a column this package cannot
-  // add on its own (`packages/db` is shared, frozen scaffold) — see the pull
-  // request, which asks for it.
+  // A later revision's automatic first attempt, with the intent already
+  // derived (on an earlier revision, necessarily): intent runs once.
+  if (attempt === 1 && latest) return { status: "skipped", reason: SKIP_REASON };
 
   const [repository] = await deps.db
     .select()
@@ -116,46 +122,46 @@ export const runIntentStage: StageHandler<IntentDeps> = async (deps, input) => {
   });
 
   const createdAt = deps.clock.now();
-  // Written in one batch with the change event, so a failure between the two
-  // (a retry would otherwise see the intent but never emit its event) cannot
-  // happen: either both commit or neither does. `appendChangeEvent` cannot be
-  // reused here; it only ever runs its own two statements.
-  const [, , eventRows] = await deps.db.batch([
-    deps.db.insert(schema.intents).values({
-      id: deps.ids.next("intent"),
-      changeId,
-      revisionId,
-      version: (latest?.version ?? 0) + 1,
-      attempt,
-      statement: result.output.statement,
-      grade,
-      checkpointIds,
-      model: result.model,
-      createdAt,
-    }),
-    deps.db
-      .update(schema.changes)
-      .set({ lastEventSeq: sql`${schema.changes.lastEventSeq} + 1` })
-      .where(eq(schema.changes.id, changeId)),
-    deps.db
-      .insert(schema.changeEvents)
-      .values({
+  const body = { type: "intent.updated" } as const;
+  try {
+    // The event commits with the version, so a run that dies after the write cannot lose it.
+    const [, , stored] = await deps.db.batch([
+      deps.db.insert(schema.intents).values({
+        id: deps.ids.next("intent"),
         changeId,
-        seq: sql`(select ${schema.changes.lastEventSeq} from ${schema.changes} where ${schema.changes.id} = ${changeId})`,
-        body: { type: "intent.updated" },
-        at: createdAt,
-      })
-      .returning({ seq: schema.changeEvents.seq }),
-  ]);
-  const seq = eventRows[0]?.seq;
-  if (seq !== undefined) {
-    await deps.live
-      .publish({ type: "intent.updated", changeId, seq, at: createdAt })
-      .catch(() => {});
+        revisionId,
+        version: (latest?.version ?? 0) + 1,
+        attempt,
+        statement: result.output.statement,
+        grade,
+        checkpointIds,
+        model: result.model,
+        createdAt,
+      }),
+      ...changeEventStatements(deps.db, changeId, body, createdAt),
+    ]);
+    await publishChangeEvent(deps.live, storedChangeEvent(changeId, body, createdAt, stored));
+  } catch (error) {
+    // The same attempt, run twice at once, and the other run wrote first: the index refused this one.
+    if (await attemptWrote(deps.db, input)) return { status: "succeeded" };
+    throw error;
   }
 
   return { status: "succeeded" };
 };
+
+/** Whether this attempt has already written its version of the intent. */
+async function attemptWrote(
+  db: Db,
+  { revisionId, attempt }: Pick<StageInput, "revisionId" | "attempt">,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: schema.intents.id })
+    .from(schema.intents)
+    .where(and(eq(schema.intents.revisionId, revisionId), eq(schema.intents.attempt, attempt)))
+    .limit(1);
+  return row !== undefined;
+}
 
 /** The change's current intent: the highest version. */
 export async function currentIntent(

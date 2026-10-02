@@ -1,6 +1,6 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
-import { finishCiRun, pollCiStep, startCiRun, startCiStep } from "@gitflare/ci";
+import { closeCiRun, finishCiRun, pollCiStep, startCiRun, startCiStep } from "@gitflare/ci";
 import {
   CI_FINISHED_EVENT,
   type CiFinishedPayload,
@@ -51,7 +51,11 @@ function pollDelay(polls: number): "2 seconds" | "5 seconds" {
   return polls < 30 ? "2 seconds" : "5 seconds";
 }
 
-/** An expected refusal will not go away on a retry. */
+/**
+ * An expected refusal will not go away on a retry. A sandbox that could not
+ * be asked is not a refusal: `@gitflare/ci` throws `CiInterrupted` for it,
+ * which is retried like any other error.
+ */
 async function once<T>(work: () => Promise<T>): Promise<T> {
   try {
     return await work();
@@ -85,7 +89,15 @@ export class CiWorkflow extends WorkflowEntrypoint<Env, CiWorkflowParams> {
       outcome = await this.runCi(services, step, input);
     } catch (error) {
       // Whatever went wrong, the pipeline is told: it must not wait out its timeout.
-      outcome = { status: "failed", reason: describe(error) };
+      const reason = describe(error);
+      outcome = { status: "failed", reason };
+      // A start or a finish that ran out of retries can leave the run open
+      // and its sandbox up. Failing to close it must not hide why it failed.
+      await step
+        .do("close the run", quick, () =>
+          once(() => closeCiRun(services, input.stageRunId, reason)),
+        )
+        .catch(() => {});
     }
     await step.do("report the result", quick, () => notify(this.env, notifyInstanceId, outcome));
   }
@@ -112,7 +124,7 @@ export class CiWorkflow extends WorkflowEntrypoint<Env, CiWorkflowParams> {
     } catch (error) {
       broken = describe(error);
     }
-    // Always: this is what stops the sandbox and closes the record.
+    // Always, once the run has started: this is what stops the sandbox and closes the record.
     const outcome = await step.do("finish the run", quick, () =>
       once(() => finishCiRun(services, start.run.id)),
     );

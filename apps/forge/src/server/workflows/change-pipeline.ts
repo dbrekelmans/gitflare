@@ -7,23 +7,26 @@ import {
   type CiFinishedPayload,
   type CiWorkflowParams,
   ForgeError,
+  isStageSettled,
   type PipelineParams,
   type StageHandler,
   type StageInput,
   type StageName,
   type StageRun,
+  type StageRunId,
   toPush,
 } from "@gitflare/core";
 import { runIntentStage } from "@gitflare/intent";
 import {
   CHECKPOINT_POLL_MS,
   CHECKPOINT_WAIT_MS,
+  findStageRun,
   handlePush,
   missingCheckpoints,
-  queueStageRerun,
   recordStageOutcome,
   runStage,
   settleChange,
+  stageAttempt,
   startStage,
 } from "@gitflare/pipeline";
 import { runReviewStage } from "@gitflare/review";
@@ -88,6 +91,34 @@ function inputOf(run: StageRun): StageInput {
   return { changeId, revisionId, stageRunId, attempt };
 }
 
+/** The id of the one instance that runs a stage attempt. Derived from the attempt, so it is the same for every instance that hands it over. */
+export function stageRunnerId(run: Pick<StageRun, "id">): string {
+  return `stages-${run.id}`;
+}
+
+function stageRunOf(instanceId: string): StageRunId | null {
+  return instanceId.startsWith("stages-")
+    ? (instanceId.slice("stages-".length) as StageRunId)
+    : null;
+}
+
+/**
+ * Makes sure the attempt's runner exists, and runs. A runner that errored left
+ * its attempt unsettled, and the change processing, for good; handing the
+ * attempt over again (the push delivered again, a re-run asked for) restarts it.
+ */
+async function ensureRunner(workflow: Workflow<PipelineParams>, run: StageRun): Promise<void> {
+  const id = stageRunnerId(run);
+  const { changeId, stage, attempt } = run;
+  try {
+    await workflow.create({ id, params: { kind: "rerun", changeId, stage, attempt } });
+  } catch (error) {
+    const runner = await workflow.get(id).catch(() => null);
+    if (!runner) throw error;
+    if ((await runner.status()).status === "errored") await runner.restart();
+  }
+}
+
 /**
  * The change pipeline. An instance is started by the Artifacts push trigger
  * (its payload is then the raw push event, with no `kind`), or by the forge
@@ -98,11 +129,12 @@ function inputOf(run: StageRun): StageInput {
  * sections and review in parallel while the CI Workflow runs; settle the
  * change. All logic and every database write lives in the packages.
  *
- * Several instances can hold the same queued stage runs: the same push
+ * Several instances can be asked for the same attempt: the same push
  * delivered twice, two pushes that both read the newer tip, a re-run asked
- * for twice. Exactly one runs them: the instance whose id is derived from the
- * runs. Any other instance creates that one, which the platform does at most
- * once per id, and ends.
+ * for twice. Exactly one runs it: its runner, the instance whose id is
+ * `stageRunnerId` of the attempt. Every other instance creates that one,
+ * which the platform does at most once per id, and ends. A runner is started
+ * with the attempt's `rerun` parameters, whether or not a person asked for it.
  * Build task: `pipeline`.
  */
 export class ChangePipelineWorkflow extends WorkflowEntrypoint<Env, PipelineParams> {
@@ -112,11 +144,25 @@ export class ChangePipelineWorkflow extends WorkflowEntrypoint<Env, PipelinePara
     const params = readParams(event.payload);
 
     if (params.kind === "rerun") {
-      const run = await step.do("queue the re-run", () =>
-        once(() => queueStageRerun(services, params.changeId, params.stage)),
+      const own = stageRunOf(event.instanceId);
+      // The attempt asked for, and no other: one that settled has nothing left to do.
+      const run = await step.do("find the attempt", () =>
+        once(() =>
+          own
+            ? findStageRun(services, own)
+            : stageAttempt(services, params.changeId, params.stage, params.attempt),
+        ),
       );
-      if (await this.handOver(step, event.instanceId, run, params)) return;
-      await this.runStages(runtime, step, event.instanceId, [run]);
+      if (!run) return;
+      if (!own) {
+        if (isStageSettled(run.status)) return;
+        await step.do("hand the stage to its runner", () =>
+          ensureRunner(this.env.CHANGE_PIPELINE, run),
+        );
+        return;
+      }
+      // A runner restarted after its stage settled still owes the change its settling.
+      await this.runStage(runtime, step, event.instanceId, run);
       return;
     }
 
@@ -124,28 +170,17 @@ export class ChangePipelineWorkflow extends WorkflowEntrypoint<Env, PipelinePara
       once(() => handlePush(services, params.push)),
     );
     if (result.kind !== "change") return;
-    // A push delivered after its stages started has nothing left to run.
-    const queued = result.stages.filter((run) => run.status === "queued");
-    const [first] = result.stages;
-    if (queued.length === 0 || !first) return;
-    if (await this.handOver(step, event.instanceId, first, params)) return;
+    const pending = result.stages.filter((run) => !isStageSettled(run.status));
+    if (pending.length === 0) {
+      // A push delivered again after its stages settled has nothing left to run. Settling
+      // again finishes the work of a runner that died between its stage and the change.
+      await step.do("settle the change", () => settleChange(services, result.changeId));
+      return;
+    }
     await this.waitForCheckpoints(services, step, result.changeId);
-    await this.runStages(runtime, step, event.instanceId, queued);
-  }
-
-  /** True when another instance runs these stages: this one has made sure it exists. */
-  private async handOver(
-    step: WorkflowStep,
-    instanceId: string,
-    first: StageRun,
-    params: PipelineParams,
-  ): Promise<boolean> {
-    const runner = `stages-${first.id}`;
-    if (instanceId === runner) return false;
-    await step.do("hand the stages to their runner", () =>
-      ensureInstance(this.env.CHANGE_PIPELINE, runner, params),
-    );
-    return true;
+    await step.do("hand the stages to their runners", async () => {
+      await Promise.all(pending.map((run) => ensureRunner(this.env.CHANGE_PIPELINE, run)));
+    });
   }
 
   private async waitForCheckpoints(
@@ -169,37 +204,33 @@ export class ChangePipelineWorkflow extends WorkflowEntrypoint<Env, PipelinePara
     }
   }
 
-  private async runStages(
+  private async runStage(
     runtime: PipelineRuntime,
     step: WorkflowStep,
     instanceId: string,
-    runs: StageRun[],
+    run: StageRun,
   ): Promise<void> {
     const { services, stages } = runtime;
-    await Promise.all(
-      runs.map(async (run) => {
-        const { stage } = run;
-        const input = inputOf(run);
-        try {
-          if (stage === "ci") {
-            await this.runCi(runtime, step, instanceId, input);
-          } else {
-            await step.do(`run ${stage}`, stageStep, async () => {
-              await runStage(services, stages[stage], services, { ...input, stage });
-            });
-          }
-        } catch (error) {
-          // The step itself gave out. The stage must still settle, or the change never would.
-          const reason = error instanceof Error ? error.message : String(error);
-          await step.do(`fail ${stage}`, async () => {
-            await recordStageOutcome(services, input, { status: "failed", reason });
-          });
-        }
-        await step.do(`settle after ${stage}`, async () => {
-          await settleChange(services, input.changeId);
+    const { stage } = run;
+    const input = inputOf(run);
+    try {
+      if (stage === "ci") {
+        await this.runCi(runtime, step, instanceId, input);
+      } else {
+        await step.do(`run ${stage}`, stageStep, async () => {
+          await runStage(services, stages[stage], services, { ...input, stage });
         });
-      }),
-    );
+      }
+    } catch (error) {
+      // The step itself gave out. The stage must still settle, or the change never would.
+      const reason = error instanceof Error ? error.message : String(error);
+      await step.do(`fail ${stage}`, async () => {
+        await recordStageOutcome(services, input, { status: "failed", reason });
+      });
+    }
+    await step.do(`settle after ${stage}`, async () => {
+      await settleChange(services, input.changeId);
+    });
   }
 
   private async runCi(

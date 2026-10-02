@@ -1,4 +1,6 @@
 import type { GitWriter } from "@gitflare/core/ports";
+import { type Db, schema } from "@gitflare/db";
+import { createTestDb } from "@gitflare/db/testing";
 import { ManualClock } from "@gitflare/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createArtifactsGitHost } from "./host";
@@ -13,11 +15,13 @@ const author = { name: "gitflare", email: "gitflare@example.test" };
 const NOW = Date.UTC(2026, 9, 2, 12, 0, 0);
 
 let artifacts: LocalArtifacts;
+let db: Db;
 let writer: GitWriter;
 
 function writerWith(options: { maxMergeBytes?: number } = {}): GitWriter {
   return createWorkerGitWriter({
     git: createArtifactsGitHost(artifacts),
+    db,
     fetch: artifacts.fetch,
     clock: new ManualClock(NOW),
     ...options,
@@ -26,6 +30,7 @@ function writerWith(options: { maxMergeBytes?: number } = {}): GitWriter {
 
 beforeEach(async () => {
   artifacts = new LocalArtifacts();
+  db = createTestDb();
   writer = writerWith();
   await artifacts.create("app");
 });
@@ -144,6 +149,7 @@ describe("commitFiles", () => {
     // own compare-and-swap refuses, and that is a conflict too.
     const racing = createWorkerGitWriter({
       git: createArtifactsGitHost(artifacts),
+      db,
       clock: new ManualClock(NOW),
       fetch: async (input, init) => {
         artifacts.commit("app", "main", { a: "raced" });
@@ -182,6 +188,39 @@ describe("commitFiles", () => {
     });
     const minted = artifacts.tokens.filter((token) => token.repo === "app").slice(1);
     expect(minted.map((token) => [token.scope, token.revoked])).toEqual([["write", true]]);
+    // Recorded like every other token, and marked revoked there too.
+    expect(await db.select().from(schema.gitTokens)).toMatchObject([
+      {
+        tokenId: minted[0]?.id,
+        repoName: "app",
+        userId: null,
+        scope: "write",
+        purpose: "system",
+        revokedAt: NOW,
+      },
+    ]);
+  });
+
+  it("fails, writing nothing, when a tree on the path cannot be read", async () => {
+    const base = artifacts.commit("app", "main", { "src/a.ts": "a\n", "src/b.ts": "b\n" });
+    const host = createArtifactsGitHost(artifacts);
+    const unreadable = createWorkerGitWriter({
+      git: { ...host, readTree: async () => null },
+      db,
+      fetch: artifacts.fetch,
+      clock: new ManualClock(NOW),
+    });
+    await expect(
+      unreadable.commitFiles({
+        repo: "app",
+        branch: "main",
+        expectedParent: base,
+        changes: [{ path: "src/a.ts", content: "changed\n" }],
+        message: "Would drop src/b.ts",
+        author,
+      }),
+    ).rejects.toMatchObject({ code: "unavailable" });
+    expect(artifacts.tip("app", "main")).toBe(base);
   });
 });
 
@@ -300,6 +339,7 @@ describe("merge", () => {
     let raced = "";
     const racing = createWorkerGitWriter({
       git: createArtifactsGitHost(artifacts),
+      db,
       clock: new ManualClock(NOW),
       fetch: async (input, init) => {
         if (!raced && input.includes("git-receive-pack")) {

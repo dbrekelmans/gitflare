@@ -1,4 +1,4 @@
-import { completeSessionFork } from "@gitflare/artifacts";
+import { completeSessionFork, launchCloudSession } from "@gitflare/artifacts";
 import type { ChangeId, SessionId } from "@gitflare/core";
 import { type Db, schema } from "@gitflare/db";
 import { createTestDb } from "@gitflare/db/testing";
@@ -82,22 +82,40 @@ describe("sessions slice: starting", () => {
     expect(ready.pushRemote).toBe(`${REMOTE}/${started.session.forkRepo}.git`);
   });
 
-  it("starts a cloud session by handing its first prompt to the hosted agent", async () => {
-    const { api, cloudSessions, provisioning, services } = await demoServices();
+  it("starts a cloud session whose prompt waits for the fork, then is launched", async () => {
+    const { api, cloudSessions, git, provisioning, services, db } = await demoServices();
+    // As the real port does: no launch for a fork the host has not finished.
+    git.holdCopies = true;
+    const ready = new Set<string>();
+    cloudSessions.forkReady = (sessionId) => ready.has(sessionId);
+
     const started = await api.start(
       { user: priya },
       { repoSlug: "atlas-web", kind: "cloud", title: "Export", prompt: "Add a CSV export." },
     );
     const { id } = started.session;
-
     expect(provisioning.forks).toEqual([id]);
-    // No workspace can exist before the fork does.
     expect(started.cloud).toMatchObject({ sessionId: id, state: "starting" });
-    expect(await cloudSessions.events(id, 0)).toMatchObject([
-      { type: "prompt", text: "Add a CSV export." },
-    ]);
+    expect(cloudSessions.launches).toEqual([]);
+    expect(
+      await db
+        .select()
+        .from(schema.sessionLaunches)
+        .where(eq(schema.sessionLaunches.sessionId, id)),
+    ).toMatchObject([{ prompt: "Add a CSV export.", launchedAt: null }]);
 
+    // The provisioning Workflow: the fork step, and then the launch step.
+    await expect(completeSessionFork(services, id)).rejects.toMatchObject({ code: "not_ready" });
+    git.finish(started.session.forkRepo);
+    ready.add(id);
     await completeSessionFork(services, id);
+    // Ready, but not launched yet: still starting, and the port is not asked.
+    expect((await api.get({ user: priya }, { sessionId: id })).cloud).toMatchObject({
+      state: "starting",
+    });
+    await launchCloudSession(services, id);
+
+    expect(cloudSessions.launches).toEqual([{ sessionId: id, prompt: "Add a CSV export." }]);
     expect((await api.get({ user: priya }, { sessionId: id })).cloud).toMatchObject({
       state: "working",
     });

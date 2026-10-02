@@ -8,6 +8,7 @@ import {
   type SandboxHost,
   workspaceStart,
 } from "@gitflare/core/ports";
+import type { Db } from "@gitflare/db";
 import { relate } from "./ancestry";
 import { createWorkerGitWriter, MergeTooLargeError } from "./worker-writer";
 
@@ -17,11 +18,13 @@ const FETCH_TIMEOUT_SECONDS = 600;
 
 export interface SandboxGitWriterDeps {
   git: GitHost;
+  /** For the default worker writer, which records the tokens it mints. */
+  db: Db;
   sandboxes: SandboxHost;
   ids: IdGenerator;
   /** The deployment's prepared workspace: the snapshot is where git is installed. */
   workspace: () => Promise<WorkspaceSettings>;
-  /** What does everything that fits in the Worker. Defaults to `createWorkerGitWriter({ git })`. */
+  /** What does everything that fits in the Worker. Defaults to `createWorkerGitWriter({ git, db })`. */
   worker?: GitWriter;
 }
 
@@ -34,7 +37,7 @@ export interface SandboxGitWriterDeps {
  */
 export function createSandboxGitWriter(deps: SandboxGitWriterDeps): GitWriter {
   const { git } = deps;
-  const worker = deps.worker ?? createWorkerGitWriter({ git });
+  const worker = deps.worker ?? createWorkerGitWriter({ git, db: deps.db });
 
   async function remoteOf(name: string): Promise<string> {
     const repo = await git.getRepo(name);

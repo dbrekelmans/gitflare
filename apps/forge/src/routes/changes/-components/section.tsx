@@ -1,7 +1,7 @@
 import { type Change, isApprovalCurrent, type User } from "@gitflare/core";
 import type { SectionView } from "@gitflare/core/api";
 import { ChevronDown } from "@gitflare/ui/components/icons";
-import { StatusPill, type StatusTone } from "@gitflare/ui/components/status";
+import { StatusPill } from "@gitflare/ui/components/status";
 import { Evidence, Heading, Text } from "@gitflare/ui/components/typography";
 import { Button } from "@gitflare/ui/components/ui/button";
 import { cn } from "@gitflare/ui/lib/utils";
@@ -9,7 +9,7 @@ import { useId, useState } from "react";
 import { SectionThreads } from "@/components/threads";
 import { useApproveSection, useRevokeApproval } from "@/data/changes.queries";
 import { formatTime } from "@/lib/format";
-import { diffStat, plural, withdrawalCopy } from "./copy";
+import { approvalCopy, approvalStatusCopy, diffStat, plural, withdrawalCopy } from "./copy";
 import { Prose } from "./prose";
 import { SectionDiff } from "./section-diff";
 
@@ -20,23 +20,11 @@ export function sectionAnchor(sectionId: string): string {
   return `section-${sectionId}`;
 }
 
-function approvalStatus(view: SectionView): { label: string; tone: StatusTone } {
-  if (view.approvalState === "withdrawn") return { label: "Approval withdrawn", tone: "warning" };
-  if (view.approvalState === "pending") return { label: "Not approved yet", tone: "neutral" };
-  const current = view.approvals.filter((approval) => isApprovalCurrent(approval, view.section));
-  // Allowed, and never passed off as someone else's review.
-  return current.every((approval) => approval.selfApproval)
-    ? { label: "Approved by its author", tone: "success" }
-    : { label: "Approved", tone: "success" };
-}
-
 function ApprovalLine({ approval, current }: { approval: ApprovalView; current: boolean }) {
   return (
     <li>
       <Text size="detail" tone={current ? "ink" : "faint"}>
-        {approval.user.name} approved
-        {current ? "" : " an earlier version"}
-        {approval.selfApproval ? " their own change" : ""}
+        {approvalCopy(approval, current)}
       </Text>
       {approval.selfApproval && (
         <Text size="detail" tone={current ? "muted" : "faint"}>
@@ -68,7 +56,7 @@ function SectionApproval({
 }) {
   const approve = useApproveSection();
   const revoke = useRevokeApproval();
-  const status = approvalStatus(view);
+  const status = approvalStatusCopy(view);
   const input = { changeId: change.id, sectionId: view.section.id };
   const settled = change.status === "merged" || change.status === "closed";
   const mine = view.approvals.some(
@@ -97,7 +85,10 @@ function SectionApproval({
             variant="link"
             size="xs"
             disabled={revoke.isPending}
-            onClick={() => revoke.mutate(input)}
+            onClick={() => {
+              approve.reset();
+              revoke.mutate(input);
+            }}
           >
             {revoke.isPending ? "Withdrawing…" : "Withdraw my approval"}
           </Button>
@@ -107,7 +98,10 @@ function SectionApproval({
               size="sm"
               variant={view.approvalState === "approved" ? "outline" : "default"}
               disabled={approve.isPending}
-              onClick={() => approve.mutate(input)}
+              onClick={() => {
+                revoke.reset();
+                approve.mutate(input);
+              }}
             >
               {approve.isPending ? "Approving…" : "Approve"}
             </Button>

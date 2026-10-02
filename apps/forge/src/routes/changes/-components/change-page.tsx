@@ -19,7 +19,7 @@ import { CaptureFact, IntentFact, PipelineFact } from "./summary";
 const liveCopy: Record<LiveStatus, string> = {
   live: "live",
   connecting: "connecting",
-  offline: "not live · reload to refresh",
+  offline: "not live",
 };
 
 function Whereabouts({ data, live }: { data: ChangeDetail; live: LiveStatus }) {
@@ -36,9 +36,17 @@ function Whereabouts({ data, live }: { data: ChangeDetail; live: LiveStatus }) {
           {data.session.kind} session
         </RouteLink>
       </Text>
-      <Evidence size="sm" kind="note">
-        {liveCopy[live]}
-      </Evidence>
+      <div>
+        <Evidence size="sm" kind="note">
+          {liveCopy[live]}
+        </Evidence>
+        {/* The connection's state is the machine's; what to do about it is ours. */}
+        {live === "offline" && (
+          <Text size="detail" tone="faint">
+            Reload to see what changed since.
+          </Text>
+        )}
+      </div>
     </div>
   );
 }
@@ -104,6 +112,7 @@ export function ChangePage({ changeId }: { changeId: ChangeId }) {
         </div>
         <MergeCard
           change={change}
+          mergedBy={data.mergedBy}
           readiness={data.readiness}
           sections={sections}
           stages={data.stages}

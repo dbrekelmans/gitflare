@@ -5,6 +5,7 @@ import {
   CI_CONFIG_PATH,
   type CiFinishedPayload,
   defaultOrganisationSettings,
+  ForgeError,
   forkRepoName,
   type Session,
   type StageHandler,
@@ -214,7 +215,7 @@ it("reports a failing step, with its dependants skipped", async () => {
   expect(steps).toEqual([
     ["lint", "succeeded", 0],
     ["test", "failed", 1],
-    ["build", "cancelled", null],
+    ["build", "skipped", null],
   ]);
 });
 
@@ -262,5 +263,62 @@ it("closes the run and still reports when a step keeps throwing", async () => {
     ["lint", "succeeded", 0],
     ["test", "cancelled", null],
     ["build", "cancelled", null],
+  ]);
+});
+
+it("closes the run and stops its sandbox when starting it runs out of retries", async () => {
+  const { ports, sent, push } = await world();
+  ports.sandboxes.on((command) => {
+    if (command.command.includes("gitflare-checkout")) throw new Error("D1_ERROR: reset");
+    return undefined;
+  });
+
+  const { stage, run, steps } = await push({ [CI_CONFIG_PATH]: CI_FILE });
+
+  expect(sent).toHaveLength(1);
+  expect(stage?.status).toBe("failed");
+  expect(stage?.reason).toContain("D1_ERROR: reset");
+  // Tried more than once before it gave up.
+  expect(
+    ports.sandboxes.commands.filter((command) => command.command.includes("gitflare-checkout"))
+      .length,
+  ).toBeGreaterThan(1);
+  expect(run).toMatchObject({ status: "failed" });
+  expect(run?.reason).toContain("D1_ERROR: reset");
+  expect(steps).toEqual([
+    ["lint", "cancelled", null],
+    ["test", "cancelled", null],
+    ["build", "cancelled", null],
+  ]);
+  expect(await ports.sandboxes.get(`sbx_${run?.id.slice(4)}`).isRunning()).toBe(false);
+});
+
+it("retries a poll the sandbox could not answer, and the run goes on", async () => {
+  const { ports, sent, push } = await world();
+  // What the controller throws when one exec into a live container is lost.
+  let hiccups = 1;
+  const get = ports.sandboxes.get.bind(ports.sandboxes);
+  ports.sandboxes.get = (id) => {
+    const sandbox = get(id);
+    const processStatus = sandbox.processStatus.bind(sandbox);
+    sandbox.processStatus = async (name) => {
+      if (name === "step-test" && hiccups-- > 0) {
+        throw new ForgeError("unavailable", "The sandbox was lost: Network connection lost.");
+      }
+      return processStatus(name);
+    };
+    ports.sandboxes.get = get;
+    return sandbox;
+  };
+
+  const { stage, steps } = await push({ [CI_CONFIG_PATH]: CI_FILE });
+
+  expect(hiccups).toBeLessThan(0);
+  expect(sent.map((event) => event.outcome)).toEqual([{ status: "succeeded" }]);
+  expect(stage).toMatchObject({ status: "succeeded" });
+  expect(steps).toEqual([
+    ["lint", "succeeded", 0],
+    ["test", "succeeded", 0],
+    ["build", "succeeded", 0],
   ]);
 });

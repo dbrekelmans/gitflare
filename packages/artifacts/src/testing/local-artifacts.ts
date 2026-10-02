@@ -26,6 +26,23 @@ const env = {
   GIT_COMMITTER_EMAIL: "dev@example.com",
 };
 
+/**
+ * The tests call `git merge-tree --write-tree`, which git has had since 2.38.
+ * An older git fails them with a usage message that does not say why.
+ */
+const MIN_GIT: [number, number] = [2, 38];
+let gitChecked = false;
+
+function requireGit(): void {
+  if (gitChecked) return;
+  const version = execFileSync("git", ["--version"], { env, encoding: "utf8" });
+  const [major = 0, minor = 0] = (version.match(/(\d+)\.(\d+)/) ?? []).slice(1).map(Number);
+  if (major < MIN_GIT[0] || (major === MIN_GIT[0] && minor < MIN_GIT[1])) {
+    throw new Error(`These tests need git ${MIN_GIT.join(".")} or later; found ${version.trim()}.`);
+  }
+  gitChecked = true;
+}
+
 function artifactsError(code: string, numericCode: number, message = code): Error {
   return Object.assign(new Error(message), { name: "ArtifactsError", code, numericCode });
 }
@@ -68,6 +85,10 @@ export class LocalArtifacts implements ArtifactsBindingLike {
   holdCopies = false;
   /** Repositories anyone may fetch from, as a public remote elsewhere would allow. */
   readonly publicRead = new Set<string>();
+
+  constructor() {
+    requireGit();
+  }
 
   // --- The binding ----------------------------------------------------------
 

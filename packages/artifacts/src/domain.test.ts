@@ -1,11 +1,16 @@
-import type { Repository, Session, User } from "@gitflare/core";
+import { forkRepoName, type Repository, type Session, type User } from "@gitflare/core";
 import { schema } from "@gitflare/db";
 import { createTestDb } from "@gitflare/db/testing";
-import { createFakePorts } from "@gitflare/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { createFakePorts, type FakeGit } from "@gitflare/testing";
+import { eq } from "drizzle-orm";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ArtifactsDeps } from "./deps";
-import { completeRepositoryImport, provisionRepository } from "./repositories";
-import { completeSessionFork, openSession } from "./sessions";
+import {
+  completeRepositoryImport,
+  failRepositoryImport,
+  provisionRepository,
+} from "./repositories";
+import { completeSessionFork, launchCloudSession, openSession } from "./sessions";
 import { LocalArtifacts } from "./testing/local-artifacts";
 import { issueGitCredential, mintSystemToken } from "./tokens";
 
@@ -32,6 +37,27 @@ function setup(overrides: Partial<ArtifactsDeps> = {}) {
   const db = createTestDb();
   const deps = { ...ports, db, ...overrides };
   return { ...ports, db, deps };
+}
+
+/**
+ * Makes the hosted-session fake refuse a launch, as the real port does, until
+ * the host reports the session's fork of `app` ready.
+ */
+function launchOnlyOnReadyForks(world: ReturnType<typeof setup>): void {
+  const ready = new Set<string>();
+  const git: FakeGit = world.git;
+  const fork = git.forkRepo.bind(git);
+  git.forkRepo = async (source, name) => {
+    const made = await fork(source, name);
+    if (made.status === "ready") ready.add(name);
+    return made;
+  };
+  const finish = git.finish.bind(git);
+  git.finish = (name) => {
+    finish(name);
+    ready.add(name);
+  };
+  world.cloudSessions.forkReady = (sessionId) => ready.has(forkRepoName("app", sessionId));
 }
 
 /** A ready repository, and a session of Ada's with its fork made. */
@@ -175,19 +201,90 @@ describe("completeRepositoryImport", () => {
     expect(ready.readyAt).toBe(world.clock.now());
   });
 
-  it("does not import a source larger than the host allows", async () => {
+  it("records that a source larger than the host allows failed, and imports nothing", async () => {
     const { world, repository, url } = await importing({ maxImportBytes: 100 });
     const result = await completeRepositoryImport(world.deps, repository.id, url);
-    expect(result.readyAt).toBeNull();
+    expect(result).toMatchObject({
+      readyAt: null,
+      importFailedAt: world.clock.now(),
+      importError: expect.stringContaining("larger than the 100 bytes"),
+    });
     expect(await world.git.getRepo("app")).toBeNull();
+    expect(await world.db.select().from(schema.repositories)).toMatchObject([
+      { importFailedAt: world.clock.now(), importError: result.importError },
+    ]);
   });
 
-  it("does not retry a source that cannot be read", async () => {
+  it("records that a source that cannot be read failed, and does not try it again", async () => {
     const { world, repository } = await importing();
     const gone = `${upstream?.remote("gone")}`;
     const result = await completeRepositoryImport(world.deps, repository.id, gone);
-    expect(result.readyAt).toBeNull();
+    expect(result).toMatchObject({
+      readyAt: null,
+      importFailedAt: world.clock.now(),
+      importError: expect.stringContaining("cannot be read"),
+    });
     expect(await world.git.getRepo("app")).toBeNull();
+
+    // A retried step leaves the failure as it was.
+    world.clock.advance(1000);
+    expect(await completeRepositoryImport(world.deps, repository.id, gone)).toEqual(result);
+  });
+
+  it("records a failure the Workflow gave up on", async () => {
+    const { world, repository } = await importing();
+    const failed = await failRepositoryImport(world.deps, repository.id, "The import timed out.");
+    expect(failed).toMatchObject({
+      readyAt: null,
+      importFailedAt: world.clock.now(),
+      importError: "The import timed out.",
+    });
+  });
+
+  it("never records a failure over an import that finished", async () => {
+    const { world, repository, url } = await importing();
+    const ready = await completeRepositoryImport(world.deps, repository.id, url);
+    expect(await failRepositoryImport(world.deps, repository.id, "late")).toEqual(ready);
+    expect(ready).toMatchObject({ importFailedAt: null, importError: null });
+  });
+
+  it("replaces a failed import with a new repository of the same slug", async () => {
+    const { world, repository, url } = await importing({ maxImportBytes: 100 });
+    // What the host may have kept of an attempt that timed out.
+    await world.git.createRepo("app");
+    await failRepositoryImport(world.deps, repository.id, "The import timed out.");
+
+    const again = await provisionRepository(world.deps, admin, {
+      slug: "app",
+      description: "Second try",
+      importUrl: url,
+    });
+    expect(again.id).not.toBe(repository.id);
+    expect(again).toMatchObject({ importFailedAt: null, importError: null, readyAt: null });
+    expect(await world.db.select().from(schema.repositories)).toMatchObject([
+      { id: again.id, slug: "app", description: "Second try" },
+    ]);
+    // The new import starts from nothing, so it measures and imports the source afresh.
+    expect(await world.git.getRepo("app")).toBeNull();
+    expect(world.provisioning.imports.map((entry) => entry.repositoryId)).toEqual([
+      repository.id,
+      again.id,
+    ]);
+
+    // Still a conflict while that import is running, and once it is ready.
+    await expect(
+      provisionRepository(world.deps, admin, { slug: "app", description: "" }),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("replaces a failed import with a repository created empty", async () => {
+    const { world, repository, url } = await importing({ maxImportBytes: 100 });
+    await completeRepositoryImport(world.deps, repository.id, url);
+    const created = await provisionRepository(world.deps, admin, { slug: "app", description: "" });
+    expect(created.readyAt).toBe(world.clock.now());
+    expect(await world.db.select().from(schema.repositories)).toMatchObject([
+      { id: created.id, importFailedAt: null },
+    ]);
   });
 });
 
@@ -284,6 +381,57 @@ describe("openSession and completeSessionFork", () => {
     expect(ready.baseSha).toBe(moved);
   });
 
+  it("deletes a fork whose session ended while it was being copied", async () => {
+    const world = setup();
+    const repository = await provisionRepository(world.deps, admin, {
+      slug: "app",
+      description: "",
+    });
+    const session = await openSession(world.deps, ada, {
+      repository,
+      kind: "local",
+      title: "Work",
+    });
+    // The session is abandoned during the copy, which took 41 s live: its
+    // clean-up ran before the fork existed, so found nothing to delete.
+    const fork = world.git.forkRepo.bind(world.git);
+    world.git.forkRepo = async (source, name) => {
+      await world.db
+        .update(schema.sessions)
+        .set({ status: "abandoned", endedAt: world.clock.now(), forkDeletedAt: world.clock.now() })
+        .where(eq(schema.sessions.id, session.id));
+      return fork(source, name);
+    };
+
+    const ended = await completeSessionFork(world.deps, session.id);
+    expect(ended).toMatchObject({ status: "abandoned", forkReadyAt: null });
+    expect(await world.git.getRepo(session.forkRepo)).toBeNull();
+    expect((await world.db.select().from(schema.sessions))[0]?.forkReadyAt).toBeNull();
+  });
+
+  it("deletes a fork that was already copied when a retry finds the session ended", async () => {
+    const world = setup();
+    const repository = await provisionRepository(world.deps, admin, {
+      slug: "app",
+      description: "",
+    });
+    const session = await openSession(world.deps, ada, {
+      repository,
+      kind: "local",
+      title: "Work",
+    });
+    world.git.holdCopies = true;
+    await expect(completeSessionFork(world.deps, session.id)).rejects.toMatchObject({
+      code: "not_ready",
+    });
+    world.git.finish(session.forkRepo);
+    await world.db.update(schema.sessions).set({ status: "abandoned", endedAt: 1 });
+
+    const ended = await completeSessionFork(world.deps, session.id);
+    expect(ended).toMatchObject({ forkReadyAt: null, forkDeletedAt: world.clock.now() });
+    expect(await world.git.getRepo(session.forkRepo)).toBeNull();
+  });
+
   it("makes no fork for a session that has already ended", async () => {
     const world = setup();
     const repository = await provisionRepository(world.deps, admin, {
@@ -299,6 +447,106 @@ describe("openSession and completeSessionFork", () => {
 
     expect((await completeSessionFork(world.deps, session.id)).forkReadyAt).toBeNull();
     expect(await world.git.getRepo(session.forkRepo)).toBeNull();
+  });
+});
+
+describe("a cloud session's launch", () => {
+  async function cloud(world: ReturnType<typeof setup>) {
+    const repository = await provisionRepository(world.deps, admin, {
+      slug: "app",
+      description: "",
+    });
+    return openSession(world.deps, ada, {
+      repository,
+      kind: "cloud",
+      title: "Export",
+      prompt: "Add a CSV export.",
+    });
+  }
+
+  it("keeps the first prompt with the session, and launches nothing", async () => {
+    const world = setup();
+    const session = await cloud(world);
+    expect(await world.db.select().from(schema.sessionLaunches)).toEqual([
+      {
+        sessionId: session.id,
+        prompt: "Add a CSV export.",
+        requestedAt: world.clock.now(),
+        launchedAt: null,
+      },
+    ]);
+    expect(world.cloudSessions.launches).toEqual([]);
+  });
+
+  it("is refused without a prompt; a local session keeps none", async () => {
+    const world = setup();
+    const repository = await provisionRepository(world.deps, admin, {
+      slug: "app",
+      description: "",
+    });
+    await expect(
+      openSession(world.deps, ada, { repository, kind: "cloud", title: "Export" }),
+    ).rejects.toMatchObject({ code: "invalid" });
+    await openSession(world.deps, ada, { repository, kind: "local", title: "Work" });
+    expect(await world.db.select().from(schema.sessionLaunches)).toEqual([]);
+    expect(await world.db.select().from(schema.sessions)).toHaveLength(1);
+  });
+
+  it("is delivered once the fork exists, and only once", async () => {
+    const world = setup();
+    launchOnlyOnReadyForks(world);
+    const session = await cloud(world);
+
+    // The Workflow's launch step, run before the fork step finished.
+    world.git.holdCopies = true;
+    await expect(completeSessionFork(world.deps, session.id)).rejects.toMatchObject({
+      code: "not_ready",
+    });
+    await expect(launchCloudSession(world.deps, session.id)).rejects.toMatchObject({
+      code: "not_ready",
+    });
+    expect(world.cloudSessions.launches).toEqual([]);
+
+    world.git.finish(session.forkRepo);
+    await completeSessionFork(world.deps, session.id);
+    world.clock.advance(500);
+    await launchCloudSession(world.deps, session.id);
+    expect(world.cloudSessions.launches).toEqual([
+      { sessionId: session.id, prompt: "Add a CSV export." },
+    ]);
+    expect(await world.db.select().from(schema.sessionLaunches)).toMatchObject([
+      { sessionId: session.id, launchedAt: world.clock.now() },
+    ]);
+
+    // A retried step asks the port nothing.
+    const launch = vi.spyOn(world.cloudSessions, "launch");
+    await launchCloudSession(world.deps, session.id);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it("is delivered again when the step died between the launch and recording it", async () => {
+    const world = setup();
+    launchOnlyOnReadyForks(world);
+    const session = await cloud(world);
+    await completeSessionFork(world.deps, session.id);
+    // The port launched; the write that would record it never happened.
+    await world.cloudSessions.launch(session.id, "Add a CSV export.");
+
+    await launchCloudSession(world.deps, session.id);
+    expect(world.cloudSessions.launches).toHaveLength(1);
+    expect((await world.db.select().from(schema.sessionLaunches))[0]?.launchedAt).toBe(
+      world.clock.now(),
+    );
+  });
+
+  it("does nothing for a session that ended before its launch", async () => {
+    const world = setup();
+    const session = await cloud(world);
+    await completeSessionFork(world.deps, session.id);
+    await world.db.update(schema.sessions).set({ status: "abandoned", endedAt: 1 });
+
+    await launchCloudSession(world.deps, session.id);
+    expect(world.cloudSessions.launches).toEqual([]);
   });
 });
 
@@ -389,6 +637,25 @@ describe("issueGitCredential", () => {
     await expect(
       issueGitCredential(world.deps, ada, `${REMOTE}/${session.forkRepo}.git`),
     ).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("waits for a main repo still being imported, and refuses one whose import failed", async () => {
+    const world = setup();
+    const repository = await provisionRepository(world.deps, admin, {
+      slug: "app",
+      description: "",
+      importUrl: "https://example.com/app.git",
+    });
+    for (const remote of [`${REMOTE}/app.git`, `${REMOTE}/app.context.git`]) {
+      await expect(issueGitCredential(world.deps, ada, remote)).rejects.toMatchObject({
+        code: "not_ready",
+      });
+    }
+    await failRepositoryImport(world.deps, repository.id, "The import timed out.");
+    await expect(issueGitCredential(world.deps, ada, `${REMOTE}/app.git`)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    expect(world.git.tokens).toEqual([]);
   });
 
   it("refuses a remote that is not this deployment's, whatever it is called", async () => {

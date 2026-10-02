@@ -193,7 +193,7 @@ describe("launch", () => {
       "gitflare-checkout",
       fork?.remote,
       "/workspace",
-      "add-audit-log-export",
+      "add-audit-log-export-fresh",
       demo.viewer.name,
       demo.viewer.email,
     ]);
@@ -203,16 +203,19 @@ describe("launch", () => {
       model: demo.organisation.settings.models.session,
       gatewayBaseUrl,
     });
-    expect(turn).toMatchObject({ kind: "spawn", name: "turn-1" });
+    // Named after the prompt's place in the log.
+    expect(turn).toMatchObject({ kind: "spawn", name: "turn-2" });
     expect(turn?.command.slice(0, 2)).toEqual(["bash", "-c"]);
     expect(turn?.command.slice(3)).toEqual([
       "gitflare-turn",
-      "add-audit-log-export",
+      "add-audit-log-export-fresh",
+      "3600",
       ...expected.command,
     ]);
     expect(turn?.options.cwd).toBe("/workspace");
     expect(turn?.options.env).toEqual(expected.env);
-    expect(turn?.options.timeoutSeconds).toBeGreaterThan(0);
+    // The script stops the agent itself, with time left to push what it committed.
+    expect(turn?.options.timeoutSeconds).toBeGreaterThan(3600 + 60);
   });
 
   it("puts no credential in the sandbox", async () => {
@@ -285,6 +288,53 @@ describe("launch", () => {
 
     expect(checkouts()).toHaveLength(1);
     expect(turns()).toHaveLength(1);
+  });
+
+  it("does not send the first prompt again after a stop", async () => {
+    const { sessions, turns, checkouts } = await setup();
+    await sessions.launch(fresh.id, "Add an export");
+    await sessions.stop(fresh.id);
+
+    await sessions.launch(fresh.id, "Add an export");
+
+    expect(turns()).toHaveLength(1);
+    expect(checkouts()).toHaveLength(1);
+    expect((await sessions.status(fresh.id)).state).toBe("asleep");
+  });
+
+  it("starts the agent a launch recorded the prompt for but was cut off before starting", async () => {
+    let cut = true;
+    const { sessions, turns } = await setup({
+      sandboxes: (host) =>
+        overriding(host, (sandbox) => ({
+          spawn: async (name, command, options) => {
+            if (!cut) return sandbox.spawn(name, command, options);
+            cut = false;
+            throw new Error("the request was cancelled");
+          },
+        })),
+    });
+    await expect(sessions.launch(fresh.id, "Add an export")).rejects.toThrow("cancelled");
+    expect(turns()).toHaveLength(0);
+
+    await sessions.launch(fresh.id, "Add an export");
+    await sessions.launch(fresh.id, "Add an export");
+
+    expect(turns().map((turn) => [turn.name, turn.command.at(-1)])).toEqual([
+      ["turn-2", "Add an export"],
+    ]);
+    expect((await sessions.events(fresh.id, 0)).map(detail)).toEqual([
+      "starting",
+      "Add an export",
+      "working",
+      "idle",
+    ]);
+  });
+
+  it("works on a branch of its own, whatever its title", async () => {
+    const { sessions, checkouts } = await setup({ session: { title: "Main" } });
+    await sessions.launch(fresh.id, "Add an export");
+    expect(checkouts()[0]?.command[6]).toBe("main-fresh");
   });
 
   it("finishes a launch that was cut off during the checkout", async () => {
@@ -413,7 +463,7 @@ describe("prompt", () => {
 
     expect(checkouts()).toHaveLength(1);
     const [, turn] = turns();
-    expect(turn?.name).toBe("turn-2");
+    expect(turn?.name).toBe("turn-6");
     expect(turn?.command).toContain("--continue");
     expect(turn?.command.at(-1)).toBe("Now the route");
     expect(turns()[0]?.command).not.toContain("--continue");
@@ -499,11 +549,11 @@ describe("prompt", () => {
     exitCode = 124;
     await sessions.prompt(fresh.id, "Once more");
     expect(failure(await sessions.events(fresh.id, 10))).toEqual([
-      "The agent was stopped: it ran out of time or memory.",
+      "The agent was stopped: it ran out of time.",
     ]);
   });
 
-  it("withdraws a turn whose agent could not be started", async () => {
+  it("ends a turn whose agent could not be started, and says why", async () => {
     const { sessions, sandboxes, turns } = await setup();
     await sessions.launch(fresh.id, "Add an export");
     let refused = true;
@@ -515,10 +565,175 @@ describe("prompt", () => {
 
     await expect(sessions.prompt(fresh.id, "Now the route")).rejects.toThrow("was lost");
 
-    expect((await sessions.events(fresh.id, 0)).filter((e) => e.type === "prompt")).toHaveLength(1);
+    expect((await sessions.events(fresh.id, 4)).map(detail)).toEqual([
+      "Now the route",
+      "working",
+      "The agent could not be started: The sandbox was lost: connection reset",
+      "idle",
+    ]);
     expect((await sessions.status(fresh.id)).state).toBe("idle");
     await sessions.prompt(fresh.id, "Now the route");
-    expect(turns().at(-1)?.name).toBe("turn-2");
+    expect(turns().at(-1)?.name).toBe("turn-9");
+  });
+
+  it("ends a turn that was recorded but never started, once it has had time to start", async () => {
+    // The request is cut off between recording the prompt and starting the
+    // agent, and the sandbox cannot be asked whether it did.
+    let cut = false;
+    let unanswered = false;
+    const { sessions, clock, turns } = await setup({
+      sandboxes: (host) =>
+        overriding(host, (sandbox) => ({
+          spawn: async (name, command, options) => {
+            if (!cut) return sandbox.spawn(name, command, options);
+            cut = false;
+            unanswered = true;
+            throw new Error("cut");
+          },
+          processStatus: async (name) => {
+            if (!unanswered) return sandbox.processStatus(name);
+            unanswered = false;
+            throw new Error("the request was cancelled");
+          },
+        })),
+    });
+    await sessions.launch(fresh.id, "Add an export");
+    cut = true;
+    await expect(sessions.prompt(fresh.id, "Now the route")).rejects.toThrow("cut");
+    // The sandbox could not say whether it started: it might yet.
+    expect((await sessions.status(fresh.id)).state).toBe("working");
+    expect((await rejection(sessions.prompt(fresh.id, "And this"))).code).toBe("conflict");
+
+    clock.advance(5 * 60_000 + 1);
+
+    expect((await sessions.status(fresh.id)).state).toBe("idle");
+    expect((await sessions.events(fresh.id, 4)).map(detail)).toEqual([
+      "Now the route",
+      "working",
+      "The agent never started. Send the prompt again.",
+      "idle",
+    ]);
+    await sessions.prompt(fresh.id, "Now the route");
+    expect(turns()).toHaveLength(2);
+  });
+
+  it("continues the agent's conversation only once it has one", async () => {
+    const { sessions, sandboxes, streams, turns, clock } = await setup();
+    // The first turn dies before the agent says anything.
+    let exitCode = 1;
+    sandboxes.on((command) =>
+      command.kind === "spawn" ? { exitCode, stdout: streams.shift() ?? "" } : undefined,
+    );
+    await sessions.launch(fresh.id, "Add an export");
+    exitCode = 0;
+    streams.push(says(clock.now() + 1_000, "Added it."));
+    await sessions.prompt(fresh.id, "Try again");
+    await sessions.prompt(fresh.id, "Now the route");
+
+    expect(turns().map((turn) => turn.command.includes("--continue"))).toEqual([
+      false,
+      false,
+      true,
+    ]);
+  });
+
+  it("is refused before the session was launched", async () => {
+    const { sessions, sandboxes } = await setup();
+    expect((await rejection(sessions.prompt(fresh.id, "Hello"))).code).toBe("not_ready");
+    expect(sandboxes.startOptions(sandboxId)).toBeNull();
+  });
+});
+
+describe("reading the log", () => {
+  it("records each event once, however often and however concurrently it is read", async () => {
+    let running = true;
+    const { sessions, streams, clock } = await setup({
+      sandboxes: (host) =>
+        overriding(host, (sandbox) => ({
+          processStatus: async (name) =>
+            running ? { state: "running" } : sandbox.processStatus(name),
+        })),
+    });
+    streams.push(`${says(clock.now() + 1_000, "Reading.")}${says(clock.now() + 2_000, "Done.")}`);
+    await sessions.launch(fresh.id, "Add an export");
+
+    await Promise.all([sessions.events(fresh.id, 0), sessions.events(fresh.id, 0)]);
+    running = false;
+    await Promise.all([
+      sessions.events(fresh.id, 0),
+      sessions.status(fresh.id),
+      sessions.events(fresh.id, 0),
+    ]);
+
+    const events = await sessions.events(fresh.id, 0);
+    expect(events.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(events.map(detail)).toEqual([
+      "starting",
+      "Add an export",
+      "working",
+      "Reading.",
+      "Done.",
+      "idle",
+    ]);
+  });
+
+  it("does not read a finished turn's output again", async () => {
+    let reads = 0;
+    const { sessions, streams, clock } = await setup({
+      sandboxes: (host) =>
+        overriding(host, (sandbox) => ({
+          readLog: (name, stream, offset) => {
+            reads++;
+            return sandbox.readLog(name, stream, offset);
+          },
+        })),
+    });
+    streams.push(says(clock.now() + 1_000, "Added the export."));
+    await sessions.launch(fresh.id, "Add an export");
+    await sessions.events(fresh.id, 0);
+    const once = reads;
+
+    await sessions.events(fresh.id, 0);
+    await sessions.status(fresh.id);
+
+    expect(once).toBeGreaterThan(0);
+    expect(reads).toBe(once);
+  });
+});
+
+describe("a start that was cut off", () => {
+  it("is started again once its checkout has had time to finish", async () => {
+    let cut = false;
+    const { sessions, clock, turns, checkouts } = await setup({
+      sandboxes: (host) =>
+        overriding(host, (sandbox) => ({
+          exec: async (command, options) => {
+            if (!cut) return sandbox.exec(command, options);
+            cut = false;
+            throw new Error("the request was cancelled");
+          },
+        })),
+    });
+    await sessions.launch(fresh.id, "Add an export");
+    // A resume: the workspace is rebuilt, and the request dies during the checkout.
+    await sessions.stop(fresh.id);
+    cut = true;
+    await expect(sessions.prompt(fresh.id, "Now the route")).rejects.toThrow("cancelled");
+
+    expect((await sessions.status(fresh.id)).state).toBe("starting");
+    expect((await rejection(sessions.prompt(fresh.id, "Now the route"))).code).toBe("not_ready");
+
+    clock.advance(6 * 60_000 + 1);
+
+    expect(await sessions.status(fresh.id)).toMatchObject({
+      state: "failed",
+      error: "The workspace stopped while it was starting. Send a prompt to start it again.",
+    });
+    await sessions.prompt(fresh.id, "Now the route");
+    // The launch's, and the one after the stall: the cut one never reached the sandbox.
+    expect(checkouts()).toHaveLength(2);
+    expect(turns().map((turn) => turn.command.at(-1))).toEqual(["Add an export", "Now the route"]);
+    expect((await sessions.status(fresh.id)).state).toBe("idle");
   });
 });
 
@@ -533,7 +748,15 @@ describe("stop", () => {
 
     expect(await sandboxes.get(sandboxId).isRunning()).toBe(false);
     expect(await sessions.status(fresh.id)).toMatchObject({ state: "asleep", error: null });
-    expect(await sessions.events(fresh.id, 0)).toEqual([]);
+    // Nobody read the log while the sandbox was up: the stop recorded it.
+    const before = await sessions.events(fresh.id, 0);
+    expect(before.map(detail)).toEqual([
+      "starting",
+      "Add an export",
+      "working",
+      "Added the export.",
+      "idle",
+    ]);
 
     const resumed = clock.advance(3_600_000);
     streams.push(says(resumed + 1_000, "Added the route."));
@@ -550,15 +773,19 @@ describe("stop", () => {
     // agent has no conversation there to continue.
     expect(checkouts()).toHaveLength(2);
     const turn = turns().at(-1);
-    expect(turn?.name).toBe("turn-1");
+    expect(turn?.name).toBe("turn-7");
     expect(turn?.command).not.toContain("--continue");
     expect(turn?.command.at(-1)).toBe("Now the route");
-    expect(await sessions.events(fresh.id, 0)).toMatchObject([
-      { seq: 1, at: resumed, type: "state", state: "starting" },
-      { seq: 2, type: "prompt", text: "Now the route" },
-      { seq: 3, type: "state", state: "working" },
-      { seq: 4, type: "assistant", text: "Added the route." },
-      { seq: 5, type: "state", state: "idle" },
+    // The log outlived the sandbox, and goes on counting.
+    expect(await sessions.events(fresh.id, 0)).toEqual([
+      ...before,
+      ...[
+        { seq: 6, at: resumed, type: "state", state: "starting" },
+        { seq: 7, at: resumed, type: "prompt", text: "Now the route" },
+        { seq: 8, at: resumed, type: "state", state: "working" },
+        { seq: 9, at: resumed + 1_000, type: "assistant", text: "Added the route." },
+        { seq: 10, at: resumed + 1_000, type: "state", state: "idle" },
+      ].map((event) => ({ sessionId: fresh.id, ...event })),
     ]);
     expect((await sessions.status(fresh.id)).state).toBe("idle");
   });
@@ -616,10 +843,14 @@ describe("stop", () => {
     });
     await sessions.launch(fresh.id, "Add an export");
 
+    const recorded = await sessions.events(fresh.id, 0);
+
     lost = true;
     expect((await sessions.status(fresh.id)).state).toBe("asleep");
+    // What was recorded is still there; nothing is read from the sandbox.
+    expect(await sessions.events(fresh.id, 0)).toEqual(recorded);
     await sandboxes.get(sandboxId).start({ ...workspace, instance: "standard-1", egress: [] });
-    expect(await sessions.events(fresh.id, 0)).toEqual([]);
+    expect(await sessions.events(fresh.id, 0)).toEqual(recorded);
     expect((await sessions.status(fresh.id)).state).toBe("asleep");
   });
 

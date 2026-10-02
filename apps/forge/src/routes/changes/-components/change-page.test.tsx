@@ -9,8 +9,9 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { keys } from "@/data/keys";
 import { ChangePage } from "./change-page";
 
 // The page is rendered for real, over the fixture API: what the server
@@ -19,6 +20,8 @@ const server = vi.hoisted(() => ({
   api: undefined as unknown as ForgeApi,
   user: undefined as unknown as User,
   diffRequests: 0,
+  /** The next approve or revoke to fail after it took effect, as a lost response would. */
+  loseNext: null as "approve" | "revoke" | null,
 }));
 
 vi.mock("@/data/changes.functions", () => ({
@@ -28,10 +31,28 @@ vi.mock("@/data/changes.functions", () => ({
     server.diffRequests += 1;
     return server.api.changes.sectionDiff({ user: server.user }, SectionRef.parse(data));
   },
-  approveSection: ({ data }: { data: unknown }) =>
-    server.api.changes.approveSection({ user: server.user }, SectionRef.parse(data)),
-  revokeApproval: ({ data }: { data: unknown }) =>
-    server.api.changes.revokeApproval({ user: server.user }, SectionRef.parse(data)),
+  approveSection: async ({ data }: { data: unknown }) => {
+    const result = await server.api.changes.approveSection(
+      { user: server.user },
+      SectionRef.parse(data),
+    );
+    if (server.loseNext === "approve") {
+      server.loseNext = null;
+      throw new Error("The approval's response was lost");
+    }
+    return result;
+  },
+  revokeApproval: async ({ data }: { data: unknown }) => {
+    const result = await server.api.changes.revokeApproval(
+      { user: server.user },
+      SectionRef.parse(data),
+    );
+    if (server.loseNext === "revoke") {
+      server.loseNext = null;
+      throw new Error("The withdrawal's response was lost");
+    }
+    return result;
+  },
   rerunStage: ({ data }: { data: unknown }) =>
     server.api.changes.rerunStage({ user: server.user }, RerunStageInput.parse(data)),
   mergeChange: ({ data }: { data: unknown }) =>
@@ -70,6 +91,12 @@ const commentsSettled = () =>
     }
   });
 
+const current = { queryClient: new QueryClient() };
+
+/** The live connection says the change moved. */
+const refreshed = () =>
+  act(() => current.queryClient.invalidateQueries({ queryKey: keys.changes.one(review.id) }));
+
 async function renderChange({
   as = demoUsers.maya,
   data = demo,
@@ -82,7 +109,9 @@ async function renderChange({
   server.api = createFixtureApi(data);
   server.user = as;
   server.diffRequests = 0;
+  server.loseNext = null;
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  current.queryClient = queryClient;
   const router = createRouter({
     routeTree: createRootRoute({ component: () => <ChangePage changeId={changeId} /> }),
     history: createMemoryHistory({ initialEntries: ["/"] }),
@@ -202,6 +231,41 @@ describe("the change page, against the demo", () => {
       ).toBeTruthy(),
     );
     expect(within(blockers()).getByText("2 sections still need an approval:")).toBeTruthy();
+    // Taken back on the version it approved: not "an earlier version".
+    const history = within(
+      section("Answer a limited request with 429").getByRole("list", { name: "Approval history" }),
+    );
+    expect(history.getByText("Maya Okafor approved")).toBeTruthy();
+    expect(history.getByText(/: taken back by the approver$/)).toBeTruthy();
+    expect(history.queryByText(/earlier version/)).toBeNull();
+  });
+
+  it("clears a failed approval's error once the next move succeeds", async () => {
+    await renderChange();
+    const route = section("Answer a limited request with 429");
+    server.loseNext = "approve";
+
+    fireEvent.click(route.getByRole("button", { name: "Approve" }));
+    expect((await route.findByRole("alert")).textContent).toBe("The approval's response was lost");
+    // It did go through, and the page catches up.
+    await refreshed();
+    fireEvent.click(await route.findByRole("button", { name: "Withdraw my approval" }));
+
+    await waitFor(() => expect(route.getByText("Approval withdrawn")).toBeTruthy());
+    expect(route.queryByRole("alert")).toBeNull();
+  });
+
+  it("counts the pushes in the record in plain English", async () => {
+    await renderChange();
+    expect(screen.getByText("3 commits in 2 pushes")).toBeTruthy();
+  });
+
+  it("says the page is not live as a fact, and what to do about it as a sentence", async () => {
+    await renderChange();
+    const state = screen.getByText("not live");
+    const advice = screen.getByText("Reload to see what changed since.");
+    expect(state.className).toMatch(/type-mono/);
+    expect(advice.closest("[class*='type-mono']")).toBeNull();
   });
 
   it("offers the merge only when the change is ready, and merges", async () => {
@@ -222,6 +286,9 @@ describe("the change page, against the demo", () => {
     if (!button) throw new Error("the merge was not offered on a ready change");
     fireEvent.click(button);
     await waitFor(() => expect(mergeCard().getByText("merged")).toBeTruthy());
+    expect(
+      mergeCard().getByText(/^Merged by Maya Okafor, .+ UTC\. The session has ended/),
+    ).toBeTruthy();
     expect(mergeButton()).toBeNull();
     // A merged change is no longer approved or re-run.
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
@@ -337,5 +404,12 @@ describe("a change the pipeline has not finished", () => {
     expect(mergeCard().queryByRole("button", { name: "Merge into main" })).toBeNull();
     // A stage that is still running cannot be run again.
     expect(screen.queryByRole("button", { name: "Re-run CI" })).toBeNull();
+  });
+});
+
+describe("a merged change", () => {
+  it("says who merged it", async () => {
+    await renderChange({ as: demoUsers.jonas, changeId: demoChanges.merged.id });
+    expect(mergeCard().getByText(/^Merged by Maya Okafor, /)).toBeTruthy();
   });
 });
