@@ -103,10 +103,17 @@ export async function receivePack(
   }
   const status = statuses.find((line) => line.slice(3).startsWith(update.ref));
   if (status?.startsWith("ok ")) return;
-  // Artifacts reports a stale old value as `ng <ref> stale ref`.
+  const reason = status?.slice(4 + update.ref.length) || "no status reported";
+  // Artifacts reports a stale old value as `ng <ref> stale ref`; git itself
+  // words a moved ref these other ways. Anything else is not a race to retry
+  // against a newer tip.
+  const moved =
+    /stale|incorrect old value|non-fast-forward|fetch first|failed to lock|already exists/.test(
+      reason,
+    );
   throw new ForgeError(
-    "conflict",
-    `${update.ref} was not updated: ${status?.slice(4 + update.ref.length) || "no status reported"}`,
+    status && moved ? "conflict" : "unavailable",
+    `${update.ref} was not updated: ${reason}`,
   );
 }
 

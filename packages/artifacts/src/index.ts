@@ -15,9 +15,13 @@ export type {
 } from "./binding";
 export type { ArtifactsDeps } from "./deps";
 export { createArtifactsGitHost } from "./host";
-export { completeRepositoryImport, provisionRepository } from "./repositories";
+export {
+  completeRepositoryImport,
+  failRepositoryImport,
+  provisionRepository,
+} from "./repositories";
 export { createSandboxGitWriter, type SandboxGitWriterDeps } from "./sandbox-writer";
-export { completeSessionFork, openSession } from "./sessions";
+export { completeSessionFork, launchCloudSession, openSession } from "./sessions";
 export { issueGitCredential, mintSystemToken } from "./tokens";
 export {
   createWorkerGitWriter,

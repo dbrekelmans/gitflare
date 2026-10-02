@@ -14,9 +14,10 @@ import { desc, eq } from "drizzle-orm";
 import type { Services } from "../services";
 
 /**
- * Sessions: starting one forks the repository; a cloud session also has a hosted agent to prompt.
- * Build task: `artifacts`. The cloud operations (`prompt`, `events`, `stop`) pass
- * straight through to the `cloudSessions` port, which `cloud-sessions` implements.
+ * Sessions: starting one forks the repository; a cloud session also has a hosted agent to
+ * prompt, launched by the provisioning Workflow once the fork exists. Build task: `artifacts`.
+ * The cloud operations (`prompt`, `events`, `stop`) pass straight through to the
+ * `cloudSessions` port, which `cloud-sessions` implements.
  */
 export function sessionsApi(services: Services): ForgeApi["sessions"] {
   const { db, git, cloudSessions } = services;
@@ -31,6 +32,17 @@ export function sessionsApi(services: Services): ForgeApi["sessions"] {
     return session;
   }
 
+  /** Whether a cloud session's first prompt has been handed to the hosted agent. */
+  async function launched(sessionId: SessionId): Promise<boolean> {
+    const [launch] = await db
+      .select({ launchedAt: schema.sessionLaunches.launchedAt })
+      .from(schema.sessionLaunches)
+      .where(eq(schema.sessionLaunches.sessionId, sessionId))
+      .limit(1);
+    // A session started before launches were recorded has no row.
+    return !launch || launch.launchedAt !== null;
+  }
+
   /** A hosted session's state. The port is only asked about a workspace that can exist. */
   async function cloudStatus(session: Session): Promise<CloudSessionStatus | null> {
     if (session.kind !== "cloud") return null;
@@ -42,12 +54,12 @@ export function sessionsApi(services: Services): ForgeApi["sessions"] {
         updatedAt: session.endedAt ?? session.createdAt,
       };
     }
-    if (!session.forkReadyAt) {
+    if (!session.forkReadyAt || !(await launched(session.id))) {
       return {
         sessionId: session.id,
         state: "starting",
         error: null,
-        updatedAt: session.createdAt,
+        updatedAt: session.forkReadyAt ?? session.createdAt,
       };
     }
     return cloudSessions.status(session.id);
@@ -116,10 +128,10 @@ export function sessionsApi(services: Services): ForgeApi["sessions"] {
         repository: toRepository(row),
         kind: input.kind,
         title: input.title,
+        prompt: input.prompt,
       });
-      // The first prompt has nowhere to wait for the fork: it is handed over
-      // now, and the port's implementation boots the workspace when it can.
-      if (input.kind === "cloud") await cloudSessions.launch(session.id, input.prompt ?? "");
+      // A cloud session's prompt waits with it until the provisioning step
+      // that completes the fork launches it.
       return view(session);
     },
 

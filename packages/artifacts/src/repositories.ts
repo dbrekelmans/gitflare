@@ -9,7 +9,7 @@ import {
 } from "@gitflare/core";
 import type { FileChange, GitHost, HostedRepo } from "@gitflare/core/ports";
 import { schema } from "@gitflare/db";
-import { eq } from "drizzle-orm";
+import { and, eq, isNotNull } from "drizzle-orm";
 import { type ArtifactsDeps, repositoryById, repositoryBySlug, systemAuthor } from "./deps";
 import { measureRemote } from "./wire";
 
@@ -80,7 +80,8 @@ export async function provisionRepository(
   if (!can(user, { type: "repository.create" })) {
     throw new ForgeError("forbidden", "Only an administrator can create a repository.");
   }
-  if (await repositoryBySlug(deps.db, input.slug)) {
+  const existing = await repositoryBySlug(deps.db, input.slug);
+  if (existing && !existing.importFailedAt) {
     throw new ForgeError("conflict", `A repository named ${input.slug} already exists.`);
   }
   const repository: Repository = {
@@ -98,8 +99,35 @@ export async function provisionRepository(
     archivedAt: null,
   };
 
+  // A failed import holds its slug and nothing else: no session or change can
+  // start on a repository that was never ready. What the host kept of the
+  // attempt goes first; the record is replaced in the same write that takes
+  // the slug, so a request racing this one meets the unique slug.
+  if (existing) {
+    await deps.git.deleteRepo(mainRepoName(existing.slug));
+    await deps.git.deleteRepo(contextRepoName(existing.slug));
+  }
+  const insert = async (row: Repository): Promise<void> => {
+    const values = deps.db.insert(schema.repositories).values(row);
+    if (!existing) {
+      await values;
+      return;
+    }
+    await deps.db.batch([
+      deps.db
+        .delete(schema.repositories)
+        .where(
+          and(
+            eq(schema.repositories.id, existing.id),
+            isNotNull(schema.repositories.importFailedAt),
+          ),
+        ),
+      values,
+    ]);
+  };
+
   if (input.importUrl) {
-    await deps.db.insert(schema.repositories).values(repository);
+    await insert(repository);
     await deps.provisioning.importRepository(repository.id, input.importUrl);
     return repository;
   }
@@ -116,7 +144,7 @@ export async function provisionRepository(
     captureEnabled: true,
     readyAt: deps.clock.now(),
   };
-  await deps.db.insert(schema.repositories).values(ready);
+  await insert(ready);
   return ready;
 }
 
@@ -125,8 +153,8 @@ export async function provisionRepository(
  * size limits, imports it, commits the capture settings files and marks the
  * repository ready. Throws on a failure worth retrying, which includes an
  * import the host has not finished. A source that can never be imported (too
- * large, or not readable) is not retried: the repository is returned as it
- * is, not ready.
+ * large, or not readable) is not retried: the repository is marked failed,
+ * with the reason, and returned that way.
  */
 export async function completeRepositoryImport(
   deps: ArtifactsDeps,
@@ -134,7 +162,7 @@ export async function completeRepositoryImport(
   url: string,
 ): Promise<Repository> {
   const repository = await repositoryById(deps.db, repositoryId);
-  if (repository.readyAt) return repository;
+  if (repository.readyAt || repository.importFailedAt) return repository;
 
   const main = mainRepoName(repository.slug);
   let hosted = await deps.git.getRepo(main);
@@ -142,9 +170,17 @@ export async function completeRepositoryImport(
     const limit = deps.maxImportBytes ?? MAX_REPOSITORY_BYTES;
     const fetch = deps.fetch ?? ((input, init) => globalThis.fetch(input, init));
     try {
-      if ((await measureRemote(fetch, url, limit)) > limit) return repository;
+      if ((await measureRemote(fetch, url, limit)) > limit) {
+        return failImport(
+          deps,
+          repository,
+          `${url} is larger than the ${limit} bytes a repository may hold.`,
+        );
+      }
     } catch (error) {
-      if (error instanceof ForgeError && error.code === "invalid") return repository;
+      if (error instanceof ForgeError && error.code === "invalid") {
+        return failImport(deps, repository, error.message);
+      }
       throw error;
     }
     hosted = await deps.git.importRepo(main, { url });
@@ -171,4 +207,32 @@ export async function completeRepositoryImport(
     })
     .where(eq(schema.repositories.id, repository.id));
   return ready;
+}
+
+/**
+ * Marks an import failed for good, for the Workflow to call once its import
+ * step has run out of retries. Leaves a repository that became ready alone.
+ */
+export async function failRepositoryImport(
+  deps: Pick<ArtifactsDeps, "db" | "clock">,
+  repositoryId: Repository["id"],
+  importError: string,
+): Promise<Repository> {
+  const repository = await repositoryById(deps.db, repositoryId);
+  if (repository.readyAt || repository.importFailedAt) return repository;
+  return failImport(deps, repository, importError);
+}
+
+/** Records that an import gave up for good, so nothing waits on it and its slug is free again. */
+async function failImport(
+  deps: Pick<ArtifactsDeps, "db" | "clock">,
+  repository: Repository,
+  importError: string,
+): Promise<Repository> {
+  const importFailedAt = deps.clock.now();
+  await deps.db
+    .update(schema.repositories)
+    .set({ importFailedAt, importError })
+    .where(eq(schema.repositories.id, repository.id));
+  return { ...repository, importFailedAt, importError };
 }

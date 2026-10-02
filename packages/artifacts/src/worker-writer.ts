@@ -8,9 +8,11 @@ import {
   systemClock,
   type TreeEntry,
 } from "@gitflare/core/ports";
+import type { Db } from "@gitflare/db";
 import git, { type GitHttpRequest, type GitHttpResponse, type HttpClient } from "isomorphic-git";
 import { relate } from "./ancestry";
 import { MemoryFS } from "./memfs";
+import { mintSystemToken, revokeSystemToken } from "./tokens";
 import { concatBytes, type Fetch, type RemoteAccess, receivePack, uploadPack } from "./wire";
 
 const DIR = "/r";
@@ -25,6 +27,8 @@ const DEFAULT_MAX_MERGE_BYTES = 32 * 1024 * 1024;
 
 export interface WorkerGitWriterDeps {
   git: GitHost;
+  /** Where the writer records the tokens it mints for itself, like every other token. */
+  db: Db;
   /** Defaults to the global `fetch`. */
   fetch?: Fetch;
   clock?: Clock;
@@ -155,14 +159,11 @@ function countingHttp(fetch: Fetch, budget: number): HttpClient & { exceeded(): 
 export function createWorkerGitWriter(deps: WorkerGitWriterDeps): GitWriter {
   const host = deps.git;
   const clock = deps.clock ?? systemClock;
+  const tokens = { db: deps.db, git: host, clock };
   const fetch: Fetch = deps.fetch ?? ((input, init) => globalThis.fetch(input, init));
   const maxMergeBytes = deps.maxMergeBytes ?? DEFAULT_MAX_MERGE_BYTES;
 
-  /**
-   * Runs `use` with a token for the repository, and revokes it afterwards. A
-   * failed revocation is not an error: the write it followed has already
-   * happened, and the token dies on its own within minutes.
-   */
+  /** Runs `use` with a recorded token for the repository, and revokes it afterwards. */
   async function withAccess<T>(
     name: string,
     scope: "read" | "write",
@@ -173,11 +174,11 @@ export function createWorkerGitWriter(deps: WorkerGitWriterDeps): GitWriter {
     if (repo.status !== "ready") {
       throw new ForgeError("not_ready", `repo ${name} is still being copied`);
     }
-    const token = await host.mintToken(name, scope, TOKEN_TTL_SECONDS);
+    const token = await mintSystemToken(tokens, name, scope, "system", TOKEN_TTL_SECONDS);
     try {
       return await use({ url: repo.remote, secret: token.secret });
     } finally {
-      await host.revokeToken(name, token.id).catch(() => false);
+      await revokeSystemToken(tokens, name, token.grant.tokenId);
     }
   }
 
@@ -201,7 +202,9 @@ export function createWorkerGitWriter(deps: WorkerGitWriterDeps): GitWriter {
 
     /** The tree with `node` applied to it, or null when that leaves it empty. */
     async function rewrite(treeSha: Sha | null, node: Subtree): Promise<Sha | null> {
-      const existing = treeSha ? ((await host.readTree(repo, treeSha)) ?? []) : [];
+      const existing = treeSha ? await host.readTree(repo, treeSha) : [];
+      // Read as empty, the commit would drop every sibling of what it changes.
+      if (!existing) throw new ForgeError("unavailable", `${repo} tree ${treeSha} cannot be read`);
       const entries = new Map(existing.map((entry) => [entry.name, writable(entry)]));
       for (const [name, value] of node) {
         const current = entries.get(name);

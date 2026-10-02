@@ -73,7 +73,11 @@ export async function issueGitCredential(
   if (!asked || !repo) refuse();
 
   const repository = await repositoryBySlug(deps.db, repo.slug);
-  if (!repository || repository.archivedAt) refuse();
+  if (!repository || repository.archivedAt || repository.importFailedAt) refuse();
+  // Until an import is done the host may have no repo to answer for.
+  if (!repository.readyAt) {
+    throw new ForgeError("not_ready", `${repository.slug} is still being imported.`);
+  }
 
   let grant: Pick<GitTokenGrant, "sessionId" | "scope" | "purpose">;
   if (repo.kind === "main") {
@@ -119,12 +123,30 @@ export async function mintSystemToken(
   repoName: string,
   scope: GitTokenGrant["scope"],
   purpose: GitTokenGrant["purpose"],
+  ttlSeconds = SYSTEM_TTL_SECONDS,
 ): Promise<{ secret: string; grant: GitTokenGrant }> {
   const repo = parseRepoName(repoName);
   const sessionId: SessionId | null = repo?.kind === "fork" ? repo.sessionId : null;
-  return mintRecorded(
-    deps,
-    { repoName, userId: null, sessionId, scope, purpose },
-    SYSTEM_TTL_SECONDS,
-  );
+  return mintRecorded(deps, { repoName, userId: null, sessionId, scope, purpose }, ttlSeconds);
+}
+
+/**
+ * Revokes a token gitflare minted for itself, on the host and in the record.
+ * Never throws: it follows a write that has already happened, and the token
+ * dies on its own within minutes.
+ */
+export async function revokeSystemToken(
+  deps: TokenDeps,
+  repoName: string,
+  tokenId: string,
+): Promise<void> {
+  try {
+    await deps.git.revokeToken(repoName, tokenId);
+    await deps.db
+      .update(schema.gitTokens)
+      .set({ revokedAt: deps.clock.now() })
+      .where(eq(schema.gitTokens.tokenId, tokenId));
+  } catch {
+    // As above: nothing to undo.
+  }
 }
