@@ -1,3 +1,4 @@
+import { EgressHost } from "../domain/ci";
 import type { ModelAttribution } from "../domain/model-call";
 import type { WorkspaceSettings } from "../domain/organisation";
 import type { GitTokenScope } from "../domain/repository";
@@ -16,9 +17,10 @@ export type EgressGrant =
   /** Model calls through the deployment's gateway, tagged with this attribution. */
   | { kind: "models"; attribution: ModelAttribution }
   /**
-   * Plain outbound HTTPS to one host, read-only, for package registries. A
-   * `*` inside the name is a glob (`*.npmjs.org`). A bare `*` is not a grant:
-   * it is `invalid`. Reaching anything at all is `openInternet`.
+   * Plain outbound HTTPS to one host, read-only, for package registries. The
+   * host is an `EgressHost`: a name, or one with a leading `*.` for its
+   * subdomains (`*.npmjs.org`). Anything else, `*` included, is `invalid`.
+   * Reaching anything at all is `openInternet`.
    */
   | { kind: "host"; host: string };
 
@@ -30,11 +32,13 @@ export type EgressGrant =
 export function checkStartOptions(
   options: Pick<SandboxStartOptions, "egress" | "openInternet">,
 ): void {
-  if (options.egress.some((grant) => grant.kind === "host" && grant.host.trim() === "*")) {
-    throw new ForgeError(
-      "invalid",
-      "A host grant of * is not allowed. Ask for open Internet access by name: openInternet.",
-    );
+  for (const grant of options.egress) {
+    if (grant.kind === "host" && !EgressHost.safeParse(grant.host).success) {
+      throw new ForgeError(
+        "invalid",
+        `A host grant names one host, or its subdomains as *.example.com; ${JSON.stringify(grant.host)} is neither. Ask for open Internet access by name: openInternet.`,
+      );
+    }
   }
   if (options.openInternet && options.egress.length > 0) {
     throw new ForgeError(
