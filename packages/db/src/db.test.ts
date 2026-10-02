@@ -1,9 +1,16 @@
+import { DatabaseSync } from "node:sqlite";
 import type { ChangeEvent } from "@gitflare/core";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { appendChangeEvent, changeEventsAfter } from "./events";
+import {
+  appendChangeEvent,
+  changeEventStatements,
+  changeEventsAfter,
+  publishChangeEvent,
+  storedChangeEvent,
+} from "./events";
 import { migrations } from "./migrations";
-import { changes, organisations } from "./schema";
+import { changes, intents, organisations } from "./schema";
 import { createTestDb } from "./testing";
 
 async function withChange() {
@@ -73,6 +80,68 @@ describe("test database", () => {
   });
 });
 
+describe("the second migration", () => {
+  function migratedFromFirst(seed: (sqlite: DatabaseSync) => void): DatabaseSync {
+    const sqlite = new DatabaseSync(":memory:");
+    const [first, ...rest] = migrations;
+    for (const statement of first?.statements ?? []) sqlite.exec(statement);
+    seed(sqlite);
+    for (const migration of rest) {
+      for (const statement of migration.statements) sqlite.exec(statement);
+    }
+    return sqlite;
+  }
+
+  it("comes after the first, which is unchanged", () => {
+    expect(migrations.map((migration) => migration.name)).toEqual([
+      "0000_initial.sql",
+      "0001_contracts_round_two.sql",
+    ]);
+  });
+
+  it("gives existing intents an attempt that is unique per revision", () => {
+    const sqlite = migratedFromFirst((db) => {
+      const insert = db.prepare(
+        "insert into intents (id, change_id, revision_id, version, statement, grade, checkpoint_ids, created_at) values (?, 'chg_1', 'rev_1', ?, 's', 'diff', '[]', 1)",
+      );
+      insert.run("int_1", 1);
+      insert.run("int_2", 2);
+    });
+    const rows = sqlite.prepare("select id, attempt from intents order by id").all();
+    expect(rows.map((row) => ({ ...row }))).toEqual([
+      { id: "int_1", attempt: 1 },
+      { id: "int_2", attempt: 2 },
+    ]);
+  });
+
+  it("carries a recorded rewording over as a whole wording", () => {
+    const sqlite = migratedFromFirst((db) => {
+      db.exec(
+        "insert into decisions (id, repository_id, path, title, statement, rationale, scope, status, strength, origin, created_at, updated_at) values ('dec_1', 'rep_1', 'decisions/a.md', 'Title', 'New.', 'Because.', '{}', 'active', 0.5, 'manual', 1, 1)",
+      );
+      const insert = db.prepare(
+        "insert into decision_events (id, decision_id, kind, strength_before, strength_after, statement_before, statement_after, created_at) values (?, 'dec_1', ?, 0.5, 0.5, ?, ?, 1)",
+      );
+      insert.run("dev_1", "created", null, null);
+      insert.run("dev_2", "reshaped", "Old.", "New.");
+      insert.run("dev_3", "reshaped", "New.", "New.");
+    });
+    const rows = sqlite.prepare("select id, wording from decision_events order by id").all();
+    expect(rows.map((row) => [row.id, row.wording && JSON.parse(String(row.wording))])).toEqual([
+      ["dev_1", null],
+      [
+        "dev_2",
+        {
+          before: { title: "Title", statement: "Old.", rationale: "Because." },
+          after: { title: "Title", statement: "New.", rationale: "Because." },
+        },
+      ],
+      // An edit that left the statement alone changed nothing that was recorded.
+      ["dev_3", null],
+    ]);
+  });
+});
+
 describe("change events", () => {
   it("numbers events from 1 without gaps and publishes each", async () => {
     const { db, deps, published } = await withChange();
@@ -113,6 +182,55 @@ describe("change events", () => {
     };
     await appendChangeEvent(deps, "chg_1", { type: "intent.updated" });
     expect(await changeEventsAfter(db, "chg_1", 0)).toHaveLength(1);
+  });
+
+  it("commits an event with a caller's own writes, or neither", async () => {
+    const { db, deps, published } = await withChange();
+    await appendChangeEvent(deps, "chg_1", { type: "sections.updated" });
+    const intent: typeof intents.$inferInsert = {
+      id: "int_1",
+      changeId: "chg_1",
+      revisionId: "rev_1",
+      version: 1,
+      attempt: 1,
+      statement: "Why",
+      grade: "diff",
+      checkpointIds: [],
+      createdAt: 1000,
+    };
+    const body = { type: "intent.updated" } as const;
+
+    const [, , rows] = await db.batch([
+      db.insert(intents).values(intent),
+      ...changeEventStatements(db, "chg_1", body, 2000),
+    ]);
+    const event = storedChangeEvent("chg_1", body, 2000, rows);
+    await publishChangeEvent(deps.live, event);
+    expect(event).toEqual({ type: "intent.updated", changeId: "chg_1", seq: 2, at: 2000 });
+    expect(published.at(-1)).toEqual(event);
+    expect(await changeEventsAfter(db, "chg_1", 1)).toEqual([event]);
+
+    // The same attempt again: the intent is refused, and no event is left behind.
+    await expect(
+      db.batch([
+        ...changeEventStatements(db, "chg_1", body, 3000),
+        db.insert(intents).values({ ...intent, id: "int_2", version: 2 }),
+      ]),
+    ).rejects.toThrow();
+    expect(await changeEventsAfter(db, "chg_1", 0)).toHaveLength(2);
+    const [change] = await db.select().from(changes);
+    expect(change?.lastEventSeq).toBe(2);
+  });
+
+  it("keeps a thread message's own sequence number apart from the event's", async () => {
+    const { deps } = await withChange();
+    await appendChangeEvent(deps, "chg_1", { type: "intent.updated" });
+    const event = await appendChangeEvent(deps, "chg_1", {
+      type: "thread.message",
+      threadId: "thr_1",
+      messageSeq: 7,
+    });
+    expect(event).toMatchObject({ seq: 2, messageSeq: 7 });
   });
 
   it("refuses an event for a change that does not exist", async () => {

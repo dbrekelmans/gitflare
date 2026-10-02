@@ -10,7 +10,9 @@ import {
   type CiRunId,
   CiStatus,
   type CiStepId,
+  type CloudSessionEventBody,
   type Decision,
+  type DecisionEvent,
   type DecisionEventId,
   DecisionEventKind,
   type DecisionId,
@@ -32,6 +34,7 @@ import {
   type SectionFile,
   type SectionId,
   SectionKind,
+  type SectionStats,
   type SessionId,
   SessionKind,
   SessionStatus,
@@ -104,6 +107,8 @@ export const repositories = sqliteTable(
     nextChangeNumber: integer("next_change_number").notNull().default(1),
     createdAt: time("created_at").notNull(),
     readyAt: time("ready_at"),
+    importFailedAt: time("import_failed_at"),
+    importError: text("import_error"),
     archivedAt: time("archived_at"),
   },
   (t) => [uniqueIndex("repositories_slug").on(t.slug)],
@@ -130,6 +135,34 @@ export const sessions = sqliteTable(
     index("sessions_user").on(t.userId, t.status),
     index("sessions_repository").on(t.repositoryId, t.status),
   ],
+);
+
+/**
+ * A hosted session's first prompt, waiting for its fork. Written with the
+ * session by the request that starts it; `launchedAt` is set by the
+ * provisioning step that hands the prompt to the `cloudSessions` port.
+ */
+export const sessionLaunches = sqliteTable("session_launches", {
+  sessionId: id<SessionId>("session_id").primaryKey(),
+  prompt: text("prompt").notNull(),
+  requestedAt: time("requested_at").notNull(),
+  launchedAt: time("launched_at"),
+});
+
+/**
+ * What a hosted session's agent did, kept so the conversation outlives the
+ * sandbox it ran in. `seq` is gap-free per session and keeps counting across
+ * a stop and a resume.
+ */
+export const cloudSessionEvents = sqliteTable(
+  "cloud_session_events",
+  {
+    sessionId: id<SessionId>("session_id").notNull(),
+    seq: integer("seq").notNull(),
+    body: json<CloudSessionEventBody>("body").notNull(),
+    at: time("at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.sessionId, t.seq] })],
 );
 
 /** Which user each Artifacts token was issued to. Artifacts itself records nothing about that. */
@@ -286,13 +319,34 @@ export const intents = sqliteTable(
     changeId: id<ChangeId>("change_id").notNull(),
     revisionId: id<RevisionId>("revision_id").notNull(),
     version: integer("version").notNull(),
+    attempt: integer("attempt").notNull(),
     statement: text("statement").notNull(),
     grade: text("grade", { enum: values(IntentGrade) }).notNull(),
     checkpointIds: json<string[]>("checkpoint_ids").notNull(),
     model: text("model"),
     createdAt: time("created_at").notNull(),
   },
-  (t) => [uniqueIndex("intents_change_version").on(t.changeId, t.version)],
+  (t) => [
+    uniqueIndex("intents_change_version").on(t.changeId, t.version),
+    // One attempt produces one version: a retried attempt cannot add a second.
+    uniqueIndex("intents_revision_attempt").on(t.revisionId, t.attempt),
+  ],
+);
+
+/** One row per review stage attempt that finished reviewing a revision, findings or none. */
+export const revisionReviews = sqliteTable(
+  "revision_reviews",
+  {
+    revisionId: id<RevisionId>("revision_id").notNull(),
+    attempt: integer("attempt").notNull(),
+    changeId: id<ChangeId>("change_id").notNull(),
+    findings: integer("findings").notNull(),
+    createdAt: time("created_at").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.revisionId, t.attempt] }),
+    index("revision_reviews_change").on(t.changeId),
+  ],
 );
 
 export const sections = sqliteTable(
@@ -308,6 +362,12 @@ export const sections = sqliteTable(
     contentHash: text("content_hash").notNull(),
     createdRevisionId: id<RevisionId>("created_revision_id").notNull(),
     updatedRevisionId: id<RevisionId>("updated_revision_id").notNull(),
+    /**
+     * `sectionStats` of the diff at `updatedRevisionId`, written with
+     * `contentHash`. Null on a section written before this column existed:
+     * readers then compute it from the diff.
+     */
+    stats: json<SectionStats>("stats"),
     /** Set when a later push left the section with nothing to show. It keeps its approvals' history. */
     removedAt: time("removed_at"),
   },
@@ -348,6 +408,7 @@ export const threads = sqliteTable(
     createdAt: time("created_at").notNull(),
     settledAt: time("settled_at"),
     settledBy: id<UserId>("settled_by"),
+    learnedAt: time("learned_at"),
     messageCount: integer("message_count").notNull().default(0),
     lastMessageAt: time("last_message_at").notNull(),
   },
@@ -378,6 +439,7 @@ export const ciRuns = sqliteTable(
     revisionId: id<RevisionId>("revision_id").notNull(),
     stageRunId: id<StageRunId>("stage_run_id").notNull(),
     status: text("status", { enum: values(CiStatus) }).notNull(),
+    reason: text("reason"),
     startedAt: time("started_at"),
     finishedAt: time("finished_at"),
   },
@@ -448,8 +510,7 @@ export const decisionEvents = sqliteTable(
     userId: id<UserId>("user_id"),
     strengthBefore: real("strength_before").notNull(),
     strengthAfter: real("strength_after").notNull(),
-    statementBefore: text("statement_before"),
-    statementAfter: text("statement_after"),
+    wording: json<NonNullable<DecisionEvent["wording"]>>("wording"),
     note: text("note"),
     createdAt: time("created_at").notNull(),
   },

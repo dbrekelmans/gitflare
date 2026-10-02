@@ -70,7 +70,7 @@ export class FakeModelGateway implements ModelGateway {
     return this;
   }
 
-  /** Makes every call to `model` fail with `code`, to exercise fallback. */
+  /** Makes every call to `model` fail with `code`, embeddings included, to exercise fallback. */
   fail(model: string, code: ModelErrorCode = "budget_exceeded"): this {
     this.unavailable.set(model, code);
     return this;
@@ -124,10 +124,20 @@ export class FakeModelGateway implements ModelGateway {
     attribution: ModelAttribution;
   }): Promise<EmbedResult> {
     this.embedCalls.push(request);
+    const failure = this.unavailable.get(request.model);
+    if (failure) throw new ModelError(failure, `${request.model}: scripted ${failure}`);
+    const characters = request.texts.join("").length;
     return {
       vectors: request.texts.map(fakeEmbedding),
       model: request.model,
-      costMicroUsd: request.texts.join("").length,
+      usage: {
+        inputTokens: Math.ceil(characters / 4),
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
+      costMicroUsd: characters,
+      gatewayLogId: `log_embed_${this.embedCalls.length}`,
     };
   }
 

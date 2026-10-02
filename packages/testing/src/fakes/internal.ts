@@ -4,6 +4,7 @@ import {
   type CheckpointRef,
   type Decision,
   type DecisionId,
+  decisionApplies,
   type FileDiff,
   initialDecisionState,
   type Push,
@@ -170,6 +171,8 @@ export class FakeDecisions implements DecisionsPort {
   readonly decisions: Decision[] = [];
   readonly links: Parameters<DecisionsPort["link"]>[0][] = [];
   readonly learnedFrom: ThreadId[] = [];
+  /** What `learnFromThread` finds, per thread. A thread with no entry teaches nothing. */
+  readonly lessons = new Map<ThreadId, Decision>();
   readonly settled: ChangeId[] = [];
   readonly retrievals: Parameters<DecisionsPort["retrieve"]>[0][] = [];
 
@@ -189,6 +192,7 @@ export class FakeDecisions implements DecisionsPort {
     const query = fakeEmbedding(input.query);
     return this.decisions
       .filter((d) => d.repositoryId === input.repositoryId && d.status === "active")
+      .filter((d) => !input.paths || decisionApplies(d.scope, input.paths))
       .map((decision) => ({
         decision,
         similarity: similarity(query, fakeEmbedding(`${decision.title} ${decision.statement}`)),
@@ -225,7 +229,7 @@ export class FakeDecisions implements DecisionsPort {
 
   async learnFromThread(threadId: ThreadId): Promise<Decision | null> {
     this.learnedFrom.push(threadId);
-    return null;
+    return this.lessons.get(threadId) ?? null;
   }
 
   async settleChange(changeId: ChangeId): Promise<void> {

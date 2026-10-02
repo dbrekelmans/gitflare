@@ -42,7 +42,10 @@ export interface EmbedResult {
   /** One vector per input text, in order. */
   vectors: number[][];
   model: string;
+  /** What the call consumed. An embedding has input tokens only. */
+  usage: ModelUsage;
   costMicroUsd: MicroUsd;
+  gatewayLogId: string | null;
 }
 
 export type ModelErrorCode =
@@ -56,6 +59,11 @@ export type ModelErrorCode =
    */
   | "no_credits"
   | "rate_limited"
+  /**
+   * The gateway refused the request itself: an unknown model, a malformed
+   * body. Sending it again, to this model or a fallback, fails the same way.
+   */
+  | "invalid_request"
   /** The model answered, but not with what was asked for. */
   | "invalid_output"
   | "unavailable";

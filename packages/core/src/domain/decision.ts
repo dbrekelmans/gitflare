@@ -51,6 +51,56 @@ export interface Decision {
   updatedAt: Timestamp;
 }
 
+/** A decision's whole wording: what an edit changes and what a revert puts back. */
+export interface DecisionWording {
+  title: string;
+  statement: string;
+  rationale: string;
+}
+
+/** The wording of a decision, or of anything shaped like one. */
+export function decisionWording(source: DecisionWording): DecisionWording {
+  return { title: source.title, statement: source.statement, rationale: source.rationale };
+}
+
+export function sameWording(a: DecisionWording, b: DecisionWording): boolean {
+  return a.title === b.title && a.statement === b.statement && a.rationale === b.rationale;
+}
+
+function globPattern(glob: string): RegExp {
+  let pattern = "";
+  for (let i = 0; i < glob.length; i++) {
+    const char = glob.charAt(i);
+    if (char !== "*") {
+      pattern += char.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+    } else if (glob.charAt(i + 1) !== "*") {
+      pattern += "[^/]*";
+    } else {
+      i++;
+      // `**/` also matches no directory at all: `src/**/x.ts` covers `src/x.ts`.
+      if (glob.charAt(i + 1) === "/") {
+        i++;
+        pattern += "(?:.*/)?";
+      } else {
+        pattern += ".*";
+      }
+    }
+  }
+  return new RegExp(`^${pattern}$`);
+}
+
+/**
+ * Whether a decision bears on a change that touches `paths`. A general rule
+ * always does. One tied to paths does when a glob matches a path: `*` stays
+ * inside one directory, `**` crosses them, and a glob ending in `/` covers
+ * everything beneath it.
+ */
+export function decisionApplies(scope: Decision["scope"], paths: readonly string[]): boolean {
+  if (scope.kind === "general") return true;
+  const patterns = scope.globs.map((glob) => globPattern(glob.endsWith("/") ? `${glob}**` : glob));
+  return paths.some((path) => patterns.some((pattern) => pattern.test(path)));
+}
+
 export const DecisionEventKind = z.enum([
   "created",
   "followed",
@@ -73,9 +123,13 @@ export interface DecisionEvent {
   userId: UserId | null;
   strengthBefore: number;
   strengthAfter: number;
-  /** Set when the event changed the wording: the statement before and after. */
-  statementBefore: string | null;
-  statementAfter: string | null;
+  /**
+   * Set when the event changed the wording (`reshaped`, `reverted`): all of
+   * it, as it was and as it became, so a revert restores the title and the
+   * rationale with the statement. `before` and `after` always differ: an edit
+   * that changes nothing records no event.
+   */
+  wording: { before: DecisionWording; after: DecisionWording } | null;
   note: string | null;
   createdAt: Timestamp;
 }

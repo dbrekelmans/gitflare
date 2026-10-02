@@ -23,9 +23,11 @@ import {
   type Repository,
   type Revision,
   type RevisionId,
+  type RevisionReview,
   type Section,
   type SectionId,
   type Session,
+  type SessionLaunch,
   type StageName,
   type StageRun,
   type StageStatus,
@@ -96,6 +98,8 @@ const atlas: Repository = {
   captureEnabled: true,
   createdAt: minutes(-60 * 24 * 21),
   readyAt: minutes(-60 * 24 * 21),
+  importFailedAt: null,
+  importError: null,
   archivedAt: null,
 };
 
@@ -109,6 +113,8 @@ const billing: Repository = {
   captureEnabled: false,
   createdAt: minutes(-60 * 24 * 3),
   readyAt: minutes(-60 * 24 * 3),
+  importFailedAt: null,
+  importError: null,
   archivedAt: null,
 };
 
@@ -369,6 +375,7 @@ const intents: Intent[] = [
     changeId: mergedChange.id,
     revisionId: "rev_demo11a",
     version: 1,
+    attempt: 1,
     statement:
       "Send invite emails through the queue so a slow mail provider no longer holds the invite request open.",
     grade: "diff",
@@ -381,6 +388,7 @@ const intents: Intent[] = [
     changeId: reviewChange.id,
     revisionId: "rev_demo12a",
     version: 1,
+    attempt: 1,
     statement:
       "Stop a single workspace from sending invites without bound: cap invites at twenty per workspace per hour, and tell the client when it may try again. Asked for after support saw three workspaces send thousands in a week.",
     grade: "transcript",
@@ -393,9 +401,10 @@ const intents: Intent[] = [
     changeId: cloudChange.id,
     revisionId: "rev_demo13a",
     version: 1,
+    attempt: 1,
     statement:
       "Let a workspace owner download their audit log as CSV, for a customer who needs it for a compliance review.",
-    grade: "transcript",
+    grade: "diff",
     checkpointIds: [],
     model: "anthropic/claude-sonnet-5",
     createdAt: minutes(149),
@@ -650,8 +659,7 @@ function decisionEvent(
     userId: null,
     strengthBefore: before,
     strengthAfter: after,
-    statementBefore: null,
-    statementAfter: null,
+    wording: null,
     note: null,
     createdAt: at,
     ...extra,
@@ -673,8 +681,18 @@ const decisionEvents: DecisionEvent[] = [
     userId: maya.id,
   }),
   decisionEvent("ns4", "dec_no_secrets_in_logs", "reshaped", minutes(-60 * 24 * 6), 0.68, 0.68, {
-    statementBefore: "Never log access tokens.",
-    statementAfter: "Log the id of a token or invite, never its value, at any log level.",
+    wording: {
+      before: {
+        title: "Never log access tokens",
+        statement: "Never log access tokens.",
+        rationale: "An invite code in a log line was replayed from a shared dashboard in March.",
+      },
+      after: {
+        title: "Never log access tokens or invite codes",
+        statement: "Log the id of a token or invite, never its value, at any log level.",
+        rationale: "An invite code in a log line was replayed from a shared dashboard in March.",
+      },
+    },
     note: "Widened to invite codes after a chat on change #9.",
   }),
   decisionEvent("ns5", "dec_no_secrets_in_logs", "followed", minutes(-60 * 24 * 2), 0.68, 0.83, {
@@ -764,7 +782,10 @@ const changeDecisions: ChangeDecisionLink[] = [
 
 // --- Threads ------------------------------------------------------------------
 
-type DemoThread = Omit<Thread, "messageCount" | "lastMessageAt" | "createdAt" | "changeId"> & {
+type DemoThread = Omit<
+  Thread,
+  "messageCount" | "lastMessageAt" | "createdAt" | "changeId" | "learnedAt"
+> & {
   messages: [
     author: User | "agent",
     minute: number,
@@ -932,6 +953,8 @@ for (const { messages: script, ...thread } of demoThreads) {
     ...thread,
     changeId: reviewChange.id,
     createdAt: minutes(script[0]?.[1] ?? 0),
+    // The agent looks for a decision when it settles a comment itself.
+    learnedAt: thread.status === "resolved" && thread.settledBy === null ? thread.settledAt : null,
     messageCount: script.length,
     lastMessageAt: minutes(script.at(-1)?.[1] ?? 0),
   });
@@ -953,6 +976,7 @@ function ciRunWithSteps(
       changeId,
       revisionId,
       status: running ? "running" : "succeeded",
+      reason: null,
       startedAt,
       finishedAt: running ? null : startedAt + steps.length * 40_000,
     },
@@ -1128,6 +1152,43 @@ const changeEvents: ChangeEvent[] = [
   ]),
 ];
 
+/** What the review stage finished: three findings on #12's first push, none on its second. */
+const revisionReviews: RevisionReview[] = [
+  {
+    revisionId: "rev_demo11a",
+    attempt: 1,
+    changeId: mergedChange.id,
+    findings: 0,
+    createdAt: minutes(-586),
+  },
+  {
+    revisionId: "rev_demo12a",
+    attempt: 1,
+    changeId: reviewChange.id,
+    findings: 3,
+    createdAt: minutes(36),
+  },
+  {
+    revisionId: "rev_demo12b",
+    attempt: 1,
+    changeId: reviewChange.id,
+    findings: 0,
+    createdAt: minutes(100),
+  },
+];
+
+const cloudPrompt =
+  "A customer needs their audit log as CSV for a compliance review. Add an export function; the route can come later.";
+
+const sessionLaunches: SessionLaunch[] = [
+  {
+    sessionId: demoSessionIds.cloud,
+    prompt: cloudPrompt,
+    requestedAt: minutes(140),
+    launchedAt: minutes(141),
+  },
+];
+
 const cloudStatus: CloudSessionStatus = {
   sessionId: demoSessionIds.cloud,
   state: "idle",
@@ -1138,13 +1199,7 @@ const cloudStatus: CloudSessionStatus = {
 const cloudEvents: CloudSessionEvent[] = (
   [
     [140, { type: "state", state: "starting" }],
-    [
-      141,
-      {
-        type: "prompt",
-        text: "A customer needs their audit log as CSV for a compliance review. Add an export function; the route can come later.",
-      },
-    ],
+    [141, { type: "prompt", text: cloudPrompt }],
     [141, { type: "state", state: "working" }],
     [142, { type: "tool", name: "Grep", summary: "audit_log" }],
     [144, { type: "tool", name: "Write", summary: "src/audit/export.ts" }],
@@ -1174,11 +1229,13 @@ export const demo = {
   users: [maya, jonas, priya],
   repositories: [atlas, billing],
   sessions,
+  sessionLaunches,
   changes: [mergedChange, reviewChange, cloudChange],
   revisions,
   commits,
   stageRuns,
   intents,
+  revisionReviews,
   sections,
   /** The diff each section presents, at the change's head. */
   sectionDiffs,

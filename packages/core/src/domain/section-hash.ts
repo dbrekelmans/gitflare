@@ -1,5 +1,5 @@
 import { sha1 } from "../hash";
-import type { DiffLine, FileDiff, SectionFile } from "./section";
+import type { DiffLine, FileDiff, SectionFile, SectionStats } from "./section";
 
 /**
  * A hunk's identity: its path and its added and deleted lines, in order.
@@ -32,7 +32,8 @@ export function selectDiff(diff: readonly FileDiff[], files: readonly SectionFil
 /**
  * A section's `contentHash`: what its approvals are tied to. It changes when,
  * and only when, a hunk the section presents is added, removed or altered, or
- * a file it presents changes status. This one function is the definition;
+ * a file it presents changes status. The order a section lists its files in
+ * is presentation and does not count. This one function is the definition;
  * everything that hashes a section calls it.
  */
 export function sectionContentHash(
@@ -42,5 +43,21 @@ export function sectionContentHash(
   const parts = selectDiff(diff, files).map(
     (file) => `${file.path}:${file.status}:${file.hunks.map((hunk) => hunk.hash).join(",")}`,
   );
-  return sha1(parts.join("\n"));
+  return sha1(parts.sort().join("\n"));
+}
+
+/** The size of what a section presents: what `SectionView` reports and `sections.stats` stores. */
+export function sectionStats(
+  diff: readonly FileDiff[],
+  files: readonly SectionFile[],
+): SectionStats {
+  const stats: SectionStats = { filesChanged: 0, insertions: 0, deletions: 0 };
+  for (const file of selectDiff(diff, files)) {
+    stats.filesChanged++;
+    for (const line of file.hunks.flatMap((hunk) => hunk.lines)) {
+      if (line.kind === "add") stats.insertions++;
+      else if (line.kind === "delete") stats.deletions++;
+    }
+  }
+  return stats;
 }

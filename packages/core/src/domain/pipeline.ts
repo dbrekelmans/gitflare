@@ -22,8 +22,11 @@ export type StageOutcome = { status: "succeeded" } | { status: "skipped"; reason
  * the outcome. It does not touch `stage_runs` or the change's status; the
  * pipeline does that around it.
  *
- * Handlers must be idempotent: Workflow steps are retried, so the same attempt
- * can run twice.
+ * Handlers must be idempotent per attempt: Workflow steps are retried, so the
+ * same attempt can run twice, and the second run must add nothing and pay for
+ * nothing. A stage records which attempt produced a result (`Intent.attempt`,
+ * `RevisionReview.attempt`) to tell a retry from a re-run a person asked for,
+ * which is a new attempt.
  */
 export type StageHandler<Deps> = (deps: Deps, input: StageInput) => Promise<StageOutcome>;
 
@@ -34,7 +37,12 @@ export type StageHandler<Deps> = (deps: Deps, input: StageInput) => Promise<Stag
  */
 export type PipelineParams =
   | { kind: "push"; push: Push }
-  | { kind: "rerun"; changeId: ChangeId; stage: StageName };
+  /**
+   * `attempt` is the attempt the request queued (`StageRun.attempt`). An
+   * instance runs that attempt and no other: if it has already settled, the
+   * instance has nothing to do and must not queue another.
+   */
+  | { kind: "rerun"; changeId: ChangeId; stage: StageName; attempt: number };
 
 /** What the CI Workflow is started with. */
 export interface CiWorkflowParams extends StageInput {

@@ -1,6 +1,7 @@
 import type {
   Change,
   ChangeCommit,
+  CloudSessionEvent,
   Decision,
   ModelCall,
   Repository,
@@ -11,6 +12,7 @@ import type {
 import type {
   changeCommits,
   changes,
+  cloudSessionEvents,
   decisions,
   modelCalls,
   repositories,
@@ -22,8 +24,8 @@ import type {
 // Most tables hold a core record column for column, and a selected row is
 // already that record: `users`, `sessions`, `stage_runs`, `intents`,
 // `approvals`, `threads`, `ci_runs`, `ci_steps`, `decision_events`,
-// `checkpoints`. The mappers here are for the tables that carry more than the
-// record does, or shape it differently.
+// `checkpoints`, `session_launches`, `revision_reviews`. The mappers here are
+// for the tables that carry more than the record does, or shape it differently.
 
 export function toRepository(row: typeof repositories.$inferSelect): Repository {
   const { nextChangeNumber: _next, ...repository } = row;
@@ -51,8 +53,14 @@ export function toChangeCommit(row: typeof changeCommits.$inferSelect): ChangeCo
 }
 
 export function toSection(row: typeof sections.$inferSelect): Section {
-  const { removedAt: _removed, ...section } = row;
+  const { removedAt: _removed, stats: _stats, ...section } = row;
   return section;
+}
+
+export function toCloudSessionEvent(
+  row: typeof cloudSessionEvents.$inferSelect,
+): CloudSessionEvent {
+  return { ...row.body, sessionId: row.sessionId, seq: row.seq, at: row.at };
 }
 
 export function toThreadMessage(row: typeof threadMessages.$inferSelect): ThreadMessage {

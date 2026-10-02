@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { StartSessionInput } from "../api/inputs";
+import { checkStartOptions, type SandboxStartOptions } from "../ports/sandbox";
 import { captureState, parseCheckpointTrailers } from "./capture";
 import { CiConfig } from "./ci";
+import { decisionApplies, decisionWording, sameWording } from "./decision";
+import { WorkspaceSettings } from "./organisation";
 import { can } from "./permissions";
 import { ArtifactsPushEvent, classifyPush, parseCheckpointRef, toPush, ZERO_SHA } from "./push";
 import { contextRepoName, forkRepoName, mainRepoName, parseRepoName } from "./repo-names";
 import type { DiffLine, FileDiff } from "./section";
-import { hunkHash, sectionContentHash, selectDiff } from "./section-hash";
+import { hunkHash, sectionContentHash, sectionStats, selectDiff } from "./section-hash";
 
 const sha = "def789a012def789a012def789a012def789a012";
 
@@ -101,12 +104,29 @@ describe("schemas", () => {
   it("fills CI defaults", () => {
     const config = CiConfig.parse({ steps: [{ name: "test", run: "pnpm test" }] });
     expect(config.instance).toBe("standard-2");
+    expect(config.egress).toEqual({ hosts: [] });
     expect(config.steps[0]).toEqual({
       name: "test",
       run: "pnpm test",
       needs: [],
       timeoutMinutes: 15,
     });
+  });
+
+  it("lets a CI file name the hosts it fetches from, but never every host", () => {
+    const steps = [{ name: "test", run: "pytest" }];
+    const hosts = ["pypi.org", "*.pythonhosted.org"];
+    expect(CiConfig.parse({ steps, egress: { hosts } }).egress.hosts).toEqual(hosts);
+    for (const host of ["*", "*.*", "https://pypi.org", "pypi.org/simple", ""]) {
+      expect(CiConfig.safeParse({ steps, egress: { hosts: [host] } }).success, host).toBe(false);
+    }
+  });
+
+  it("reads workspace settings stored before preparation was recorded", () => {
+    const stored = { image: "base", snapshot: null };
+    expect(WorkspaceSettings.parse(stored)).toEqual(stored);
+    const failed = { state: "failed", failedAt: 5, error: "setup.sh exited 1" };
+    expect(WorkspaceSettings.parse({ ...stored, preparation: failed }).preparation).toEqual(failed);
   });
 
   it("requires a prompt for a cloud session only", () => {
@@ -162,11 +182,109 @@ describe("section hashes", () => {
     expect(sectionContentHash([b], section)).not.toBe(before);
   });
 
+  it("does not move a section's hash when its files are listed in another order", () => {
+    const a = file("a.ts", [line("add", "one", 1)]);
+    const b = file("b.ts", [line("add", "two", 1)]);
+    const listed = [
+      { path: "a.ts", hunkHashes: [] },
+      { path: "b.ts", hunkHashes: [] },
+    ];
+    expect(sectionContentHash([a, b], [...listed].reverse())).toBe(
+      sectionContentHash([a, b], listed),
+    );
+    expect(selectDiff([a, b], [...listed].reverse())).toEqual([b, a]);
+  });
+
+  it("sizes a section by the hunks it presents", () => {
+    const first = [line("add", "one", 1), line("context", "x", 2)];
+    const second = [line("delete", "two", 9), line("add", "three", 9)];
+    const a: FileDiff = {
+      ...file("a.ts", first),
+      hunks: [
+        { oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, lines: first, hash: "h1" },
+        { oldStart: 9, oldLines: 1, newStart: 10, newLines: 1, lines: second, hash: "h2" },
+      ],
+    };
+    expect(sectionStats([a], [{ path: "a.ts", hunkHashes: [] }])).toEqual({
+      filesChanged: 1,
+      insertions: 2,
+      deletions: 1,
+    });
+    expect(sectionStats([a], [{ path: "a.ts", hunkHashes: ["h1"] }])).toEqual({
+      filesChanged: 1,
+      insertions: 1,
+      deletions: 0,
+    });
+    expect(sectionStats([a], [{ path: "gone.ts", hunkHashes: [] }])).toEqual({
+      filesChanged: 0,
+      insertions: 0,
+      deletions: 0,
+    });
+  });
+
   it("selects whole files or named hunks", () => {
     const a = file("a.ts", [line("add", "one", 1)]);
     expect(selectDiff([a], [{ path: "a.ts", hunkHashes: [] }])).toEqual([a]);
     expect(selectDiff([a], [{ path: "a.ts", hunkHashes: ["nope"] }])).toEqual([]);
     expect(selectDiff([a], [{ path: "a.ts", hunkHashes: [a.hunks[0]?.hash ?? ""] }])).toEqual([a]);
+  });
+});
+
+describe("decisions", () => {
+  it("compares the whole wording", () => {
+    const wording = { title: "T", statement: "S", rationale: "R" };
+    expect(decisionWording({ ...wording, id: "dec_1" } as never)).toEqual(wording);
+    expect(sameWording(wording, { ...wording })).toBe(true);
+    for (const key of ["title", "statement", "rationale"] as const) {
+      expect(sameWording(wording, { ...wording, [key]: "changed" }), key).toBe(false);
+    }
+  });
+
+  it("applies a general rule everywhere and a path rule where a glob matches", () => {
+    const paths = (...globs: string[]) => ({ kind: "paths", globs }) as const;
+    expect(decisionApplies({ kind: "general" }, [])).toBe(true);
+    expect(decisionApplies(paths("src/billing/**"), ["src/billing/a/b.ts"])).toBe(true);
+    expect(decisionApplies(paths("src/billing/"), ["src/billing/a.ts"])).toBe(true);
+    expect(decisionApplies(paths("src/billing/**"), ["src/billing.ts", "docs/x.md"])).toBe(false);
+    expect(decisionApplies(paths("src/*.ts"), ["src/a.ts"])).toBe(true);
+    expect(decisionApplies(paths("src/*.ts"), ["src/a/b.ts"])).toBe(false);
+    expect(decisionApplies(paths("src/**/*.test.ts"), ["src/a.test.ts", "x"])).toBe(true);
+    expect(decisionApplies(paths("**/*.sql"), ["migrations/0001.sql"])).toBe(true);
+    expect(decisionApplies(paths("a.b"), ["axb"])).toBe(false);
+    expect(decisionApplies(paths("docs/**", "src/x.ts"), ["src/x.ts"])).toBe(true);
+    expect(decisionApplies(paths("src/**"), [])).toBe(false);
+  });
+});
+
+describe("sandbox start options", () => {
+  const base: SandboxStartOptions = { image: "base", instance: "lite", egress: [] };
+  const invalid = (options: SandboxStartOptions) => {
+    try {
+      checkStartOptions(options);
+    } catch (error) {
+      return (error as { code?: string }).code;
+    }
+    return null;
+  };
+
+  it("accepts named hosts, globs within a name, and open Internet on its own", () => {
+    expect(invalid(base)).toBeNull();
+    expect(invalid({ ...base, egress: [{ kind: "host", host: "*.npmjs.org" }] })).toBeNull();
+    expect(invalid({ ...base, openInternet: true })).toBeNull();
+  });
+
+  it("refuses a host grant of * and open Internet combined with any grant", () => {
+    expect(invalid({ ...base, egress: [{ kind: "host", host: "*" }] })).toBe("invalid");
+    expect(
+      invalid({ ...base, openInternet: true, egress: [{ kind: "host", host: "pypi.org" }] }),
+    ).toBe("invalid");
+    expect(
+      invalid({
+        ...base,
+        openInternet: true,
+        egress: [{ kind: "git", repo: "atlas-web", scope: "read" }],
+      }),
+    ).toBe("invalid");
   });
 });
 

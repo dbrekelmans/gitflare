@@ -115,7 +115,7 @@ export const EditDecisionInput = z.object({
 
 export const RevertDecisionInput = z.object({
   decisionId: idSchema("decision"),
-  /** The `reshaped` event to undo. */
+  /** The event to undo: one that changed the wording (`reshaped` or `reverted`). */
   eventId: idSchema("decisionEvent"),
 });
 

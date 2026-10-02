@@ -12,6 +12,8 @@ import {
   contextRepoName,
   type Decision,
   type DecisionEvent,
+  type DecisionWording,
+  decisionWording,
   ForgeError,
   forkRepoName,
   type Id,
@@ -24,6 +26,7 @@ import {
   type Section,
   type Session,
   type StageRun,
+  sameWording,
   sectionApprovalState,
   type Thread,
   type ThreadMessage,
@@ -54,6 +57,30 @@ function notFound(what: string): never {
 
 function forbidden(): never {
   throw new ForgeError("forbidden", "You are not allowed to do that.");
+}
+
+/**
+ * Every operation's result is copied on the way out, as a server function's
+ * is by being serialised: a caller never holds a record this API goes on to
+ * change in place.
+ */
+function detached(api: ForgeApi): ForgeApi {
+  const copy = <T extends Record<string, (...args: never[]) => Promise<unknown>>>(slice: T): T =>
+    Object.fromEntries(
+      Object.entries(slice).map(([name, operation]) => [
+        name,
+        async (...args: never[]) => structuredClone(await operation(...args)),
+      ]),
+    ) as T;
+  return {
+    account: copy(api.account),
+    repositories: copy(api.repositories),
+    sessions: copy(api.sessions),
+    changes: copy(api.changes),
+    threads: copy(api.threads),
+    decisions: copy(api.decisions),
+    dev: copy(api.dev),
+  };
 }
 
 /**
@@ -163,6 +190,7 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
       change,
       repository: { id: repository.id, slug: repository.slug },
       author: ref(change.authorId),
+      mergedBy: change.mergedBy ? ref(change.mergedBy) : null,
       session,
       capture: captureSummary(change),
       revisions: data.revisions
@@ -216,6 +244,7 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
         .filter((m) => m.threadId === thread.id)
         .sort((a, b) => a.seq - b.seq)
         .map((m) => ({ ...m, user: m.author.kind === "user" ? ref(m.author.userId) : null })),
+      settledBy: thread.settledBy ? ref(thread.settledBy) : null,
     };
   }
 
@@ -236,7 +265,11 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
     data.messages.push(message);
     thread.messageCount = message.seq;
     thread.lastMessageAt = message.createdAt;
-    event(thread.changeId, { type: "thread.message", threadId: thread.id, seq: message.seq });
+    event(thread.changeId, {
+      type: "thread.message",
+      threadId: thread.id,
+      messageSeq: message.seq,
+    });
     return message;
   }
 
@@ -270,12 +303,10 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
       change: change
         ? { id: change.id, number: change.number, title: change.title, status: change.status }
         : null,
-      // Empty until the fork is ready, and again once it has been deleted:
-      // matches `sessionsApi.view` in `apps/forge/src/server/api/sessions.ts`.
       pushRemote:
         session.forkReadyAt !== null && session.forkDeletedAt === null
           ? `${REMOTE_BASE}/${session.forkRepo}.git`
-          : "",
+          : null,
       cloud:
         session.kind === "cloud"
           ? (data.cloudSessions.statuses.find((s) => s.sessionId === session.id) ?? {
@@ -289,11 +320,14 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
   }
 
   function decisionDetail(decision: Decision): DecisionDetail {
+    const repository = repoById(decision.repositoryId);
     return {
       decision,
+      repository: { id: repository.id, slug: repository.slug },
       events: data.decisionEvents
         .filter((e) => e.decisionId === decision.id)
-        .sort((a, b) => b.createdAt - a.createdAt),
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map((e) => ({ ...e, user: e.userId ? ref(e.userId) : null })),
     };
   }
 
@@ -301,10 +335,7 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
     ctx: ApiContext,
     decision: Decision,
     kind: DecisionEvent["kind"],
-    wording: Pick<DecisionEvent, "statementBefore" | "statementAfter"> = {
-      statementBefore: null,
-      statementAfter: null,
-    },
+    wording: DecisionEvent["wording"] = null,
   ) {
     const next = applyDecisionEvent(decision, kind);
     data.decisionEvents.push({
@@ -316,13 +347,25 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
       userId: ctx.user.id,
       strengthBefore: decision.strength,
       strengthAfter: next.strength,
-      ...wording,
+      wording,
       note: null,
       createdAt: now(),
     });
     decision.strength = next.strength;
     decision.status = next.status;
     decision.updatedAt = now();
+  }
+
+  /** Rewords a decision and records it. The caller has checked that the wording differs. */
+  function reword(
+    ctx: ApiContext,
+    decision: Decision,
+    kind: "reshaped" | "reverted",
+    after: DecisionWording,
+  ) {
+    const before = decisionWording(decision);
+    Object.assign(decision, after);
+    recordDecisionEvent(ctx, decision, kind, { before, after });
   }
 
   const monthStart = () => {
@@ -337,7 +380,7 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
       .reduce((sum, call) => sum + call.costMicroUsd, 0),
   });
 
-  return {
+  return detached({
     account: {
       async me(ctx) {
         const { id, name, slug } = data.organisation;
@@ -396,8 +439,10 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
         const repository = repoBySlug(input.repoSlug);
         return {
           ...repositoryView(repository),
-          remote: `${REMOTE_BASE}/${repository.slug}.git`,
-          contextRemote: `${REMOTE_BASE}/${contextRepoName(repository.slug)}.git`,
+          remote: repository.readyAt ? `${REMOTE_BASE}/${repository.slug}.git` : null,
+          contextRemote: repository.readyAt
+            ? `${REMOTE_BASE}/${contextRepoName(repository.slug)}.git`
+            : null,
           recentCommits: data.commits
             .filter((c) => data.changes.find((ch) => ch.id === c.changeId)?.status === "merged")
             .map((c) => ({
@@ -414,8 +459,13 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
       },
       async create(ctx, input) {
         if (!can(ctx.user, { type: "repository.create" })) forbidden();
-        if (data.repositories.some((r) => r.slug === input.slug)) {
-          throw new ForgeError("conflict", `A repository named ${input.slug} already exists.`);
+        const taken = data.repositories.findIndex((r) => r.slug === input.slug);
+        if (taken !== -1) {
+          if (!data.repositories[taken]?.importFailedAt) {
+            throw new ForgeError("conflict", `A repository named ${input.slug} already exists.`);
+          }
+          // An import that failed holds no slug: the new repository replaces it.
+          data.repositories.splice(taken, 1);
         }
         const repository: Repository = {
           id: newId("repository"),
@@ -427,6 +477,8 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
           captureEnabled: true,
           createdAt: now(),
           readyAt: now(),
+          importFailedAt: null,
+          importError: null,
           archivedAt: null,
         };
         data.repositories.push(repository);
@@ -457,6 +509,13 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
         };
         data.sessions.push(session);
         if (input.kind === "cloud") {
+          // No fork to wait for here: the launch is recorded as already delivered.
+          data.sessionLaunches.push({
+            sessionId: id,
+            prompt: input.prompt ?? "",
+            requestedAt: session.createdAt,
+            launchedAt: now(),
+          });
           data.cloudSessions.statuses.push({
             sessionId: id,
             state: "starting",
@@ -688,6 +747,7 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
           createdAt: now(),
           settledAt: null,
           settledBy: null,
+          learnedAt: null,
           messageCount: 0,
           lastMessageAt: now(),
         };
@@ -764,32 +824,26 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
       },
       async edit(ctx, input) {
         const decision = decisionById(input.decisionId);
-        const statementBefore = decision.statement;
-        Object.assign(decision, {
-          title: input.title,
-          statement: input.statement,
-          rationale: input.rationale,
-        });
-        recordDecisionEvent(ctx, decision, "reshaped", {
-          statementBefore,
-          statementAfter: input.statement,
-        });
+        const after = decisionWording(input);
+        // An edit that changes nothing is not an event.
+        if (!sameWording(decision, after)) reword(ctx, decision, "reshaped", after);
         return decisionDetail(decision);
       },
       async revert(ctx, input) {
         const decision = decisionById(input.decisionId);
-        const reshaped =
+        const undone =
           data.decisionEvents.find((e) => e.id === input.eventId && e.decisionId === decision.id) ??
           notFound("Decision event");
-        if (reshaped.statementBefore === null) {
+        if (undone.wording === null) {
           throw new ForgeError("invalid", "That event did not change the wording.");
         }
-        const statementBefore = decision.statement;
-        decision.statement = reshaped.statementBefore;
-        recordDecisionEvent(ctx, decision, "reverted", {
-          statementBefore,
-          statementAfter: decision.statement,
-        });
+        if (sameWording(decision, undone.wording.before)) {
+          throw new ForgeError(
+            "conflict",
+            "The decision already reads as it did before that edit.",
+          );
+        }
+        reword(ctx, decision, "reverted", undone.wording.before);
         return decisionDetail(decision);
       },
       async revive(ctx, input) {
@@ -802,5 +856,5 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
     dev: {
       async simulatePush() {},
     },
-  };
+  });
 }
