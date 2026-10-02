@@ -23,8 +23,9 @@ run (no Go toolchain); statements about runtime behaviour are from reading code 
   times on one commit (squash, redone commits). A reader must collect all of them.
 - **A checkpoint is not immutable.** Each per-checkpoint ref has its own commit history: the first
   commit is `Checkpoint: <id>`, later ones (e.g. `Finalize transcript for Checkpoint: <id>`) are
-  parented on it and pushed as fast-forwards. 11 of 12 sampled real refs had 2–4 commits. A consumer
-  must treat a push to an existing checkpoint ref as an update and read the ref tip.
+  parented on it and pushed as fast-forwards. In a systematic sample of 99 refs from
+  `entireio/cli-checkpoints` (every 27th ULID ref, 2026-10-02), 87 had 2–5 commits and 12 had one.
+  A consumer must treat a push to an existing checkpoint ref as an update and read the ref tip.
 - **Every checkpoint stores the whole session so far, not a delta.** `full.jsonl` and
   `transcript.jsonl` hold the full session; `checkpoint_transcript_start` /
   `compact_transcript_start` in the session metadata mark where this checkpoint's slice begins. A
@@ -37,12 +38,15 @@ run (no Go toolchain); statements about runtime behaviour are from reading code 
 - **An unmodified CLI can probably already target a sibling repo on a non-GitHub/GitLab host.**
   For an HTTPS push remote on a host other than `github.com`/`gitlab.com` the derived URL is
   `https://<that host>/<repo>.git`, the provider string is not validated when read from the settings
-  file, and `repo` may contain more than one `/`. Derived from code, not executed — see
-  "What an Artifacts provider needs".
+  file, and `repo` may contain more than one `/`. This is an inference from reading the code, not
+  an executed test, and it holds for pushes and for fetches only while `ENTIRE_CHECKPOINT_TOKEN` is
+  unset — see "What an Artifacts provider needs".
 - **Checkpoints are pushed with the system `git` binary**, from the `pre-push` hook, as
   `git push --no-verify --porcelain <target> <ref>:<ref>…`. Credential helpers and git config
   therefore apply; the CLI has no credential logic of its own beyond one env var
-  (`ENTIRE_CHECKPOINT_TOKEN`, sent as HTTP Basic).
+  (`ENTIRE_CHECKPOINT_TOKEN`, sent as HTTP Basic). That env var is **not** safe to use unmodified
+  with a non-GitHub/GitLab host: with it set, checkpoint *fetches* go to `github.com`/`gitlab.com`
+  (token included) or to `origin`, never to the derived sibling URL.
 - **The checkpoint push happens before the code push but is fail-soft.** The hook pushes checkpoint
   refs synchronously, then git sends the user's refs. A failed checkpoint push is swallowed and the
   refs stay queued for the next `git push`, so the code can arrive without its checkpoint, possibly
@@ -120,7 +124,8 @@ const CheckpointPattern = `(?:` + Pattern + `|` + ulidPattern + `)`
   round-trip check (`isULID`, same file, L84-L87).
 
 The trailer on the user's commit —
-[`trailers/trailers.go`](https://github.com/entireio/cli/blob/89c2616/cmd/entire/cli/trailers/trailers.go#L38-L67):
+[`trailers/trailers.go`](https://github.com/entireio/cli/blob/89c2616/cmd/entire/cli/trailers/trailers.go#L42-L72)
+(constant at L42, regex at L72):
 
 ```go
 CheckpointTrailerKey = "Entire-Checkpoint"
@@ -128,12 +133,12 @@ CheckpointTrailerKey = "Entire-Checkpoint"
 checkpointTrailerRegex = regexp.MustCompile(CheckpointTrailerKey + `:\s*(` + checkpointID.CheckpointPattern + `)(?:\s|$)`)
 ```
 
-- `ParseAllCheckpoints` returns every match in the message, de-duplicated in order (L113-L134).
+- `ParseAllCheckpoints` returns every match in the message, de-duplicated in order (L124 onward).
   Multiple trailers are normal: squash merges and redone commits inherit the trailers of the commits
   they replace
   ([`sessions-and-checkpoints.md` § Commit-to-session linking](https://github.com/entireio/cli/blob/89c2616/docs/architecture/sessions-and-checkpoints.md#commit-to-session-linking)).
 - The trailer is appended to an existing trailer block, or after a blank line otherwise
-  (`appendTrailerLine`, L177-L207).
+  (`appendTrailerLine`, L198 onward).
 
 Real examples (observed, `git log` of `entireio/cli`):
 
@@ -181,6 +186,14 @@ return plumbing.ReferenceName(CheckpointRefPrefix + cid.ShardFor() + "/" + cid.S
 
 - `<shard>` is the **last two characters** of the id, for both formats. `ParseRef` compares the
   shard case-insensitively (L53-L72).
+- **Not every ref under the prefix is a checkpoint.** Observed on `entireio/cli-checkpoints`
+  (`git ls-remote`, 2026-10-02): of 2,691 refs under `refs/entire/checkpoints/`, 2,667 are
+  `<shard>/<ULID>` and 24 are not — `v1/main`, `v1/full`, `v2/main`, and 21 under `v2/full/`. The
+  code at `89c2616` contains no reference to those names (grep for `checkpoints/v2`, `v2/main`,
+  `v2/full`, `v1/full`, `v1/main` finds nothing), so what wrote them and what they hold is not
+  established here. A consumer must select refs by shape — exactly `<shard>/<id>` with a valid id
+  whose last two characters equal the shard, as `ParseRef` does — and ignore the rest. The same
+  repository also has a `refs/heads/entire/checkpoints/v1` branch and no 12-hex refs.
 - The two sharding schemes differ on purpose: refs use the id's *last* two characters, the v1 branch
   tree uses the *first* two (`id.Path()`, `id.go` L267-L272).
 
@@ -209,8 +222,10 @@ Ephemeral-branch: entire/a02a31f-821774
 - The first write is an orphan commit; every later write (`WriteSession` for another session, or a
   `Backfill*` for transcript, summary or attribution) adds a commit whose parent is the previous tip
   ([same doc § Write path](https://github.com/entireio/cli/blob/89c2616/docs/architecture/ref-checkpoint-backend.md#write-path)).
-  Observed second-commit subject: `Finalize transcript for Checkpoint: <id>`
-  ([`refs_store.go` L297](https://github.com/entireio/cli/blob/89c2616/cmd/entire/cli/checkpoint/refs_store.go#L297)).
+  The example ref above has a single commit. In the 99-ref sample, the subjects of the later
+  commits were `Finalize transcript for Checkpoint: <id>` (88;
+  [`refs_store.go` L297](https://github.com/entireio/cli/blob/89c2616/cmd/entire/cli/checkpoint/refs_store.go#L297)),
+  a further `Checkpoint: <id>` (19) and `Update checkpoint summary for <id>` (3).
 - The commit author is the developer's git identity. Checkpoint commits are signed, best-effort,
   when `commit.gpgsign = true` at global/system scope and `sign_checkpoint_commits` is not `false`
   ([`checkpoint-signing.md`](https://github.com/entireio/cli/blob/89c2616/docs/architecture/checkpoint-signing.md)).
@@ -527,8 +542,19 @@ into an empty bare repository, then `git show <ref>:metadata.json`.
 There are three distinct things; only the last two are stored.
 
 **1. The normalised lifecycle event** is in-memory only. Each agent adapter translates its native
-hook payload into an `agent.Event`; nothing in this shape is written to git —
-[`agent/event.go` L14-L50](https://github.com/entireio/cli/blob/89c2616/cmd/entire/cli/agent/event.go#L14-L50):
+hook payload into an `agent.Event`; it is a Go struct with no JSON tags and nothing in this shape is
+written to git —
+[`agent/event.go` L14-L215](https://github.com/entireio/cli/blob/89c2616/cmd/entire/cli/agent/event.go#L14-L215).
+Its fields (names and types as declared; comments omitted): `Type EventType`, `SessionID string`,
+`PreviousSessionID string`, `SessionRef string` (transcript reference, typically a file path),
+`Prompt string`, `Model string`, `Timestamp time.Time`, `ToolUseID string`, `TurnID string`,
+`SubagentID string`, `ProvisionalSubagentStop bool`, `Final bool`, `CompletionWithoutLaunch bool`,
+`SubagentTranscriptUnavailable bool`, `SubagentTranscriptPath string`, `ToolInput json.RawMessage`,
+`SubagentType string`, `TaskDescription string`, `ModifiedFiles []string`, `NewFiles []string`,
+`DeletedFiles []string`, `CWD string`, `ResponseMessage string`, `DurationMs int64`,
+`TurnCount int`, `ContextTokens int`, `ContextWindowSize int`, `TokenUsage *TokenUsage`,
+`SkillEvents []SkillEvent`, `Metadata map[string]string`, `SuppressIfSessionActive bool`. The event
+types:
 
 ```go
 type EventType int
@@ -665,9 +691,11 @@ normally committed) —
 | `PostToolUse` | `TaskCreate\|TaskUpdate` | `entire hooks claude-code post-todo` | none (incremental task checkpoint) |
 | `SubagentStop` | `""` | `entire hooks claude-code subagent-stop` | `SubagentEnd` (final) |
 
-The exact JSON, copied from the repository's own committed
+An excerpt of the JSON, from the repository's own committed
 [`.claude/settings.json`](https://github.com/entireio/cli/blob/89c2616/.claude/settings.json)
-(one entry shown per shape):
+(trimmed: one entry shown per shape, and the repository's unrelated top-level keys and its own
+second `SessionStart` hook, `bash "${CLAUDE_PROJECT_DIR}"/.claude/scripts/remote-setup.sh`, are
+left out; each entry shown is verbatim):
 
 ```json
 {
@@ -979,16 +1007,47 @@ Authentication:
   When set, SSH targets are rewritten to `https://<same host>/<owner>/<repo>.git` and the header is
   attached to checkpoint pushes and fetches only. Tokens containing control characters are ignored.
 
+  With the token set and a `checkpoint_remote` configured, the **fetch** URL is not derived from the
+  origin's host —
+  [`util.go` L239-L256](https://github.com/entireio/cli/blob/89c2616/cmd/entire/cli/checkpoint/remote/util.go#L239-L256):
+
+  ```go
+  if withToken {
+  	host, ok := providerHost(config.Provider)
+  	if ok {
+  		checkpointURL, err := deriveCheckpointURLFromInfo(&Info{
+  			Protocol: ProtocolHTTPS,
+  			Host:     host,
+  		}, config)
+  		if err == nil {
+  			return checkpointURL, true, false, nil
+  		}
+  	}
+
+  	// In token-based execution path, short-circuit to avoid additional
+  	// change in protocol.
+  	if originURL != "" {
+  		return originURL, false, false, nil
+  	}
+  }
+  ```
+
+  So with the token set: provider `github`/`gitlab` → fetches go to
+  `https://github.com/<repo>.git` / `https://gitlab.com/<repo>.git` whatever the origin's host is,
+  with the token header attached; any other provider name → fetches go to `origin`. The **push**
+  side (`PushURL`, L460-L480) keeps the push remote's host.
+
 **The pull request that added GitLab**:
 [entireio/cli#2528](https://github.com/entireio/cli/pull/2528), "Accept gitlab as a
 checkpoint_remote provider", merged 2026-09-18 — 4 commits, 9 files, +108 −14 (GitHub API). Of that,
-the non-test code change is about 25 lines in three files:
+the only functional change is in one file (`git diff --numstat` of the merge):
 
-- `cmd/entire/cli/setup.go` — a `checkpointProviderGitLab` constant, one extra `case` in
-  `parseCheckpointRemoteFlag`, lower-casing the provider, shared flag help text.
-- `cmd/entire/cli/checkpoint/remote/git.go` and `status.go` — comment changes only.
+- `cmd/entire/cli/setup.go` (+16 −7, about 15 changed lines once comments are excluded) — a
+  `checkpointProviderGitLab` constant, one extra `case` in `parseCheckpointRemoteFlag`, lower-casing
+  the provider, shared flag help text.
+- `cmd/entire/cli/checkpoint/remote/git.go` (+7 −3) and `status.go` (+2 −1) — comments only.
 - The rest: `util_test.go` (+32), `setup_checkpoint_remote_test.go` (+32),
-  `integration_test/http_remote_test.go` (+17), README and two docs.
+  `integration_test/http_remote_test.go` (+16 −1), README (+1 −1) and two docs (+1, +1 −1).
 
 `providerHost` already knew `gitlab` before this PR. Follow-up commits added the cross-forge guards
 (`876c88bd4`, `1c935ce90`) and the claim hint for GitLab (`e79d5f2d2`).
@@ -1010,7 +1069,10 @@ Facts about the target, from Cloudflare's
 - Auth is either `Authorization: Bearer <full token>` via `http.extraHeader`, or HTTP Basic with
   "the token secret in the password slot. Artifacts ignores the Basic auth username." The secret is
   the token without its `?expires=` suffix; tokens look like `art_v1_<40 hex>?expires=<unix_seconds>`.
-- Push uses protocol v1 receive-pack; the `filter` capability is not supported on fetch.
+- Push uses protocol v1 receive-pack ("Artifacts does not support v2 receive-pack").
+- The page's only statement about `filter` is the row "Optional protocol v1 capabilities |
+  `git-upload-pack` | Partial | Some optional v1 capabilities, such as `filter` and `include-tag`,
+  are not supported." It says nothing about `filter` under protocol v2.
 
 Applying the Entire code above to such a remote (derived by reading; **not executed**):
 
@@ -1028,8 +1090,21 @@ Applying the Entire code above to such a remote (derived by reading; **not execu
 So routing to a second repository in the same Artifacts account and namespace needs **no code
 change** — only a hand-written (or forge-written) settings file. The CLI flag would reject an
 unknown provider name, but accepts `gitlab:git/<ns>/<other-repo>` (nested paths are allowed for
-`gitlab`). With `provider: "gitlab"` the fallback host `gitlab.com` would be used if derivation ever
-fails; an unrecognised provider name falls back to the origin remote instead.
+`gitlab`).
+
+The provider name still matters, in two places:
+
+- When derivation fails (a `file://` or mismatched `entire://` remote), `gitlab`/`github` fall back
+  to `gitlab.com`/`github.com`; an unrecognised name falls back to the origin remote.
+- **When `ENTIRE_CHECKPOINT_TOKEN` is set, fetches do not follow steps 1–5** (see the `util.go`
+  L239-L256 excerpt above). With `gitlab`/`github` the fetch URL is
+  `https://gitlab.com/git/<ns>/<other-repo>.git` (or `github.com`) and `newCommand` attaches the
+  Basic header, so the Artifacts token is sent to that public host. With any other provider name
+  fetches go to `origin`, i.e. the code repository, not the checkpoint repository. Only the push
+  side behaves as in steps 1–5.
+
+So the no-code-change route covers pushes, and covers fetches (`entire resume`, `explain`,
+on-demand ref fetch, push recovery by fetch + replay) only when the env var is unset.
 
 Without `checkpoint_remote` at all, checkpoints go to the elected remote as-is, whatever its URL —
 that is the "any git URL" case, and it already works, but only for storing checkpoints in the *same*
@@ -1041,7 +1116,7 @@ How the token can be supplied, in order of how little has to change:
 | Mechanism | Change to Entire | Notes |
 |---|---|---|
 | git credential helper | none | Entire runs `git push <url>`; helpers are consulted (only interactive prompts are disabled). Artifacts tokens are repo-scoped, so the helper must distinguish repositories on one host — git only passes the path to helpers when `credential.useHttpPath=true`. The helper returns the token secret as the password. |
-| `ENTIRE_CHECKPOINT_TOKEN=<token secret>` | none | Sent as Basic `x-access-token:<secret>`; Artifacts ignores the username. Applies to checkpoint pushes/fetches only. A static env var does not refresh an expiring token. |
+| `ENTIRE_CHECKPOINT_TOKEN=<token secret>` | **needed for fetches** | Sent as Basic `x-access-token:<secret>`; Artifacts ignores the username. Unmodified, it works for pushes only: fetches are redirected as described above (token sent to `github.com`/`gitlab.com` for those provider names, or fetch from `origin` otherwise). Making it usable needs a change to the `withToken` branch of `fetchURLResolved` so a non-public-forge host is kept. A static env var also does not refresh an expiring token. |
 | `http.<url>.extraHeader` in git config | none | Bearer form with the full token; static. |
 | command hook for the token | new code | No such mechanism exists in the CLI today. |
 
@@ -1054,10 +1129,14 @@ What a real `artifacts` provider (a fork or an upstream PR in the shape of #2528
   to insert the `/git/` prefix and the ownership vote would need to compare namespaces rather than
   the first path segment. `providerHost` cannot return a fixed host, because the Artifacts host
   contains the account id.
+- `cmd/entire/cli/checkpoint/remote/util.go`, `fetchURLResolved` (L239-L256) — required if
+  `ENTIRE_CHECKPOINT_TOKEN` is to be supported: the token branch must derive the fetch URL from the
+  origin's host for this provider instead of `providerHost`.
 - Tests alongside each, as in #2528.
 
-Keep `strategy_options.filtered_fetches` unset: it adds `--filter=blob:none`, which Artifacts does
-not support.
+Leave `strategy_options.filtered_fetches` unset. It adds `--filter=blob:none` to checkpoint
+fetches; that this fails or degrades on Artifacts is an **inference** from the v1-capability row
+quoted above, not something Cloudflare states for protocol v2 and not something tested here.
 
 ### Redaction
 
@@ -1221,12 +1300,18 @@ None of this is a Cloudflare runtime API, so nothing here runs under `wrangler d
   traced.
 - **`ENTIRE_CHECKPOINT_TOKEN` against Artifacts.** Cloudflare documents Basic auth with any
   username and the token secret as password; Entire sends `x-access-token:<token>`. The combination
-  was not exercised. The Entire code itself notes that the equivalent GitLab behaviour is "an
+  was not exercised, and applies to pushes only — the fetch path is redirected (see above). The Entire code itself notes that the equivalent GitLab behaviour is "an
   external contract verified manually against gitlab.com, not enforced by CI".
 - **Credential-helper behaviour inside the `pre-push` hook.** Inferred from the CLI invoking plain
   `git push` with only `GIT_TERMINAL_PROMPT=0` and stdin detached; not run.
 - **Whether upstream would accept an Artifacts provider.** No issue or discussion was searched for
   beyond PR #2528; only that PR's size and shape are verified.
+- **`--filter=blob:none` against Artifacts.** Cloudflare documents `filter` as unsupported only
+  among optional protocol v1 upload-pack capabilities; v2 behaviour is unstated and nothing was
+  tested.
+- **What the `v1/main`, `v1/full`, `v2/main` and `v2/full/*` refs under `refs/entire/checkpoints/`
+  in `entireio/cli-checkpoints` are.** They exist on the remote; the pinned code does not mention
+  them and their contents were not inspected.
 - **Fast-forward-only assumption on the server.** Entire never force-pushes checkpoint refs and
   recovers from non-fast-forward rejection by fetch + replay. Whether Artifacts rejects
   non-fast-forward pushes to arbitrary refs was not checked.
