@@ -1,8 +1,8 @@
 import type { ModelAttribution } from "@gitflare/core";
 import { type GenerateRequest, ModelError, type ModelStreamEvent } from "@gitflare/core/ports";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { BilledModelError, createGatewayModels } from "./gateway";
+import { BilledModelError, createGatewayModels, withBillingSink } from "./gateway";
 import { StubAi } from "./stub-ai";
 
 const attribution: ModelAttribution = {
@@ -37,6 +37,15 @@ async function failure(promise: Promise<unknown>): Promise<ModelError> {
   );
   if (!(error instanceof ModelError)) throw new Error(`expected a ModelError, got ${error}`);
   return error;
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+/** Silences and captures the fallback-price warnings. */
+function warnings() {
+  return vi.spyOn(console, "warn").mockImplementation(() => {});
 }
 
 async function collect<T>(events: AsyncIterable<ModelStreamEvent<T>>) {
@@ -190,17 +199,36 @@ describe("the reply", () => {
     expect((await models.generate(request())).text).toBe("One. Two.");
   });
 
-  it("is unavailable when it is not an Anthropic message", async () => {
+  it("is unavailable when it is not an Anthropic message, and still billed", async () => {
     const { ai, models } = setup();
-    ai.returns({ response: "something else" });
+    ai.returns({ response: "something else" }, "log_odd").returns({ response: "again" }, "log_odd");
+    ai.logs.set("log_odd", { cost: 0.00003 });
 
-    expect((await failure(models.generate(request()))).code).toBe("unavailable");
+    for (const error of [
+      await failure(models.generate(request())),
+      await failure(collect(models.stream(request()))),
+    ]) {
+      expect(error.code).toBe("unavailable");
+      expect(error).toBeInstanceOf(BilledModelError);
+      expect((error as BilledModelError).call).toMatchObject({
+        costMicroUsd: 30,
+        gatewayLogId: "log_odd",
+      });
+    }
   });
 
   it.each([
     ["on its own", '{"title":"Unbounded retry","severity":"high"}'],
     ["in a code fence", 'Here it is:\n```json\n{"title":"Unbounded retry","severity":"high"}\n```'],
     ["after a sentence", 'The finding: {"title":"Unbounded retry","severity":"high"}'],
+    [
+      "after prose with brackets of its own",
+      'See [1]. {"title":"Unbounded retry","severity":"high"} (and [2])',
+    ],
+    [
+      "after an unrelated object",
+      'Given {"retries": 3}, the finding: {"title":"Unbounded retry","severity":"high"}',
+    ],
   ])("is validated against the schema when the JSON is %s", async (_name, text) => {
     const { ai, models } = setup();
     ai.message(text);
@@ -243,7 +271,7 @@ describe("errors", () => {
       "budget_exceeded",
     ],
     ["2003: Rate limited", "rate_limited"],
-    ["7003: User Input Error", "unavailable"],
+    ["7003: User Input Error", "invalid_request"],
     ["Network connection lost.", "unavailable"],
     // A code that is not at the start of the message says nothing about the failure.
     ["upstream said: 2045: Spend limit exceeded", "unavailable"],
@@ -274,8 +302,9 @@ describe("cost", () => {
     expect(result.costMicroUsd).toBe(1200);
   });
 
-  it("is estimated from the token counts when the log never has one", async () => {
+  it("is estimated from the token counts when the log never has one, with a warning", async () => {
     const { ai, models } = setup();
+    const warn = warnings();
     ai.message("ok", {
       logId: "log_missing",
       usage: {
@@ -291,10 +320,13 @@ describe("cost", () => {
     // claude-sonnet-5: $2 in, $10 out, $0.20 cache read, $2.50 cache write per million tokens.
     expect(result.costMicroUsd).toBe(1000 * 2 + 200 * 10 + 5000 * 0.2 + 100 * 2.5);
     expect(ai.logReads).toHaveLength(2);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0]?.[0]).toMatch(/log_missing.*fallback prices/);
   });
 
-  it("is zero for a model with no known price and no log", async () => {
+  it("is zero, with a warning, for a model with no known price and no log", async () => {
     const { ai, models } = setup();
+    const warn = warnings();
     ai.message("ok");
 
     const result = await models.generate(request({ model: "anthropic/claude-unknown" }));
@@ -302,6 +334,18 @@ describe("cost", () => {
     expect(result.costMicroUsd).toBe(0);
     expect(result.gatewayLogId).toBeNull();
     expect(ai.logReads).toEqual([]);
+    expect(warn.mock.calls[0]?.[0]).toMatch(/claude-unknown.*recorded as 0/);
+  });
+
+  it("warns about nothing when the log has the cost", async () => {
+    const { ai, models } = setup();
+    const warn = warnings();
+    ai.message("ok", { logId: "log_1" });
+    ai.logs.set("log_1", { cost: 0.0001 });
+
+    await models.generate(request());
+
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 
@@ -349,8 +393,9 @@ describe("stream", () => {
     const delta = (text: string) =>
       `data: ${JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text } })}\n\n`;
     const start = 'data: {"type":"message_start","message":{"usage":{"input_tokens":3}}}\n\n';
-    ai.sse([start, delta('{"title":"Unbounded retry",'), delta('"severity":"high"}')]);
-    ai.sse([start, delta('{"title":"Unbounded retry"}')]);
+    const stop = 'data: {"type":"message_stop"}\n\n';
+    ai.sse([start, delta('{"title":"Unbounded retry",'), delta('"severity":"high"}'), stop]);
+    ai.sse([start, delta('{"title":"Unbounded retry"}'), stop]);
     const structured = request({ output: { name: "finding", schema: Finding } });
 
     const done = (await collect(models.stream(structured))).at(-1);
@@ -377,6 +422,102 @@ describe("stream", () => {
     expect((await failure(collect(models.stream(request())))).code).toBe("rate_limited");
   });
 
+  it("is unavailable, and billed, when the stream is cut off before the reply ends", async () => {
+    const { ai, models } = setup();
+    const cut = events.slice(0, events.indexOf("event: message_delta"));
+    ai.sse([cut], "log_cut");
+    ai.logs.set("log_cut", { cost: 0.00009 });
+
+    const seen: ModelStreamEvent<undefined>[] = [];
+    const error = await failure(
+      (async () => {
+        for await (const event of models.stream(request())) seen.push(event);
+      })(),
+    );
+
+    expect(seen).toEqual([
+      { type: "text", text: "Looks " },
+      { type: "text", text: "fine." },
+    ]);
+    expect(error.code).toBe("unavailable");
+    expect(error.message).toMatch(/ended before the reply did/);
+    expect((error as BilledModelError).call).toEqual({
+      model: "anthropic/claude-sonnet-5",
+      usage: { inputTokens: 25, outputTokens: 1, cacheReadTokens: 7, cacheWriteTokens: 0 },
+      costMicroUsd: 90,
+      gatewayLogId: "log_cut",
+    });
+  });
+
+  it("is complete with a stop reason even when message_stop never arrives", async () => {
+    const { ai, models } = setup();
+    ai.sse([events.slice(0, events.indexOf("event: message_stop"))], "log_s");
+    ai.logs.set("log_s", { cost: 0.00017 });
+
+    const done = (await collect(models.stream(request()))).at(-1);
+
+    expect(done).toMatchObject({ type: "done", result: { text: "Looks fine." } });
+  });
+
+  it("bills a stream that fails after the message started", async () => {
+    const { ai, models } = setup();
+    const cut = events.slice(0, events.indexOf("event: message_delta"));
+    ai.sse(
+      [
+        cut,
+        'data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n\n',
+      ],
+      "log_err",
+    );
+    ai.logs.set("log_err", { cost: 0.00005 });
+
+    const error = await failure(collect(models.stream(request())));
+
+    expect(error.code).toBe("unavailable");
+    expect(error).toBeInstanceOf(BilledModelError);
+    expect((error as BilledModelError).call).toMatchObject({
+      costMicroUsd: 50,
+      gatewayLogId: "log_err",
+    });
+  });
+
+  it("reports a stream the consumer leaves to the request's billing sink", async () => {
+    const { ai, models } = setup();
+    ai.sse([events], "log_left");
+    ai.logs.set("log_left", { cost: 0.00011 });
+    const billed: unknown[] = [];
+    const sunk = withBillingSink(request(), async (call) => {
+      billed.push(call);
+    });
+
+    for await (const event of models.stream(sunk)) {
+      expect(event).toEqual({ type: "text", text: "Looks " });
+      break;
+    }
+
+    expect(billed).toEqual([
+      {
+        model: "anthropic/claude-sonnet-5",
+        usage: { inputTokens: 25, outputTokens: 1, cacheReadTokens: 7, cacheWriteTokens: 0 },
+        costMicroUsd: 110,
+        gatewayLogId: "log_left",
+      },
+    ]);
+  });
+
+  it("reports nothing to the sink for a stream read to the end", async () => {
+    const { ai, models } = setup();
+    ai.sse([events], "log_s");
+    ai.logs.set("log_s", { cost: 0.00017 });
+    const billed: unknown[] = [];
+
+    await collect(
+      models.stream(withBillingSink(request(), async (call) => void billed.push(call))),
+    );
+
+    expect(billed).toEqual([]);
+  });
+
   it("is unavailable when the stream carries no message", async () => {
     const { ai, models } = setup();
     ai.sse(['data: {"choices":[{"delta":{"content":"hi"}}]}\n\n', "data: [DONE]\n\n"]);
@@ -399,7 +540,7 @@ describe("embed", () => {
       },
       "log_e",
     );
-    ai.logs.set("log_e", { cost: 0.0000042 });
+    ai.logs.set("log_e", { cost: 0.0000042, tokens_in: 9 });
 
     const result = await models.embed({
       model: "@cf/baai/bge-m3",
@@ -426,9 +567,9 @@ describe("embed", () => {
         [0.3, 0.4],
       ],
       model: "@cf/baai/bge-m3",
-      usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      usage: { inputTokens: 9, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
       costMicroUsd: 4,
-      gatewayLogId: expect.any(String),
+      gatewayLogId: "log_e",
     });
   });
 
