@@ -72,11 +72,10 @@ export function threadTitle({ thread, messages }: ThreadView): string {
   return text.length > 96 ? `${text.slice(0, 95).trimEnd()}…` : text;
 }
 
-/** Who settled a comment, when the thread's own messages say who that is. */
-export function settledByName({ thread, messages }: ThreadView): string | null {
+/** Who settled a comment. A settled thread with nobody behind it was settled by the agent. */
+export function settledByName({ thread, settledBy }: ThreadView): string | null {
   if (thread.status === "open") return null;
-  if (thread.settledBy === null) return AGENT_NAME;
-  return messages.find((message) => message.user?.id === thread.settledBy)?.user?.name ?? null;
+  return settledBy?.name ?? AGENT_NAME;
 }
 
 /** Open comments first, since they block the merge; then chats; then what is settled. Oldest first within each. */

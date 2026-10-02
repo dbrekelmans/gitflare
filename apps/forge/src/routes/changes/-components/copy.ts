@@ -1,20 +1,22 @@
-import type {
-  Approval,
-  ChangeStatus,
-  IntentGrade,
-  MergeBlocker,
-  StageName,
-  StageRun,
-  StageStatus,
+import {
+  type Approval,
+  type ChangeStatus,
+  type IntentGrade,
+  isApprovalCurrent,
+  type MergeBlocker,
+  type StageName,
+  type StageRun,
+  type StageStatus,
 } from "@gitflare/core";
-import type { CaptureSummary } from "@gitflare/core/api";
+import type { CaptureSummary, SectionView, UserRef } from "@gitflare/core/api";
 import type { StatusTone } from "@gitflare/ui/components/status";
 
 // What the page says about each state. Kept apart from the components so the
 // wording of a state is in one place and can be tested without rendering.
 
-export function plural(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+/** `1 push`, `2 pushes`: give the plural where adding an "s" does not make it. */
+export function plural(count: number, noun: string, nouns = `${noun}s`): string {
+  return `${count} ${count === 1 ? noun : nouns}`;
 }
 
 export const changeStatusCopy: Record<ChangeStatus, { label: string; tone: StatusTone }> = {
@@ -111,6 +113,40 @@ export function blockerCopy(blocker: MergeBlocker): string {
   }
 }
 
+/** Where a section's approval stands, as its pill says it. */
+export function approvalStatusCopy(
+  view: Pick<SectionView, "approvalState" | "approvals" | "section">,
+): { label: string; tone: StatusTone } {
+  if (view.approvalState === "withdrawn") return { label: "Approval withdrawn", tone: "warning" };
+  if (view.approvalState === "pending") return { label: "Not approved yet", tone: "neutral" };
+  const current = view.approvals.filter((approval) => isApprovalCurrent(approval, view.section));
+  // Allowed, and never passed off as someone else's review. An approved
+  // section with no current approval in hand is not called self-approved.
+  return current.length > 0 && current.every((approval) => approval.selfApproval)
+    ? { label: "Approved by its author", tone: "success" }
+    : { label: "Approved", tone: "success" };
+}
+
+/**
+ * One line of a section's approval history. Only an approval a later push
+ * made stale was of an earlier version; one taken back or whose section went
+ * was of the version it names.
+ */
+export function approvalCopy(
+  approval: Pick<Approval, "selfApproval" | "withdrawnReason"> & { user: { name: string } },
+  current: boolean,
+): string {
+  const earlier = !current && (approval.withdrawnReason ?? "content_changed") === "content_changed";
+  const what = earlier
+    ? approval.selfApproval
+      ? " an earlier version of their own change"
+      : " an earlier version"
+    : approval.selfApproval
+      ? " their own change"
+      : "";
+  return `${approval.user.name} approved${what}`;
+}
+
 export function withdrawalCopy(approval: Pick<Approval, "withdrawnReason">): string {
   switch (approval.withdrawnReason) {
     case "revoked":
@@ -124,4 +160,11 @@ export function withdrawalCopy(approval: Pick<Approval, "withdrawnReason">): str
 
 export function diffStat(insertions: number, deletions: number): string {
   return `+${insertions} −${deletions}`;
+}
+
+/** "Merged by Priya Raman, 1 Oct, 10:58 UTC." Either half may be unknown. */
+export function mergedCopy(mergedBy: Pick<UserRef, "name"> | null, when: string | null): string {
+  const parts = [mergedBy && `by ${mergedBy.name}`, when];
+  const said = parts.filter(Boolean).join(", ");
+  return `Merged${said ? ` ${said}` : ""}.`;
 }

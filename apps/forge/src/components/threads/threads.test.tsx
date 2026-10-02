@@ -21,7 +21,9 @@ import {
 } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type ReactNode, Suspense } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { keys } from "@/data/keys";
+import { FakeWebSocket } from "@/data/live.fake";
 import { shortSha } from "@/lib/format";
 import { ChangePage } from "@/routes/changes/-components/change-page";
 import { ChangeThreads, SectionThreads } from "./index";
@@ -31,45 +33,40 @@ import { ChangeThreads, SectionThreads } from "./index";
 const server = vi.hoisted(() => ({
   api: undefined as unknown as ForgeApi,
   user: undefined as unknown as User,
+  /** The name of the next server function to fail, as a server error would. */
+  failNext: null as string | null,
 }));
-
-// What the change's live connection would deliver: the reply being typed, per thread.
-const live = vi.hoisted(() => {
-  const drafts = new Map<string, string>();
-  const listeners = new Set<() => void>();
-  return {
-    drafts,
-    subscribe(listener: () => void) {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    type(threadId: string, text: string | null) {
-      if (text === null) drafts.delete(threadId);
-      else drafts.set(threadId, text);
-      for (const listener of listeners) listener();
-    },
-  };
-});
 
 // A server function's result crosses the wire as a copy. The fixture hands out
 // its own objects and changes them in place, so the copy is made here.
 vi.mock("@/data/threads.functions", () => {
-  const wire = async <T,>(result: Promise<T>) => structuredClone(await result);
+  const wire = async <T,>(name: string, result: () => Promise<T>) => {
+    if (server.failNext === name) {
+      server.failNext = null;
+      throw new Error(`${name} failed on the server`);
+    }
+    return structuredClone(await result());
+  };
+  const ctx = () => ({ user: server.user });
   return {
     listThreads: ({ data }: { data: unknown }) =>
-      wire(server.api.threads.list({ user: server.user }, ChangeRef.parse(data))),
+      wire("listThreads", () => server.api.threads.list(ctx(), ChangeRef.parse(data))),
     openThread: ({ data }: { data: unknown }) =>
-      wire(server.api.threads.open({ user: server.user }, OpenThreadInput.parse(data))),
+      wire("openThread", () => server.api.threads.open(ctx(), OpenThreadInput.parse(data))),
     postMessage: ({ data }: { data: unknown }) =>
-      wire(server.api.threads.post({ user: server.user }, PostMessageInput.parse(data))),
+      wire("postMessage", () => server.api.threads.post(ctx(), PostMessageInput.parse(data))),
     resolveThread: ({ data }: { data: unknown }) =>
-      wire(server.api.threads.resolve({ user: server.user }, ThreadRef.parse(data))),
+      wire("resolveThread", () => server.api.threads.resolve(ctx(), ThreadRef.parse(data))),
     dismissThread: ({ data }: { data: unknown }) =>
-      wire(server.api.threads.dismiss({ user: server.user }, DismissThreadInput.parse(data))),
+      wire("dismissThread", () =>
+        server.api.threads.dismiss(ctx(), DismissThreadInput.parse(data)),
+      ),
     reclassifyThread: ({ data }: { data: unknown }) =>
-      wire(server.api.threads.reclassify({ user: server.user }, ReclassifyThreadInput.parse(data))),
+      wire("reclassifyThread", () =>
+        server.api.threads.reclassify(ctx(), ReclassifyThreadInput.parse(data)),
+      ),
     reopenThread: ({ data }: { data: unknown }) =>
-      wire(server.api.threads.reopen({ user: server.user }, ThreadRef.parse(data))),
+      wire("reopenThread", () => server.api.threads.reopen(ctx(), ThreadRef.parse(data))),
   };
 });
 
@@ -92,13 +89,10 @@ vi.mock("@/data/account.functions", () => ({
   getMe: () => server.api.account.me({ user: server.user }),
 }));
 
-vi.mock("@/data/live", async () => {
-  const { useSyncExternalStore } = await import("react");
-  return {
-    useChangeLive: () => ({ status: "offline" }),
-    useThreadDraft: (_changeId: string, threadId: string) =>
-      useSyncExternalStore(live.subscribe, () => live.drafts.get(threadId) ?? null),
-  };
+// The live connection is the real one, over a fake socket: the test plays the server.
+beforeEach(() => {
+  FakeWebSocket.instances = [];
+  vi.stubGlobal("WebSocket", FakeWebSocket);
 });
 
 const review = demoChanges.review;
@@ -133,6 +127,19 @@ function Placed() {
   );
 }
 
+const current = { queryClient: new QueryClient() };
+
+/** Someone else did something, and the live connection says the change moved. */
+async function elsewhere(
+  as: User,
+  change: (api: ForgeApi, ctx: { user: User }) => Promise<unknown>,
+) {
+  await act(async () => {
+    await change(server.api, { user: as });
+    await current.queryClient.invalidateQueries({ queryKey: keys.changes.one(review.id) });
+  });
+}
+
 async function renderOver(
   page: ReactNode,
   { as = demoUsers.maya, data = demo }: { as?: User; data?: DemoData } = {},
@@ -140,6 +147,7 @@ async function renderOver(
   server.api = createFixtureApi(data);
   server.user = as;
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  current.queryClient = queryClient;
   const router = createRouter({
     routeTree: createRootRoute({ component: () => page }),
     history: createMemoryHistory({ initialEntries: ["/"] }),
@@ -175,8 +183,45 @@ function send(field: HTMLElement, body: string) {
 
 afterEach(() => {
   cleanup();
-  live.drafts.clear();
+  vi.unstubAllGlobals();
+  server.failNext = null;
 });
+
+/** What the change's live connection delivers about a reply being typed. */
+const live = {
+  type(threadId: string, text: string) {
+    act(() =>
+      FakeWebSocket.serving(review.id).receive({
+        type: "signal",
+        signal: { type: "thread.delta", threadId: threadId as ThreadId, text },
+      }),
+    );
+  },
+  /** The finished message arrives, and the draft gives way to it. */
+  posted(threadId: string) {
+    act(() =>
+      FakeWebSocket.serving(review.id).receive({
+        type: "event",
+        event: {
+          type: "thread.message",
+          changeId: review.id,
+          seq: 100,
+          at: 0,
+          threadId: threadId as ThreadId,
+          messageSeq: 4,
+        },
+      }),
+    );
+  },
+  discarded(threadId: string) {
+    act(() =>
+      FakeWebSocket.serving(review.id).receive({
+        type: "signal",
+        signal: { type: "thread.draft_discarded", threadId: threadId as ThreadId },
+      }),
+    );
+  },
+};
 
 describe("the demo's four threads", () => {
   it("puts each thread where it belongs: comments in their section, the chat on the change", async () => {
@@ -402,25 +447,44 @@ describe("a reply being typed", () => {
     await renderThreads();
     expect(draft(ROLLOVER)).toBeNull();
 
-    act(() => live.type(rollover, "Pushing"));
+    live.type(rollover, "Pushing");
     expect(draft(ROLLOVER)?.textContent).toContain("Pushing");
     expect(draft(CHAT)).toBeNull();
 
-    act(() => live.type(rollover, "Pushing the change now."));
+    live.type(rollover, "Pushing the change now.");
     expect(draft(ROLLOVER)?.textContent).toContain("Pushing the change now.");
     // It is not a message yet, and the reader can still write.
     expect(thread(ROLLOVER).getByRole("textbox", { name: "Reply" })).toBeTruthy();
 
-    act(() => live.type(rollover, null));
+    live.posted(rollover);
     expect(draft(ROLLOVER)).toBeNull();
     expect(messages(ROLLOVER)).toHaveLength(3);
+  });
+
+  it("goes when the agent's turn is discarded, and no message replaces it", async () => {
+    await renderThreads();
+    live.type(rollover, "Half a reply");
+    expect(draft(ROLLOVER)).not.toBeNull();
+
+    live.discarded(rollover);
+
+    expect(draft(ROLLOVER)).toBeNull();
+    expect(messages(ROLLOVER)).toHaveLength(3);
+  });
+
+  it("is set as the finished message will be, so it does not reflow when it lands", async () => {
+    await renderThreads();
+    live.type(rollover, "Pass the clock to `takeInviteSlot`.");
+
+    expect(draft(ROLLOVER)?.querySelector("code")?.textContent).toBe("takeInviteSlot");
+    expect(draft(ROLLOVER)?.textContent).not.toContain("`");
   });
 
   it("opens a collapsed thread while the agent writes to it", async () => {
     await renderThreads();
     expect(thread(KEY).queryByRole("list", { name: "Messages" })).toBeNull();
 
-    act(() => live.type("thr_demo12key", "On reflection"));
+    live.type("thr_demo12key", "On reflection");
 
     expect(draft(KEY)?.textContent).toContain("On reflection");
     expect(messages(KEY)).toHaveLength(5);
@@ -485,5 +549,50 @@ describe("on the change page", () => {
 
     await waitFor(() => expect(mergeCard().queryByText("1 comment is still open.")).toBeNull());
     expect(comment.getByText("Dismissed")).toBeTruthy();
+  });
+});
+
+describe("what others do to a thread", () => {
+  it("opens a collapsed thread that someone else reopens, since it holds up the merge again", async () => {
+    await renderThreads();
+    expect(thread(KEY).queryByRole("button", { name: "Resolve" })).toBeNull();
+
+    await elsewhere(demoUsers.jonas, (api, ctx) =>
+      api.threads.reopen(ctx, { threadId: "thr_demo12key" as ThreadId }),
+    );
+
+    await waitFor(() => expect(thread(KEY).getByText("Open")).toBeTruthy());
+    expect(thread(KEY).getByRole("button", { name: "Resolve" })).toBeTruthy();
+    expect(thread(KEY).getByRole("textbox", { name: "Reply" })).toBeTruthy();
+  });
+
+  it("names the person who settled a thread, though they never posted in it", async () => {
+    await renderThreads({
+      data: demoWith((data) => {
+        for (const t of data.threads)
+          if (t.id === "thr_demo12key") t.settledBy = demoUsers.priya.id;
+      }),
+    });
+    expand(KEY);
+    expect(messages(KEY).some((text) => text?.startsWith("Priya Raman"))).toBe(false);
+
+    expect(thread(KEY).getByText(/^By Priya Raman, /)).toBeTruthy();
+  });
+});
+
+describe("a move that fails", () => {
+  it("says so, and the next move that succeeds clears it", async () => {
+    await renderThreads();
+    const dismissed = thread(WINDOW);
+    expand(WINDOW);
+    server.failNext = "reclassifyThread";
+
+    fireEvent.click(dismissed.getByRole("button", { name: "Reclassify as not a problem" }));
+    expect((await dismissed.findByRole("alert")).textContent).toContain("reclassifyThread failed");
+
+    fireEvent.click(dismissed.getByRole("button", { name: "Reopen" }));
+
+    await waitFor(() => expect(dismissed.getByText("Open")).toBeTruthy());
+    expect(dismissed.queryByRole("alert")).toBeNull();
   });
 });

@@ -73,6 +73,9 @@ function connect(conn: Connection): void {
     for (const listener of conn.signalListeners) listener(message.signal);
     if (message.signal.type === "thread.delta") {
       setDraft(conn, message.signal.threadId, message.signal.text);
+    } else if (message.signal.type === "thread.draft_discarded") {
+      // The turn failed or restarted: no message will replace this draft.
+      setDraft(conn, message.signal.threadId, null);
     }
   });
 
@@ -193,7 +196,7 @@ export function useChangeSignal(
 /**
  * The agent's reply to a thread as it is being typed: the text so far, or
  * null when no reply is in flight. It goes back to null when the finished
- * message arrives through the thread query.
+ * message arrives through the thread query, or when the turn is discarded.
  */
 export function useThreadDraft(changeId: ChangeId, threadId: ThreadId): string | null {
   const [draft, setDraftState] = useState<string | null>(null);
