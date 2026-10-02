@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -14,15 +14,18 @@ function installed(tool: string): boolean {
 // fake sandbox runs nothing, and a sandbox is the only other place they run.
 const runnable = ["git", "bash", "jq"].every(installed);
 const shellcheckInstalled = installed("shellcheck");
+// coreutils' `timeout`, which the workspace image has and macOS does not.
+const timeoutInstalled = installed("timeout");
 
 describe("tools", () => {
-  // GitHub's runners ship all four. A developer's machine may not: there the
+  // GitHub's runners ship all five. A developer's machine may not: there the
   // tests below are skipped, but CI must never pass because a tool went missing.
   it("are present in CI", () => {
     if (process.env.CI)
-      expect({ runnable, shellcheckInstalled }).toEqual({
+      expect({ runnable, shellcheckInstalled, timeoutInstalled }).toEqual({
         runnable: true,
         shellcheckInstalled: true,
+        timeoutInstalled: true,
       });
   });
 });
@@ -56,10 +59,10 @@ describe.skipIf(!runnable)("in a real checkout", () => {
   }
 
   /** Runs one turn whose "agent" is a shell script, and returns the turn's stream and exit code. */
-  function runTurn(branch: string, agent: string) {
+  function runTurn(branch: string, agent: string, limitSeconds = 60) {
     const result = spawnSync(
       "bash",
-      ["-c", TURN_SCRIPT, "gitflare-turn", branch, "sh", "-c", agent],
+      ["-c", TURN_SCRIPT, "gitflare-turn", branch, String(limitSeconds), "sh", "-c", agent],
       { cwd: checkout, env, encoding: "utf8" },
     );
     return { stream: result.stdout, exitCode: result.status };
@@ -74,8 +77,15 @@ describe.skipIf(!runnable)("in a real checkout", () => {
     root = mkdtempSync(join(tmpdir(), "gitflare-sessions-"));
     checkout = join(root, "workspace");
     // Nothing of the machine's own git configuration: no signing, no hooks, no identity.
+    // Without coreutils, a stand-in that runs the command with no limit.
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    if (!timeoutInstalled) {
+      writeFileSync(join(bin, "timeout"), '#!/bin/sh\nshift 2\nexec "$@"\n');
+      chmodSync(join(bin, "timeout"), 0o755);
+    }
     env = {
-      PATH: process.env.PATH,
+      PATH: `${bin}:${process.env.PATH}`,
       HOME: root,
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_NOSYSTEM: "1",
@@ -182,6 +192,26 @@ describe.skipIf(!runnable)("in a real checkout", () => {
     expect(exitCode).toBe(3);
     expect(parseAgentEvents("ses_test", stream, 0)).toMatchObject([{ type: "pushed" }]);
   });
+
+  it.skipIf(!timeoutInstalled)(
+    "stops an agent that runs out of time, and still pushes its commits",
+    () => {
+      runCheckout("audit-log-export");
+
+      const { stream, exitCode } = runTurn(
+        "audit-log-export",
+        `${commit("slow.ts")} && sleep 30`,
+        1,
+      );
+
+      expect(exitCode).toBe(124);
+      const head = git(checkout, "rev-parse", "HEAD");
+      expect(git(root, "ls-remote", "--heads", remote, "audit-log-export")).toContain(head);
+      expect(parseAgentEvents("ses_test", stream, 0)).toMatchObject([
+        { type: "pushed", sha: head },
+      ]);
+    },
+  );
 
   it("says when the push is refused", () => {
     runCheckout("audit-log-export");

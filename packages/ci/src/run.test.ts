@@ -506,7 +506,8 @@ describe("a refused start, asked again", () => {
 });
 
 describe("a sandbox that could not be asked", () => {
-  const lost = () => new ForgeError("unavailable", "The sandbox was lost: Network connection lost.");
+  const lost = () =>
+    new ForgeError("unavailable", "The sandbox was lost: Network connection lost.");
 
   it("leaves the start for a retry instead of failing the run", async () => {
     const world = await createWorld();
