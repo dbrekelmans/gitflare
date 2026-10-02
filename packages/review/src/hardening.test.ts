@@ -61,7 +61,7 @@ const asDecision = {
 } as const;
 
 describe("the review stage", () => {
-  it("records a clean review, and does not review that revision again", async () => {
+  it("records a clean review, and does not review it again when the attempt is retried", async () => {
     const review = await demoReview();
     const { deps, db, ports } = review;
     ports.models.reply("review", { output: { findings: [], followed: [] } });
@@ -74,12 +74,16 @@ describe("the review stage", () => {
         .where(eq(schema.revisionReviews.revisionId, unreviewed.revisionId)),
     ).toMatchObject([{ attempt: 1, findings: 0, changeId: unreviewed.changeId }]);
 
-    // A retry of the same attempt, and a re-run as a new one: no reply is scripted for either.
+    // A retry of the same attempt: no reply is scripted for it.
     expect(await runReviewStage(deps, unreviewed)).toEqual({ status: "succeeded" });
+    expect(ports.models.calls).toHaveLength(1);
+
+    // A re-run a person asks for is a new attempt, and reviews again.
+    ports.models.reply("review", { output: { findings: [], followed: [] } });
     expect(await runReviewStage(deps, { ...unreviewed, attempt: 2 })).toEqual({
       status: "succeeded",
     });
-    expect(ports.models.calls).toHaveLength(1);
+    expect(ports.models.calls).toHaveLength(2);
   });
 
   it("asks the decision record only for decisions that bear on the files the change touches", async () => {
@@ -253,29 +257,27 @@ describe("settleThread", () => {
   it("records no decision when the dismissal loses a race", async () => {
     const review = await demoReview();
     const threadId = await conflictThread(review);
-    review.ports.models.respond((request) => {
-      if (request.attribution.agent !== "thread") return undefined;
-      // Someone resolves it while the decision is being worded, if it is still open.
-      void review.db
-        .update(schema.threads)
-        .set({ status: "resolved", settledAt: demo.now, settledBy: priya.id })
-        .where(and(eq(schema.threads.id, threadId), eq(schema.threads.status, "open")))
-        .then(() => undefined);
-      return { output: asDecision.decision };
+    // A wording is on hand, so a dismissal that words before it settles would record it.
+    review.ports.models.reply("thread", { output: asDecision.decision });
+    // Two people at once: the resolve reaches the database first, so the dismissal loses.
+    const [resolved, dismissed] = await Promise.allSettled([
+      settleThread(review.deps, priya, threadId, { type: "resolve" }),
+      settleThread(review.deps, maya, threadId, {
+        type: "dismiss",
+        classification: "design_decision",
+        reason: "We never retry inside a request handler.",
+      }),
+    ]);
+
+    expect(resolved.status).toBe("fulfilled");
+    expect(dismissed).toMatchObject({ status: "rejected", reason: { code: "conflict" } });
+    expect(await requireThread(review.db, threadId)).toMatchObject({
+      status: "resolved",
+      decisionId: null,
     });
-
-    await settleThread(review.deps, maya, threadId, {
-      type: "dismiss",
-      classification: "design_decision",
-      reason: "We never retry inside a request handler.",
-    }).catch(() => null);
-
-    // Whichever way the race went, a recorded decision has the dismissal behind it.
-    const thread = await requireThread(review.db, threadId);
-    const recorded = review.ports.decisions.decisions.filter((d) => d.originThreadId === threadId);
-    for (const decision of recorded) {
-      expect(thread).toMatchObject({ dismissal: "design_decision", decisionId: decision.id });
-    }
+    // The decision was neither worded nor recorded.
+    expect(review.ports.models.calls).toEqual([]);
+    expect(review.ports.decisions.decisions).toHaveLength(demo.decisions.length);
   });
 
   it("keeps the dismissal and the reason when the decision cannot be recorded", async () => {

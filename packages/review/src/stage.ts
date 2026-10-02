@@ -1,8 +1,8 @@
 import {
   type ChangeId,
   type DecisionId,
-  type RevisionId,
   type StageHandler,
+  type StageInput,
   sectionForAnchor,
   type Thread,
   type ThreadAnchor,
@@ -56,12 +56,17 @@ async function announce(
   }
 }
 
-/** Whether a review of the revision has finished, with or without findings. */
-async function reviewed(deps: Pick<ReviewDeps, "db">, revisionId: RevisionId): Promise<boolean> {
+/** Whether this attempt at reviewing the revision has finished, with or without findings. */
+async function reviewed(deps: Pick<ReviewDeps, "db">, input: StageInput): Promise<boolean> {
   const [row] = await deps.db
-    .select({ attempt: schema.revisionReviews.attempt })
+    .select({ findings: schema.revisionReviews.findings })
     .from(schema.revisionReviews)
-    .where(eq(schema.revisionReviews.revisionId, revisionId))
+    .where(
+      and(
+        eq(schema.revisionReviews.revisionId, input.revisionId),
+        eq(schema.revisionReviews.attempt, input.attempt),
+      ),
+    )
     .limit(1);
   return row !== undefined;
 }
@@ -69,23 +74,22 @@ async function reviewed(deps: Pick<ReviewDeps, "db">, revisionId: RevisionId): P
 /**
  * The review stage. Opens one comment thread per finding, anchored to a file
  * and lines; a thread's section is filled in with `sectionForAnchor` once
- * sections exist. Running it again for the same revision does not duplicate
- * threads.
+ * sections exist.
  *
  * A finished review writes its threads, their first messages and a
- * `revision_reviews` row in one batch, so they are all there or none is. A
- * revision with that row is reviewed: a retry, or a re-run, finds it and
- * calls no model, even when the review found nothing.
+ * `revision_reviews` row for its attempt in one batch, so they are all there
+ * or none is. A retry of that attempt finds the row and calls no model, even
+ * when the review found nothing. A re-run a person asks for is a new attempt
+ * and reviews again; a finding a comment already raised is not raised twice.
  */
 export const runReviewStage: StageHandler<ReviewDeps> = async (deps, input) => {
   const change = await requireChange(deps.db, input.changeId);
   const revision = await requireRevision(deps.db, input.revisionId);
   const existing = await changeThreads(deps.db, change.id);
-  const mine = existing.filter(
-    (thread) => thread.origin === "review" && thread.anchorRevisionId === revision.id,
-  );
-  // A revision reviewed before `revision_reviews` existed is known by its threads.
-  if (mine.length > 0 || (await reviewed(deps, revision.id))) {
+  if (await reviewed(deps, input)) {
+    const mine = existing.filter(
+      (thread) => thread.origin === "review" && thread.anchorRevisionId === revision.id,
+    );
     await announce(deps, change.id, mine);
     return { status: "succeeded" };
   }

@@ -148,7 +148,7 @@ describe("runReviewStage", () => {
     ]);
   });
 
-  it("does nothing the second time it runs for a revision", async () => {
+  it("does nothing when an attempt is retried", async () => {
     const { deps, db, ports } = await demoReview();
     ports.models.reply("review", { output: { findings: [unescaped, unbounded], followed: [] } });
     await runReviewStage(deps, unreviewed);
@@ -160,14 +160,32 @@ describe("runReviewStage", () => {
 
     // No reply is scripted: a second call to the model would fail the test.
     expect(await runReviewStage(deps, unreviewed)).toEqual({ status: "succeeded" });
-    expect(await runReviewStage(deps, { ...unreviewed, attempt: 2 })).toEqual({
-      status: "succeeded",
-    });
 
     expect(ports.models.calls).toHaveLength(1);
     expect(await reviewThreads(db)).toEqual(before.threads);
     expect(await db.select().from(schema.threadMessages)).toEqual(before.messages);
     expect(await db.select().from(schema.changeEvents)).toEqual(before.events);
+  });
+
+  it("reviews again on a re-run, without raising a finding twice", async () => {
+    const { deps, db, ports } = await demoReview();
+    ports.models
+      .reply("review", { output: { findings: [unescaped, unbounded], followed: [] } })
+      .reply("review", { output: { findings: [unescaped, unbounded], followed: [] } });
+    await runReviewStage(deps, unreviewed);
+    const threads = await reviewThreads(db);
+
+    expect(await runReviewStage(deps, { ...unreviewed, attempt: 2 })).toEqual({
+      status: "succeeded",
+    });
+    expect(ports.models.calls).toHaveLength(2);
+    expect(await reviewThreads(db)).toEqual(threads);
+    expect(
+      await db
+        .select({ attempt: schema.revisionReviews.attempt })
+        .from(schema.revisionReviews)
+        .where(eq(schema.revisionReviews.revisionId, unreviewed.revisionId)),
+    ).toEqual([{ attempt: 1 }, { attempt: 2 }]);
   });
 
   it("announces a thread whose event was lost before the first run finished", async () => {
@@ -176,6 +194,14 @@ describe("runReviewStage", () => {
       changeId,
       anchor: { path: unreviewedPath, side: "head", startLine: 1, endLine: 1 },
       anchorRevisionId: unreviewed.revisionId,
+    });
+    // The batch that wrote the thread also recorded the attempt as finished.
+    await db.insert(schema.revisionReviews).values({
+      revisionId: unreviewed.revisionId,
+      attempt: unreviewed.attempt,
+      changeId,
+      findings: 1,
+      createdAt: demo.now,
     });
 
     await runReviewStage(deps, unreviewed);
@@ -237,8 +263,8 @@ describe("runReviewStage", () => {
       stageRunId: "stg_demo12a_review",
       attempt: 2,
     });
-    // rev_demo12a has the demo's own findings, so it counts as reviewed.
-    expect(outcome).toEqual({ status: "succeeded" });
+    // A re-run of a revision that is no longer the head reviews nothing.
+    expect(outcome).toMatchObject({ status: "skipped" });
     expect(ports.models.calls).toHaveLength(0);
 
     await deps.db
