@@ -1,4 +1,4 @@
-import type { ChangeStatus, CloudSessionEvent, SessionId } from "@gitflare/core";
+import type { ChangeStatus, CloudSessionEvent, CloudSessionState, SessionId } from "@gitflare/core";
 import { can } from "@gitflare/core";
 import type { SessionView } from "@gitflare/core/api";
 import { Row, SectionHead } from "@gitflare/ui/components/row";
@@ -28,6 +28,9 @@ const changeStatusLabel: Record<ChangeStatus, string> = {
   merged: "merged",
   closed: "closed",
 };
+
+/** A hosted agent has something to stop only in these states. */
+const stoppableCloudStates: CloudSessionState[] = ["starting", "idle", "working"];
 
 /** Still copying the fork. Nothing else on the page is true yet. */
 function Preparing() {
@@ -138,17 +141,31 @@ function PromptBox({ sessionId }: { sessionId: SessionId }) {
   );
 }
 
-function Actions({ data }: { data: SessionView }) {
-  const { data: me } = useSuspenseQuery(accountQueries.me());
+/** Whether there is a stoppable hosted agent to stop, right now. */
+function canStopSession(
+  { session, cloud }: Pick<SessionView, "session" | "cloud">,
+  mayWrite: boolean,
+): boolean {
+  return (
+    mayWrite &&
+    session.status === "active" &&
+    session.kind === "cloud" &&
+    cloud !== null &&
+    stoppableCloudStates.includes(cloud.state)
+  );
+}
+
+function Actions({
+  sessionId,
+  canStop,
+  mayAbandon,
+}: {
+  sessionId: SessionId;
+  canStop: boolean;
+  mayAbandon: boolean;
+}) {
   const stop = useStopSession();
   const abandon = useAbandonSession();
-  const { session, cloud } = data;
-
-  const mayWrite = can(me.user, { type: "session.write", session });
-  const mayAbandon = can(me.user, { type: "session.abandon", session });
-  const canStop = data.session.kind === "cloud" && mayWrite && cloud && cloud.state !== "asleep";
-
-  if (session.status !== "active") return null;
 
   return (
     <div className="flex items-center gap-s5">
@@ -156,18 +173,19 @@ function Actions({ data }: { data: SessionView }) {
         <Button
           variant="outline"
           disabled={stop.isPending}
-          onClick={() => stop.mutate({ sessionId: session.id })}
+          onClick={() => stop.mutate({ sessionId })}
         >
           {stop.isPending ? "Stopping…" : "Stop"}
         </Button>
       )}
       {mayAbandon && (
         <Button
-          variant="outline"
+          variant="ghost"
+          className="text-danger"
           disabled={abandon.isPending}
           onClick={() => {
             if (!confirm("Abandon this session? Its fork will be deleted.")) return;
-            abandon.mutate({ sessionId: session.id });
+            abandon.mutate({ sessionId });
           }}
         >
           {abandon.isPending ? "Abandoning…" : "Abandon"}
@@ -182,24 +200,27 @@ function Actions({ data }: { data: SessionView }) {
   );
 }
 
-export function SessionPage({ sessionId }: { sessionId: SessionId }) {
-  const polling = (status: SessionView) =>
-    !status.session.forkReadyAt ||
-    status.cloud?.state === "starting" ||
-    status.cloud?.state === "working";
+/** Only poll while the session is still active: an ended session's last reported state is final. */
+function polling(status: SessionView): boolean {
+  return (
+    status.session.status === "active" &&
+    (!status.session.forkReadyAt ||
+      status.cloud?.state === "starting" ||
+      status.cloud?.state === "working")
+  );
+}
 
-  // `structuralSharing: false`: the fixture mutates a session's cloud status
-  // in place, so a structurally-equal refetch would otherwise be silently
-  // discarded and the page would never see the session move past its
-  // starting state.
+export function SessionPage({ sessionId }: { sessionId: SessionId }) {
   const { data } = useSuspenseQuery({
     ...sessionQueries.detail(sessionId),
-    structuralSharing: false,
     refetchInterval: (query) => (query.state.data && polling(query.state.data) ? 3000 : false),
   });
   const { data: me } = useSuspenseQuery(accountQueries.me());
   const { session, repository, change, pushRemote, cloud } = data;
   const mayWrite = can(me.user, { type: "session.write", session });
+  const canStop = canStopSession(data, mayWrite);
+  const mayAbandon = can(me.user, { type: "session.abandon", session });
+  const showPreparing = !session.forkReadyAt && session.status === "active";
 
   return (
     <>
@@ -209,12 +230,15 @@ export function SessionPage({ sessionId }: { sessionId: SessionId }) {
         aside={<SessionStatus session={session} cloud={cloud} />}
       />
 
-      {!session.forkReadyAt ? (
+      {showPreparing ? (
         <Preparing />
       ) : (
         <>
-          <Row label="Push to" annotation="only this session can write here">
-            <Evidence>{pushRemote}</Evidence>
+          <Row
+            label="Push to"
+            annotation={pushRemote ? "only this session can write here" : undefined}
+          >
+            {pushRemote ? <Evidence>{pushRemote}</Evidence> : "The fork has been deleted."}
           </Row>
           {change && (
             <Row
@@ -229,8 +253,12 @@ export function SessionPage({ sessionId }: { sessionId: SessionId }) {
             </Row>
           )}
 
-          <SectionHead title="Actions" className="mt-s9" />
-          <Actions data={data} />
+          {(canStop || mayAbandon) && (
+            <>
+              <SectionHead title="Actions" className="mt-s9" />
+              <Actions sessionId={session.id} canStop={canStop} mayAbandon={mayAbandon} />
+            </>
+          )}
 
           {session.kind === "cloud" && (
             <>

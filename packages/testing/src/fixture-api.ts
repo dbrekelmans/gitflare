@@ -270,7 +270,12 @@ export function createFixtureApi(source: DemoData = demo): ForgeApi {
       change: change
         ? { id: change.id, number: change.number, title: change.title, status: change.status }
         : null,
-      pushRemote: `${REMOTE_BASE}/${session.forkRepo}.git`,
+      // Empty until the fork is ready, and again once it has been deleted:
+      // matches `sessionsApi.view` in `apps/forge/src/server/api/sessions.ts`.
+      pushRemote:
+        session.forkReadyAt !== null && session.forkDeletedAt === null
+          ? `${REMOTE_BASE}/${session.forkRepo}.git`
+          : "",
       cloud:
         session.kind === "cloud"
           ? (data.cloudSessions.statuses.find((s) => s.sessionId === session.id) ?? {
