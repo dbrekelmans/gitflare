@@ -1,14 +1,15 @@
 import { ForgeError } from "@gitflare/core";
-import type {
-  EgressGrant,
-  ExecOptions,
-  ExecResult,
-  LogChunk,
-  ProcessStatus,
-  SandboxSnapshot,
-  SandboxStartOptions,
+import {
+  type EgressGrant,
+  EXIT_NOT_LAUNCHED,
+  type ExecOptions,
+  type ExecResult,
+  type LogChunk,
+  type ProcessStatus,
+  type SandboxSnapshot,
+  type SandboxStartOptions,
 } from "@gitflare/core/ports";
-import type { ContainerLike } from "./container";
+import type { ContainerLike, ExecProcessLike } from "./container";
 import { type EgressMode, egressMode } from "./egress";
 import {
   EXEC_SCRIPT,
@@ -46,12 +47,21 @@ export interface SandboxControllerOptions {
   maxKeepAliveMs?: number;
   /** Where background processes keep their files in the container. */
   processRoot?: string;
+  /**
+   * How long a spawned process may go without its launcher recording itself
+   * before it is reported as never launched. Default thirty seconds.
+   */
+  launchGraceMs?: number;
 }
 
 interface ProcessRecord {
   dir: string;
+  /** When `spawn` launched it, by the Durable Object's clock. */
+  spawnedAt: number;
   /** Set once the process was seen to have exited, so it is not asked about again. */
   exitCode?: number;
+  /** Why the runtime refused to launch it: its whole stderr. */
+  notLaunched?: string;
 }
 
 /** Everything the controller remembers about its container. Gone when the container is. */
@@ -139,6 +149,7 @@ export class SandboxController {
   private readonly keepAliveIntervalMs: number;
   private readonly keepAliveTicks: number;
   private readonly processRoot: string;
+  private readonly launchGraceMs: number;
 
   constructor(private readonly options: SandboxControllerOptions) {
     this.container = options.container;
@@ -149,6 +160,7 @@ export class SandboxController {
       (options.maxKeepAliveMs ?? 6 * 60 * 60_000) / this.keepAliveIntervalMs,
     );
     this.processRoot = options.processRoot ?? "/var/lib/gitflare/processes";
+    this.launchGraceMs = options.launchGraceMs ?? 30_000;
   }
 
   /**
@@ -198,7 +210,14 @@ export class SandboxController {
     const state = this.requireRunning();
     const limit = timeLimit(options.timeoutSeconds);
     const argv = limit ? ["sh", "-c", EXEC_SCRIPT, "gitflare-exec", limit, ...command] : command;
-    const result = await this.run(argv, { cwd: options.cwd, env: this.env(state, options) });
+    const launched = await this.launch(command, argv, {
+      cwd: options.cwd,
+      env: this.env(state, options),
+    });
+    if ("notLaunched" in launched) {
+      return { exitCode: EXIT_NOT_LAUNCHED, stdout: "", stderr: launched.notLaunched };
+    }
+    const result = await this.collect(launched);
     // A killed command and a killed container both report 137: tell them apart
     // before anyone reads this as "the tests failed".
     if (result.exitCode !== 0 && !this.container.running) {
@@ -223,18 +242,23 @@ export class SandboxController {
     }
 
     const dir = `${this.processRoot}/${this.update((fresh) => fresh.nextProcess++)}`;
-    const process = await this.guard(() =>
-      this.container.exec(["sh", "-c", SPAWN_SCRIPT, "gitflare-spawn", dir, limit, ...command], {
-        cwd: options.cwd,
-        env: this.env(state, options),
-        stdout: "ignore",
-        stderr: "ignore",
-      }),
+    const spawnedAt = Date.now();
+    const launched = await this.launch(
+      command,
+      ["sh", "-c", SPAWN_SCRIPT, "gitflare-spawn", dir, limit, ...command],
+      { cwd: options.cwd, env: this.env(state, options), stdout: "ignore", stderr: "ignore" },
     );
+    if ("notLaunched" in launched) {
+      const { notLaunched } = launched;
+      this.update((fresh) => {
+        fresh.processes[name] = { dir, spawnedAt, exitCode: EXIT_NOT_LAUNCHED, notLaunched };
+      });
+      return;
+    }
     // Nobody awaits the launcher; without this a lost container is an unhandled rejection.
-    process.exitCode.catch(() => {});
+    launched.exitCode.catch(() => {});
     this.update((fresh) => {
-      fresh.processes[name] = { dir };
+      fresh.processes[name] = { dir, spawnedAt };
       fresh.keepAliveTicks = this.keepAliveTicks;
     });
     await this.options.scheduleKeepAlive(this.keepAliveIntervalMs);
@@ -252,6 +276,11 @@ export class SandboxController {
   async readLog(name: string, stream: "stdout" | "stderr", offset: number): Promise<LogChunk> {
     const record = this.requireRunning().processes[name];
     if (!record) return { text: "", nextOffset: offset };
+    if (record.notLaunched !== undefined) {
+      const text = stream === "stderr" ? record.notLaunched : "";
+      const bytes = new TextEncoder().encode(text).subarray(offset);
+      return { text: decoder.decode(bytes), nextOffset: offset + bytes.length };
+    }
     const file = `${record.dir}/${stream}.log`;
     const process = await this.guard(() =>
       this.container.exec(
@@ -408,11 +437,36 @@ export class SandboxController {
     }
   }
 
+  /**
+   * Starts a command a caller asked for. The runtime refuses one it cannot
+   * start (no such binary, no such `cwd`); while the container is still
+   * running that is the command's failure, not the sandbox's. `command` is
+   * what the caller asked for, `argv` what runs it.
+   */
+  private async launch(
+    command: string[],
+    argv: string[],
+    options: NonNullable<Parameters<ContainerLike["exec"]>[1]>,
+  ): Promise<ExecProcessLike | { notLaunched: string }> {
+    try {
+      return await this.container.exec(argv, options);
+    } catch (error) {
+      if (!this.container.running) {
+        throw new ForgeError("unavailable", `The sandbox was lost: ${describe(error)}`);
+      }
+      const where = options.cwd ? ` in ${options.cwd}` : "";
+      return { notLaunched: `Could not launch ${command[0]}${where}: ${describe(error)}\n` };
+    }
+  }
+
   private async run(
     command: string[],
     options?: { cwd?: string; env?: Record<string, string> },
   ): Promise<ExecResult> {
-    const process = await this.guard(() => this.container.exec(command, options));
+    return this.collect(await this.guard(() => this.container.exec(command, options)));
+  }
+
+  private async collect(process: ExecProcessLike): Promise<ExecResult> {
     const output = await this.guard(() => process.output());
     return {
       exitCode: output.exitCode,
@@ -426,10 +480,19 @@ export class SandboxController {
     const { stdout } = await this.run(["sh", "-c", STATUS_SCRIPT, "gitflare-status", record.dir]);
     const [word, code] = stdout.trim().split(" ");
     if (word === "running") return { state: "running" };
-    const exitCode = word === "exited" && code !== undefined ? Number.parseInt(code, 10) : KILLED;
+    // A launcher that has not recorded itself may just not have got that far yet.
+    if (word === "unstarted" && Date.now() - record.spawnedAt < this.launchGraceMs) {
+      return { state: "running" };
+    }
+    const exitCode =
+      word === "exited" && code !== undefined
+        ? Number.parseInt(code, 10)
+        : word === "unstarted"
+          ? EXIT_NOT_LAUNCHED
+          : KILLED;
     if (this.load()?.processes[name]?.dir === record.dir) {
       this.update((fresh) => {
-        fresh.processes[name] = { dir: record.dir, exitCode };
+        fresh.processes[name] = { ...record, exitCode };
       });
     }
     return { state: "exited", exitCode };
