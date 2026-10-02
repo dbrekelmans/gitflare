@@ -139,6 +139,11 @@ export class Box extends DurableObject<Env> {
 					return json(await this.background(body));
 				case "ci":
 					return json(await this.ci(body));
+				case "pipe-noread": {
+					// stdout is piped (the default) and nobody reads it; the request returns at once.
+					const process = await this.container.exec(["sh", "-c", body.cmd]);
+					return json({ pid: process.pid });
+				}
 				case "log":
 					return json(
 						this.ctx.storage.sql

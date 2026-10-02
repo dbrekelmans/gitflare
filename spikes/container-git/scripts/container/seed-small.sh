@@ -16,5 +16,8 @@ echo "remote: $(git remote get-url origin)"
 set +e
 git push -u origin main 2>&1; echo "push exit=$?"
 git ls-remote origin 2>&1; echo "ls-remote exit=$?"
-grep -ci 'art_v1\|authorization\|extraheader' .git/config || echo "no credential in .git/config"
-env | grep -ci 'art_v1' || echo "no token in env"
+# The token shape is art_v2_x_<40 hex>; a looser pattern also matches an sqlite symbol (…start_v2_strm).
+T='art_v[0-9]_[a-z_]*[0-9a-f]\{40\}'
+grep -ci "$T\|authorization\|extraheader" .git/config || echo "no credential in .git/config"
+env | grep -c "$T" || echo "no token in env"
+grep -rl "$T" /root /work /tmp /etc /var /usr 2>/dev/null | grep -c . || echo "no token in any file under /root /work /tmp /etc /var /usr"

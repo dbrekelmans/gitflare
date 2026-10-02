@@ -44,6 +44,7 @@ node -e 'require("fs").writeFileSync(".secrets.json", JSON.stringify({SPIKE_KEY:
 | `POST /box/<name>/exec` | Runs `cmd` (string = `sh -c`), buffered; `timeoutS`, `env`, `cwd`, `trust: false` (do not point TLS at the container CA only), `token: true` (pass the direct token as `$ARTIFACTS_TOKEN`) |
 | `POST /box/<name>/stream` | Same, streamed; each line is prefixed with the ms since `exec()` |
 | `POST /box/<name>/bg` | The documented background launcher: output to `<dir>/stdout.log`, exit code to `<dir>/exit-code` |
+| `POST /box/<name>/pipe-noread` | `exec()` with piped stdout that nothing reads; returns at once |
 | `POST /box/<name>/ci` | Steps run under `timeout`; each output line is inserted into the Durable Object's SQLite as it is read. `detach: true` returns the run id at once |
 | `GET /box/<name>/log?run=` · `/events` · `/state` | Log rows; start/monitor/alarm events; `running`, `inspect()`, `images` |
 | `POST /box/<name>/snapshot` · `/destroy` · `/signal` · `/timeout` · `/keepalive` | `snapshotContainer()`, `destroy()`, `signal()`, `setInactivityTimeout()`, an alarm every `everyMs` for `forMs` |
@@ -67,16 +68,37 @@ for t in '"lite"' '"basic"' '"standard-1"' '"standard-2"' '"standard-3"' '"stand
 done
 $c POST /box/q1a/stream '{"cmd":"for i in 1 2 3 4 5; do echo line $i; sleep 1; done; echo to-stderr >&2; exit 3"}'
 $c POST /box/q1a/bg '{"dir":"/var/lib/p/job1","cmd":"for i in $(seq 1 40); do echo tick $i; sleep 1; done; exit 5"}'
+# piped output read by the Durable Object after the request has returned: 30 s with a PIPE trap, then 200 s
+$c POST /box/q1a/ci '{"detach":true,"steps":[{"name":"loop","cmd":"trap \"echo got-sigpipe >> /tmp/sig\" PIPE; for i in $(seq 1 30); do echo piped $i; echo $i > /tmp/piped-progress; sleep 1; done"}]}'
+$c POST /box/q1a/exec '{"cmd":"cat /tmp/piped-progress; cat /tmp/sig; cat /var/lib/p/job1/exit-code"}'   # 40 s later
+$c POST /box/q1b/start '{"image":"managed"}'
 $c POST /box/q1b/ci '{"detach":true,"steps":[{"name":"loop","cmd":"for i in $(seq 1 200); do echo piped $i; sleep 1; done"}]}'
+$c GET '/box/q1b/log?run=<run>'
 # keep-alive: a heartbeat process reports through an HTTP intercept to Recorder every 5 s; then leave Box alone
 HB='{"dir":"/var/lib/p/hb","cmd":"node -e \"let n=0; setInterval(()=>fetch(\\\"http://hb.spike/hb?n=\\\"+(n++)).catch(()=>{}),5000)\""}'
 $c POST /box/n1/start '{"image":"managed","heartbeat":true,"monitor":false}';                      $c POST /box/n1/bg "$HB"
 $c POST /box/n2/start '{"image":"managed","heartbeat":true,"monitor":false,"inactivityMs":120000}'; $c POST /box/n2/bg "$HB"
 $c POST /box/n3/start '{"image":"managed","heartbeat":true,"monitor":false,"inactivityMs":60000}';  $c POST /box/n3/bg "$HB"
 $c POST /box/n3/keepalive '{"everyMs":30000,"forMs":300000}'
-$c POST /box/k1/start '{"image":"managed","heartbeat":true}'; $c POST /box/k1/bg "$HB"   # with a pending monitor()
-# ...wait, then read the heartbeats without touching Box:
-$c GET /notes/n1
+$c POST /box/n4/start '{"image":"managed","monitor":false,"inactivityMs":120000}'                   # no network traffic at all
+$c POST /box/n4/bg '{"dir":"/var/lib/p/w","cmd":"while true; do date +%s; sleep 5; done"}'
+# the same four with a pending monitor() (the default of /start):
+$c POST /box/k1/start '{"image":"managed","heartbeat":true}';                       $c POST /box/k1/bg "$HB"
+$c POST /box/k2/start '{"image":"managed","heartbeat":true,"inactivityMs":120000}'; $c POST /box/k2/bg "$HB"
+$c POST /box/k3/start '{"image":"managed","heartbeat":true,"inactivityMs":60000}';  $c POST /box/k3/bg "$HB"
+$c POST /box/k3/keepalive '{"everyMs":30000,"forMs":360000}'
+# ...wait, then read the heartbeats without touching Box (in the first round k1–k3 each got one /state request at 766 s):
+for b in n1 n2 n3 k1 k2 k3; do $c GET /notes/$b; done
+$c GET /box/n4/state; $c GET /box/k1/events          # afterwards: running=false, and no monitor event
+
+# a deploy while a container runs: start a file-backed job and an open stream, deploy, look again
+$c POST /box/forge2/bg '{"dir":"/var/lib/p/deploy","cmd":"for i in $(seq 1 90); do echo tick $i $(date +%s); sleep 1; done"}'
+$c POST /box/forge2/stream '{"cmd":"for i in $(seq 1 60); do echo line $i; sleep 1; done"}' &
+npx wrangler deploy --secrets-file .secrets.json
+$c GET /box/forge2/state; $c POST /box/forge2/exec '{"cmd":"tail -1 /var/lib/p/deploy/stdout.log"}'; $c GET /box/forge2/events
+
+# custom image start times (after the deploy with "images")
+for i in 1 2 3; do $c POST /box/img$i/start '{"image":"git","instance":"standard-1"}'; done
 
 # git without Docker: install it in the managed image, snapshot, restore offline everywhere else
 $c POST /box/builder/start '{"image":"managed","enableInternet":true,"instance":"standard-1"}'
@@ -102,8 +124,13 @@ $c POST /artifacts/create '{"name":"gitflare-spike-c-big"}'
 $c POST /box/loader/start "{\"snapshot\":{\"id\":\"$GIT\"},\"instance\":\"standard-2\",\"enableInternet\":true,\"gateway\":{\"repos\":[\"gitflare-spike-c-big\"],\"allowPush\":true}}"
 scripts/run.sh loader scripts/container/load-big.sh
 $c POST /artifacts/fork '{"name":"gitflare-spike-c-big","to":"gitflare-spike-c-big-fork"}'
-EXTRA_ENV='{"REPO":"gitflare-spike-c-big"}' scripts/run.sh sess2 scripts/container/session-change.sh      # box started like `sess`, for the big fork
-EXTRA_ENV='{"REPO":"gitflare-spike-c-big"}' scripts/run.sh forge2 scripts/container/clone-variants.sh    # box started like `forge`, for big + big-fork
+S="\"snapshot\":{\"id\":\"$GIT\"},\"inactivityMs\":900000"
+BOTH='"gateway":{"repos":["gitflare-spike-c-big","gitflare-spike-c-big-fork"],"allowPush":true}'
+$c POST /box/sess2/start "{$S,\"instance\":\"standard-1\",\"gateway\":{\"repos\":[\"gitflare-spike-c-big-fork\"],\"allowPush\":true}}"
+$c POST /box/forge2/start "{$S,\"instance\":\"standard-1\",$BOTH}"
+$c POST /box/forgelite/start "{$S,\"instance\":\"lite\",\"gateway\":{\"repos\":[\"gitflare-spike-c-big\",\"gitflare-spike-c-big-fork\"],\"allowPush\":false}}"
+EXTRA_ENV='{"REPO":"gitflare-spike-c-big"}' scripts/run.sh sess2 scripts/container/session-change.sh
+EXTRA_ENV='{"REPO":"gitflare-spike-c-big"}' scripts/run.sh forge2 scripts/container/clone-variants.sh
 EXTRA_ENV='{"REPO":"gitflare-spike-c-big"}' scripts/run.sh forge2 scripts/container/forge-merge.sh
 EXTRA_ENV='{"REPO":"gitflare-spike-c-big","NOPUSH":"1"}' scripts/run.sh forgelite scripts/container/forge-merge.sh   # same on "lite"
 
@@ -118,17 +145,30 @@ $c GET '/box/ci/log?run=<run>'
 $c POST /box/ci/ci '{"steps":[{"name":"hang","timeoutS":3,"cmd":"(sleep 77 &) ; sleep 60"}]}'            # timeout
 LONG='{"steps":[{"name":"long","cmd":"for i in $(seq 1 100); do echo working $i; sleep 1; done"}]}'
 (sleep 4; $c POST /box/ci/destroy '{}') & $c POST /box/ci/ci "$LONG"; wait                                 # destroyed mid-step
+$c POST /box/ci5/start "{\"snapshot\":{\"id\":\"$GIT\"},\"instance\":\"standard-1\",\"inactivityMs\":300000}"
 (sleep 4; $c POST /box/ci5/signal '{"signo":9}') & $c POST /box/ci5/ci "$LONG"; wait                       # main process killed mid-step
-$c POST /box/ci3/ci '{"steps":[{"name":"oom","cmd":"node -e \"const a=[];for(;;)a.push(Buffer.alloc(50e6,1))\""}]}'   # on "lite"
+$c GET /box/ci5/events; $c GET /box/ci5/state
+# out of memory: see "Round 2" (the first round's capture of this test was overwritten and is not used)
 
 # 5. snapshot and restore of a workspace
 $c POST /box/snap/start "{\"snapshot\":{\"id\":\"$GIT\"},\"instance\":\"standard-2\",\"enableInternet\":true,\"gateway\":{\"repos\":[\"gitflare-spike-c-big\"]}}"
 scripts/run.sh snap scripts/container/workspace.sh
 $c POST /box/snap/snapshot '{"name":"gitflare-spike-c-workspace2"}'           # -> $WS
-$c POST /box/rest1/start "{\"snapshot\":{\"id\":\"$WS\"},\"instance\":\"standard-2\"}"
+$c POST /box/snap/snapshot '{"name":"gitflare-spike-c-workspace3"}'           # again, nothing changed -> $WS3
+$c POST /box/snap/destroy '{}'
+$c POST /box/rest1/start "{\"snapshot\":{\"id\":\"$WS\"},\"instance\":\"standard-2\"}"            # first restore
 scripts/run.sh rest1 scripts/container/workspace-check.sh
+$c POST /box/rest2/start "{\"snapshot\":{\"id\":\"$WS3\"},\"instance\":\"standard-1\"}"           # the 141-byte snapshot
+$c POST /box/rest3/start "{\"snapshot\":{\"id\":\"$WS\"},\"instance\":\"lite\"}"                  # another instance type
+$c POST /box/rest1/destroy '{}'; $c POST /box/rest1/start "{\"snapshot\":{\"id\":\"$WS\"},\"instance\":\"standard-2\"}"   # warm
+$c POST /box/rest4/start '{"snapshot":{"id":"00000000-0000-4000-8000-000000000000"}}'; $c GET /box/rest4/events
+$c POST /box/rest1/exec '{"cmd":"for p in /proc/[0-9]*; do echo \"$(cat $p/comm) $(tr \"\\\\0\" \" \" < $p/cmdline)\"; done | grep ^sleep"}'   # which processes survived
 
-# 6. Claude Code, model traffic through the AI binding (needs a gateway named gitflare-spike-c-gw and Unified Billing credits)
+# 6. Claude Code, model traffic through the AI binding (needs Unified Billing credits or a stored Anthropic key).
+# The gateway was created through the REST API (the Wrangler login has no AI Gateway scope):
+#   POST /accounts/<account-id>/ai-gateway/gateways
+#   {"id":"gitflare-spike-c-gw","authentication":true,"collect_logs":true,"cache_ttl":null,"cache_invalidate_on_update":false,
+#    "rate_limiting_interval":60,"rate_limiting_limit":20,"rate_limiting_technique":"fixed"}
 $c POST /box/agentbuild/start "{\"snapshot\":{\"id\":\"$GIT\"},\"instance\":\"standard-1\",\"enableInternet\":true}"
 $c POST /box/agentbuild/exec '{"trust":false,"cmd":"npm install --global @anthropic-ai/claude-code@2.1.280"}'
 $c POST /box/agentbuild/snapshot '{"name":"gitflare-spike-c-agent"}'          # -> $AGENT
@@ -137,6 +177,61 @@ $c POST /box/agent/start "{\"snapshot\":{\"id\":\"$AGENT\"},\"instance\":\"stand
 #   ANTHROPIC_API_KEY=provided-by-worker, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1, IS_SANDBOX=1:
 #   claude --print --output-format stream-json --verbose --dangerously-skip-permissions --no-session-persistence \
 #     --model claude-haiku-4-5-20251001 --max-turns 2 -- "Reply with the single word: pong"
+```
+
+## Round 2
+
+Run after review, with the Dockerfile image (`"image":"git"`) instead of the git snapshot. The namespace had been deleted, and `create()` no longer recreates it implicitly, so first: `POST /accounts/<account-id>/artifacts/namespaces {"namespace":"gitflare-spike-c-ns"}`.
+
+```sh
+c=scripts/call.sh; G='"image":"git"'
+
+# piped stdout that nobody reads, with and without a PIPE trap
+$c POST /box/pn/start "{$G,\"monitor\":false,\"inactivityMs\":900000}"
+$c POST /box/pn/pipe-noread '{"cmd":"trap \"echo got-sigpipe-at-$(date +%s) >> /tmp/sig\" PIPE; i=0; while [ $i -lt 600 ]; do i=$((i+1)); echo line $i || echo write-failed-$i >> /tmp/sig; echo $i > /tmp/progress; sleep 1; done; echo finished > /tmp/done"}'
+$c POST /box/pn/exec '{"cmd":"cat /tmp/progress; wc -l < /tmp/sig; head -4 /tmp/sig"}'                       # 20 s later
+$c POST /box/pn2/start "{$G,\"monitor\":false,\"inactivityMs\":300000}"
+$c POST /box/pn2/pipe-noread '{"cmd":"i=0; while [ $i -lt 600 ]; do i=$((i+1)); echo $i > /tmp/progress; echo line $i; sleep 1; done"}'
+$c POST /box/pn2/exec '{"cmd":"cat /tmp/progress; sleep 5; cat /tmp/progress"}'                              # 15 s later
+# piped stdout the Durable Object keeps reading for 20 minutes, no monitor(), no other requests until it is over
+$c POST /box/p20/start "{$G,\"monitor\":false,\"inactivityMs\":1800000}"
+$c POST /box/p20/ci '{"detach":true,"steps":[{"name":"loop","timeoutS":1500,"cmd":"for i in $(seq 1 240); do echo piped $i; sleep 5; done"}]}'
+$c GET '/box/p20/log?run=<run>'; $c GET /box/p20/events                                                       # after 21 minutes
+
+# out of memory
+OOM='{"steps":[{"name":"oom","timeoutS":120,"cmd":"node -e \"const a=[];for(let i=0;;i++){a.push(Buffer.alloc(50e6,1));console.log(i*50,String.fromCharCode(77,66))}\""},{"name":"after","cmd":"echo next step"}]}'
+$c POST /box/oom/start "{$G,\"instance\":\"lite\",\"inactivityMs\":300000}"
+$c POST /box/oom/exec '{"cmd":"cat /proc/uptime; touch /marker"}'
+$c POST /box/oom/ci "$OOM"; $c POST /box/oom/ci "$OOM"
+$c POST /box/oom/exec '{"cmd":"cat /proc/uptime; ls /marker"}'; $c GET /box/oom/state; $c GET /box/oom/events
+$c POST /box/oom1/start "{$G,\"instance\":\"standard-1\",\"inactivityMs\":300000}"; $c POST /box/oom1/ci "$OOM"
+
+# a 33 MB push with Internet off: clone with Internet on, snapshot, restore offline, push
+$c POST /artifacts/create '{"name":"gitflare-spike-c-big"}'
+$c POST /box/src/start "{$G,\"instance\":\"standard-2\",\"enableInternet\":true}"
+$c POST /box/src/exec '{"trust":false,"cmd":"mkdir -p /work && git clone -q --single-branch --branch main https://github.com/vuejs/core.git /work/big && cd /work/big && git gc -q"}'
+$c POST /box/src/snapshot '{"name":"gitflare-spike-c-bigsrc"}'                # -> $SRC
+$c POST /box/offpush/start "{\"snapshot\":{\"id\":\"$SRC\"},\"instance\":\"standard-2\",\"enableInternet\":false,\"gateway\":{\"repos\":[\"gitflare-spike-c-big\"],\"allowPush\":true}}"
+scripts/run.sh offpush scripts/container/load-big-offline.sh; $c GET /notes/offpush
+
+# the shallow merge end to end, three cold runs
+$c POST /artifacts/fork '{"name":"gitflare-spike-c-big","to":"gitflare-spike-c-big-fork"}'
+$c POST /box/s2/start "{$G,\"instance\":\"standard-1\",\"gateway\":{\"repos\":[\"gitflare-spike-c-big-fork\"],\"allowPush\":true}}"
+EXTRA_ENV='{"REPO":"gitflare-spike-c-big"}' scripts/run.sh s2 scripts/container/session-change.sh
+for i in 1 2 3; do
+  $c POST /box/fs$i/start "{$G,\"instance\":\"standard-1\",\"gateway\":{\"repos\":[\"gitflare-spike-c-big\",\"gitflare-spike-c-big-fork\"],\"allowPush\":true}}"
+  EXTRA_ENV="{\"REPO\":\"gitflare-spike-c-big\",\"TARGET\":\"merged-$i\"}" scripts/run.sh fs$i scripts/container/forge-shallow.sh
+done
+
+# full clone twice through the gateway (Internet off) and twice direct (Internet on, read token); the loop is
+#   for i in 1 2; do rm -rf /work/c; git [-c http.extraHeader="Authorization: Bearer $ARTIFACTS_TOKEN"] clone -q <remote> /work/c; done
+$c POST /box/cmpg/start "{$G,\"instance\":\"standard-1\",\"gateway\":{\"repos\":[\"gitflare-spike-c-big\"]}}"
+$c POST /box/cmpd/start "{$G,\"instance\":\"standard-1\",\"enableInternet\":true,\"directToken\":{\"repo\":\"gitflare-spike-c-big\",\"scope\":\"read\",\"ttl\":600}}"
+
+# the corrected "is the token anywhere in the container" check
+$c POST /artifacts/create '{"name":"gitflare-spike-c-small"}'
+$c POST /box/seed/start "{$G,\"instance\":\"standard-1\",\"gateway\":{\"repos\":[\"gitflare-spike-c-small\"],\"allowPush\":true}}"
+scripts/run.sh seed scripts/container/seed-small.sh
 ```
 
 ## Clean up

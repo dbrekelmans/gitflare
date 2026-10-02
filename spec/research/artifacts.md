@@ -15,7 +15,7 @@ Sources were read directly: the Artifacts docs as markdown (`developers.cloudfla
 - **The binding reads content now** (`readFile`, `readBlob`, `readTree`, `readCommit`, `log`), so a file browser and commit list need neither REST nor a container. Still absent everywhere: diff, compare, merge, ref/branch listing, search, and any write to repo contents.
 - **`fork()` copies only the default branch by default** (`defaultBranchOnly` defaults to `true`) and takes no target namespace. A fork is an independent repo: there is no sync or merge-back API, only git with two remotes.
 - **Jurisdiction must be set by explicitly creating the namespace before the first repo exists.** Creating a repo in an unknown namespace creates that namespace implicitly and unrestricted. The only documented way to pass a jurisdiction is the REST call; Wrangler has no `namespaces create` command, and the dashboard can create namespaces but whether it offers a jurisdiction there is undocumented.
-- **Partial clone works for `blob:none`, but shallow is what to use.** The git protocol page lists `filter` among unsupported capabilities, while the ArtifactFS page says it starts with a blobless clone of an Artifacts remote. Observed 2026-10-02 (`spec/research/live/container-git.md`): protocol v2 advertises `fetch=shallow filter sideband-all`; `--filter=blob:none` works, `--filter=tree:0` returns HTTP 400. On a 33 MB, 7,198-commit repository a full clone took ~60 s, blobless 26.5 s and `--depth=1` 1.9 s, so plan on shallow fetches.
+- **Partial clone works for `blob:none`, but shallow is what to use.** The git protocol page lists `filter` among unsupported capabilities, while the ArtifactFS page says it starts with a blobless clone of an Artifacts remote. Observed 2026-10-02 (`spec/research/live/container-git.md`): protocol v2 advertises `fetch=shallow filter sideband-all`; `--filter=blob:none` works, `--filter=tree:0` returns HTTP 400. On a 7,198-commit repository with a 33 MB pack a full clone took 38–62 s (six runs), blobless 26.5 s (one run) and `--depth=1` 1.0–1.9 s (five runs), so plan on shallow fetches.
 
 ## Verified facts
 
@@ -475,7 +475,7 @@ curl --request POST \
   }'
 ```
 
-- Wrangler has `artifacts namespaces list` and `get` only; namespaces can also be created in the dashboard (Storage & databases > Artifacts). Observed 2026-10-02: `DELETE /artifacts/namespaces/:namespace` on an empty namespace returned `204` and removed it, although the route is not in the documented list.
+- Wrangler has `artifacts namespaces list` and `get` only; namespaces can also be created in the dashboard (Storage & databases > Artifacts). Observed 2026-10-02: `DELETE /artifacts/namespaces/:namespace` on an empty namespace returned `204` and removed it, although the route is not in the documented list. Afterwards `create()` through a binding on that namespace failed with `Namespace is not active` until the namespace was created again with `POST /artifacts/namespaces`: implicit creation does not apply to a deleted name.
 
 | Limit | Value |
 | --- | --- |

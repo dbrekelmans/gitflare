@@ -2,21 +2,21 @@
 
 Observed 2026-10-02 on a live account.
 
-Everything below was run against a Workers Paid account with `wrangler@4.147.0`, compatibility date `2026-10-01`, a Durable Object of our own driving `ctx.container` under the `durable_object` scheduling policy. The code and the exact commands are in `spikes/container-git/` (routes in its README; container-side scripts in `scripts/container/`). Output is verbatim, trimmed; `<account-id>`, `<host>` (the Artifacts git host) and `<cf-registry-id>` replace identifiers. Timings are single runs unless a range is given: read them as orders of magnitude.
+Everything below was run against a Workers Paid account with `wrangler@4.147.0`, compatibility date `2026-10-01`, a Durable Object of our own driving `ctx.container` under the `durable_object` scheduling policy. The code and the exact commands are in `spikes/container-git/` (routes in its README; container-side scripts in `scripts/container/`). Output is verbatim, trimmed; `<account-id>`, `<host>` (the Artifacts git host) and `<cf-registry-id>` replace identifiers. Timings are single runs unless a count or a range is given: read them as orders of magnitude, and read any ratio between two single runs as rough. A second round on the same day re-ran the points a reviewer found unsupported; those are marked "round 2" and used the Dockerfile image with git instead of the snapshot.
 
 Each section ends with a verdict: `works`, `fails`, `partial` or `not tested`.
 
 ## What this changes
 
-1. **git through the egress gateway works end to end, so no credential needs to enter a container.** With Internet access off and `interceptOutboundHttps` on the Artifacts host, `clone`, `fetch` of a fork, `merge` and `push` all succeeded, including a 33 MB chunked `git-receive-pack` body. The short-lived-token fallback in `spec/research/sandbox-ci.md` is not needed. The gateway also enforced per-repository scope: a session container could not push to the parent.
-2. **Never do a full clone of an Artifacts repository on a request path; shallow is 30× faster.** A 7,198-commit, 33 MB repository took 59–62 s to clone in full (24 s before Artifacts sent the first byte) and 1.9 s with `--depth=1`. Fetching a one-commit fork branch into a full clone took 19.5 s; into a shallow clone with `--depth=2`, 1.0 s. Diff with rename detection and merge are 5–60 ms either way. Diff and merge can live in a container: start (0.5 s) + shallow clone (2 s) + fork fetch (1 s) + merge and push (0.4 s) is about 4 s cold for a 50 MB repository.
+1. **git through the egress gateway works end to end, so no credential needs to enter a container.** With Internet access off and `interceptOutboundHttps` on the Artifacts host, `clone`, `fetch` of a fork, `merge` and `push` all succeeded. A 33 MB chunked `git-receive-pack` body went through twice: once from a container with Internet access on, and once (round 2) from one with it off. The short-lived-token fallback in `spec/research/sandbox-ci.md` is not needed. The gateway also enforced per-repository scope: a session container could not push to the parent.
+2. **Never do a full clone of an Artifacts repository on a request path; use depth-limited fetches.** A 7,198-commit repository with a 33 MB pack took 38–62 s to clone in full (six runs) and 1.0–1.9 s with `--depth=1` (five runs). Fetching a one-commit fork branch into a full clone took 19.5 s (one run); into a shallow clone with `--depth=2`, 0.9–1.2 s (four runs). Diff with rename detection and merge are 5–72 ms either way. Diff and merge can live in a container: three cold runs of the whole shallow path on that repository — new Durable Object, start, shallow clone, shallow fork fetch, diff, merge, push — took 3.7, 5.0 and 5.4 s by the client's clock (2.3–3.6 s of it inside the container).
 3. **The deployer does not need Docker.** A Worker that uses only the managed image deploys with Docker absent. The managed image has no git, but installing it once in a container with Internet access and taking a snapshot gives an image every other Durable Object can start offline in ~0.5 s. A Dockerfile image still needs Docker at deploy (`wrangler deploy` fails without it).
 4. **Snapshots are incremental, listable and deletable.** Sizes are deltas (a second snapshot with nothing changed was 141 bytes). They appear in the account's managed registry under `cloudchamber-snapshots/<base image digest>` and `wrangler containers images delete` removes them. The note's "cannot be listed or deleted" holds only for the Worker API.
-5. **A container stops ~10–15 s after its Durable Object goes idle unless an inactivity timeout is set; traffic through an intercept does not count as activity; a pending `monitor()` does, for up to 15 minutes.** The alarm-based keep-alive in the research note is needed and works.
-6. **Live CI logs are straightforward.** Output lines reach the Durable Object ~45 ms after the container prints them, a second client polling SQLite sees them as they arrive, and a piped process kept running for 200 s after the request that started it had returned, as long as the Durable Object kept reading. The "piped output is killed with SIGPIPE when the request ends" constraint did not reproduce.
+5. **A container stops seconds after its Durable Object goes idle unless an inactivity timeout is set (9–14 s in the one run measured); traffic through an intercept does not count as activity; a pending `monitor()` does, for up to 15 minutes.** The alarm-based keep-alive in the research note is needed and works.
+6. **Live CI logs are straightforward, as long as something keeps reading.** In one run, five lines reached the Durable Object 42–47 ms after the container printed them, and a second client polling SQLite saw rows arrive second by second. A piped process whose output the Durable Object keeps reading under `ctx.waitUntil()` survives the end of the request that started it (200 s with a `monitor()` pending; 25 minutes without one, twice), but one of three long runs lost its reader after 12 minutes with no error and no record, so a run must not depend on it. A piped process that nobody reads is killed by `SIGPIPE` about 11 s after that request ends, as the docs say (round 2).
 7. **Pointing every TLS client at the container CA alone hangs tools silently when only some hostnames are intercepted.** `pnpm install` sat for ten minutes with no output and no error. Use the CA-only variables only with a `*` intercept; otherwise leave the system trust store in place.
-8. **`fork()` and `import()` are slow or unreliable at 33 MB.** `fork()` of the 33 MB repository returned after 41 s (3.4 s for a tiny one). `import()` of the same repository from GitHub failed twice with `UPSTREAM_UNAVAILABLE` after 66 s. A change opening or a repository being imported cannot be a synchronous request.
-9. **A coding agent's model traffic needs no AI Gateway token at all**: the gateway entrypoint forwarded Claude Code's request through the Worker's AI binding. The run stopped at the provider credential (`402 Insufficient wholesale credits`), so the model call itself is unproven.
+8. **`fork()` and `import()` are slow or unreliable at 33 MB.** `fork()` of the 33 MB repository returned after 41 s and a tiny one after 3.4 s (one run each). `import()` of the same repository from GitHub failed twice with `UPSTREAM_UNAVAILABLE` after 66 s. A change opening or a repository being imported cannot be a synchronous request.
+9. **A coding agent's model traffic may not need an AI Gateway token, but that is not proven.** The gateway entrypoint forwarded Claude Code's request through the Worker's AI binding with no `cf-aig-authorization` token, and an authenticated gateway answered `402 Insufficient wholesale credits` rather than an authentication error. No model call succeeded, so whether the binding alone is enough for a served request is an inference from that error, not an observation.
 
 ## 1. Driving a container from a Durable Object
 
@@ -66,7 +66,7 @@ One Durable Object failed to start three times over two minutes (first start of 
 
 Here `monitor()` rejected 21 s after `start()` and the first `exec()` 50 s after.
 
-Verdict: **works**. The 648 ms median in the research note is conservative for a first start; a restart of the same object costs about a second more. Starts can fail for minutes on a single object, so the sandbox port needs a retry with a different object name or a visible "could not start" state.
+Verdict: **works**. Every first start of the managed image measured here (about 20) was below the 648 ms median quoted in the research note; that benchmark launches 100 at once and measures from the client, so the two are not the same measurement. The three restarts of the same object straight after `destroy()` took about a second longer. Starts can fail for minutes on a single object, so the sandbox port needs a retry with a different object name or a visible "could not start" state.
 
 ### Instance types
 
@@ -126,9 +126,37 @@ POST /box/q1b/ci {"detach":true,"steps":[{"name":"loop","cmd":"for i in $(seq 1 
 later: q1b rows 201 [… "line":"piped 200"},{… "line":"{\"name\":\"loop\",\"exitCode\":0,\"ms\":200370}"}]
 ```
 
-A shorter run with `trap … PIPE` in the script recorded no `SIGPIPE`. In both runs a `monitor()` promise was also pending.
+A 30 s run of the same kind with `trap "echo got-sigpipe >> /tmp/sig" PIPE` in the script left no `/tmp/sig` and all 30 lines in SQLite. In both runs a `monitor()` promise was also pending, which by itself keeps the Durable Object in memory for up to 15 minutes.
 
-Verdict: **works**, both ways. The research note's "a process with piped stdout receives `SIGPIPE` once the request that started it ends" did not happen while the Durable Object kept reading the stream. Files remain the right choice for anything that must survive a Durable Object restart (a deploy cut an open stream about 45 s later with `Network connection lost`, while the container and a file-backed job carried on).
+Round 2 ran the two cases those runs left open.
+
+The docs' case — stdout piped, the request returns, and nobody reads the stream (`POST /box/pn/pipe-noread`, no `monitor()`). With a `PIPE` trap that records each failed write:
+
+```txt
+20 s later: progress=21 sig=got-sigpipe-… write-failed-21
+detail:     sig-lines=38;  first entries: got-sigpipe-…, write-failed-12, got-sigpipe-…, write-failed-13 …
+```
+
+and without a trap, where the default action applies (`pn2`):
+
+```txt
+15 s later: progress=12;  processes matching the loop: 0;  5 s later: progress-5s-later=12
+```
+
+Writes 1–11 succeeded and the 12th failed: the pipe closed about 11 s after the request ended, and without a trap the process died there.
+
+Reading for longer than the 15 minutes a `monitor()` can hold the Durable Object, with no `monitor()` at all (round 2; a loop printing a line every 5 s, inactivity timeout 30 minutes, the reader under `ctx.waitUntil()`):
+
+```txt
+p20 (20 min loop)                     out-lines 145 of 240, span_s 720, no step result, no ci-finished event
+                                      at collection: a fresh Durable Object instance (constructed running=true), 0 loop processes left
+p21 (25 min loop, nothing else)       out-lines 300, span_s 1496, meta {"name":"loop","exitCode":0,"ms":1500558}, ci-finished recorded
+p22 (25 min loop + alarm every 30 s)  out-lines 300, span_s 1496, meta {"name":"loop","exitCode":0,"ms":1500629}, 52 alarms
+```
+
+p21 and p22 ran with no request of any kind to the Worker until they were collected. p20 lost its reader 720 s in: the Durable Object instance was gone without having recorded anything, and the process was dead by the time anyone looked. The last line it stored coincides, to within the seconds the timestamps allow, with three unrelated requests to the same Worker (Artifacts repository deletions, not addressed to that Durable Object). Whether that is cause or coincidence was not established.
+
+Verdict: **works**, both ways, with the docs' constraint confirmed: a piped process is killed by `SIGPIPE` roughly 11 s after its request ends when nothing reads its output (two runs), and it is not killed while the Durable Object keeps reading under `ctx.waitUntil()` (30 s and 200 s with a `monitor()` pending; 25 minutes without one, in two of three runs). The third run shows the reader can disappear silently, taking the process with it. For the runner that means: output to files, the exit code to a file, and an alarm that notices a step with no reader — the piped stream is a way to get lines early, not the record of the run. Files remain the right choice for anything that must survive a Durable Object restart (a deploy cut an open stream about 45 s later with `Network connection lost`, while the container and a file-backed job carried on).
 
 ### What keeps the container alive
 
@@ -146,11 +174,11 @@ Run: a process in the container reports every 5 s through `interceptOutboundHttp
 
 When the platform stopped a container this way, nothing ran in the Durable Object: its event log shows no `monitor()` outcome, only a fresh `constructed running=false` at the next request. A later `exec()` fails with `Error: exec() cannot be called on a container that is not running.`
 
-The k boxes each received one `state` request 766 s after starting, by which point all three had already outlived their timeouts many times over; their stop times line up with the 15-minute mark plus the timeout, not with that request.
+The k boxes each received one `state` request 766 s after starting, by which point all three had already outlived their timeouts many times over; their stop times line up with the 15-minute mark plus the timeout, not with that request. That request is known from the session log only (its output, `now` 1790959922 against starts at 1790959156–58, was not saved to a capture file).
 
 A deploy while a container was running: the open stream ended about 45 s later, the next request constructed a new Durable Object instance with `running=true`, and the container, its files and its background job were intact.
 
-Verdict: **works** as the research note describes, with three additions: (a) without a timeout the container is gone within ~15 s; (b) the container's own traffic through an intercept is not activity; (c) a pending `monitor()` holds the Durable Object, and so the container, for up to 15 minutes regardless of the timeout — convenient for short jobs, and a source of surprise bills if relied on by accident. Keep-alive stays an explicit alarm.
+Verdict: **works** as the research note describes, with three additions: (a) without a timeout the container was gone 9–14 s after the last request (one run, n1); (b) the container's own traffic through an intercept is not activity; (c) a pending `monitor()` holds the Durable Object, and so the container, for up to 15 minutes regardless of the timeout — convenient for short jobs, and a source of surprise bills if relied on by accident. Keep-alive stays an explicit alarm.
 
 ## 2. git against Artifacts with the token outside the container
 
@@ -168,7 +196,10 @@ push exit=0
 ls-remote exit=0
 no credential in .git/config
 no token in env
+no token in any file under /root /work /tmp /etc /var /usr
 ```
+
+The last three lines are from round 2. In the first round the script searched for `art_v1`, which cannot match a real token (`art_v2_x_…`), so its "no token" lines proved nothing; the search now uses the token's shape (`art_v[0-9]_[a-z_]*<40 hex>`) over the environment, `.git/config` and the filesystem, in a container that had just cloned through a gateway holding a write token.
 
 A session container holding a write token for its fork only (`session-change.sh`):
 
@@ -210,7 +241,7 @@ GET gitflare-spike-c-small.git/info/refs?service=git-receive-pack proto=null -> 
 POST gitflare-spike-c-small.git/git-receive-pack proto=null reqLen=843 -> 200 150ms
 ```
 
-Large request bodies: pushing a 33 MB pack (7,198 commits) through the gateway, from a container with Internet access on and the intercept still in place:
+Large request bodies: pushing a 33 MB pack (7,198 commits) through the gateway. First round, from a container with Internet access **on** (it had just cloned the repository from GitHub) and the intercept in place:
 
 ```txt
 TIME 91062 ms exit=0 :: git push -q artifacts main
@@ -218,9 +249,20 @@ POST gitflare-spike-c-big.git/git-receive-pack proto=null reqLen=4 te=null -> 20
 POST gitflare-spike-c-big.git/git-receive-pack proto=null reqLen=null te=chunked -> 200 90385ms
 ```
 
-Verdict: **works** — clone, fetch of a fork, merge and push, with TLS trusted through `GIT_SSL_CAINFO`, smart-HTTP bodies passed through unmodified (`new Request(request, { headers })`), and a chunked 33 MB upload streamed without buffering in the Worker. A Worker `fetch()` to `*.artifacts.cloudflare.net` in the same account behaves like any client. The intercept also works with `enableInternet: true`, where only the intercepted host is rerouted.
+Round 2, with Internet access **off**: the clone was made in an Internet-on container, saved as a snapshot, and restored with `enableInternet: false` (`load-big-offline.sh`):
 
-Design consequences: the token-in-container fallback is not needed. The gateway is also where repository scope is enforced, which Artifacts tokens alone cannot express per container. The 91 s is unattributed: no direct push of the same pack was run for comparison.
+```txt
+start options: {"enableInternet":false,"entrypoint":["sleep","infinity"],"containerSnapshot":"…","instance":"standard-2"}
+size: pack=33M commits=7198
+Internet: fatal: unable to access 'https://github.com/vuejs/core.git/': Could not resolve host: github.com
+TIME 90423 ms exit=0 :: git push -q artifacts main
+POST gitflare-spike-c-big.git/git-receive-pack proto=null reqLen=4 te=null -> 200 123ms
+POST gitflare-spike-c-big.git/git-receive-pack proto=null reqLen=null te=chunked -> 200 89139ms
+```
+
+Verdict: **works** — clone, fetch of a fork, merge and push, with TLS trusted through `GIT_SSL_CAINFO`, smart-HTTP bodies passed through unmodified (`new Request(request, { headers })`), and a chunked 33 MB upload passed through the Worker with Internet off and on (the entrypoint hands the request body to `fetch()` and never reads it). A Worker `fetch()` to `*.artifacts.cloudflare.net` in the same account behaves like any client. The intercept also works with `enableInternet: true`, where only the intercepted host is rerouted.
+
+Design consequences: the token-in-container fallback is not needed. The gateway is also where repository scope is enforced, which Artifacts tokens alone cannot express per container. The ~90 s of the large push (two runs) is unattributed: no direct push of the same pack was run for comparison.
 
 ### The fallback, for comparison
 
@@ -240,36 +282,52 @@ remote: Insufficient permissions
 fatal: unable to access '…/gitflare-spike-c-big.git/': The requested URL returned error: 403
 ```
 
-Verdict: **works**, and is not needed. Exposure if it were used: any process in the container can read the token (this test printed it into its own log, which is how its real shape was learned) and use it from anywhere until it expires; it is limited to one repository and to its scope. Through the gateway a full clone took 59–62 s against 39 s direct, and a shallow clone 1.9 s against 1.6 s — one run each, so the gateway's overhead on large transfers is somewhere between nothing and a third.
+Verdict: **works**, and is not needed. Exposure if it were used: any process in the container can read the token (this test printed it into its own log, which is how its real shape was learned) and use it from anywhere until it expires; it is limited to one repository and to its scope. On overhead: in the first round a full clone took 59–62 s through the gateway against 39 s direct, one run each. Round 2 ran two of each back to back on `standard-1`: 39.6 and 38.1 s through the gateway, 39.0 and 41.8 s direct. So the gateway adds nothing measurable to a large clone, and the first round's difference was variation between runs.
 
 ## 3. The forge's git operations, timed
 
-Repositories: "small" is 4 files and 1 commit. "Big" is `vuejs/core` `main`: 7,198 commits, 702 files, a 33 MB pack as cloned from GitHub (GitHub reports 46 MB), 7.8 MB working tree; a full clone from Artifacts produced an 84 MB `.git`. The change on the fork is one commit that renames a file with an edit, edits a second and adds a third. All through the gateway, Internet off.
+Repositories: "small" is 4 files and 1 commit. "Big" is `vuejs/core` `main`: 7,198 commits, 702 files, a 33 MB pack as cloned from GitHub (GitHub reports 46 MB), 7.8 MB working tree; a full clone from Artifacts produced an 84 MB `.git`. The change on the fork is one commit that renames a file with an edit, edits a second and adds a third. All through the gateway, Internet off. One run per cell unless it says otherwise.
 
 | Operation | small, `standard-1` | big, `standard-1` | big, `lite` |
 | --- | --- | --- | --- |
-| `git clone` (full) | 1.0 s | 62.1 s (58.6 s for the fork) | 203.5 s |
-| `git clone --depth=1` | | 1.9 s (`.git` 2.1 MB) | |
+| `git clone` (full) | 1.0 s | 62.1 s; 58.6 s and 56.5 s for the fork; round 2: 39.6 s, 38.1 s | 203.5 s |
+| `git clone --depth=1` | | 1.9 s (`.git` 2.1 MB); round 2: 1.9, 1.0, 1.6 s | |
 | `git clone --filter=blob:none` | | 26.5 s (`.git` 23 MB) | |
 | `git fetch fork change` into the full clone | 0.5 s | 19.5 s | 23.0 s |
-| `git fetch --depth=2 fork change` into the shallow clone | | 1.0 s | |
+| `git fetch --depth=2 fork change` into the shallow clone | | 1.0 s; round 2: 1.2, 0.9, 1.1 s | |
 | `git diff -M --stat main...fork/change` | 10 ms | 7 ms | 200 ms |
 | `git diff -M main...fork/change` (patch) | 5 ms | 7 ms | 196 ms |
 | `git merge-tree --write-tree main fork/change` | 9 ms | 5 ms | 101 ms |
-| `git merge --no-ff` | 19 ms | 56 ms | |
-| `git push origin main` (one merge commit) | 0.40 s | 0.35 s | |
+| `git merge --no-ff` | 19 ms | 56 ms; from the shallow clone (round 2): 46, 64, 72 ms | |
+| `git push` of one merge commit | 0.40 s | 0.35 s; from the shallow clone (round 2): 0.39, 0.27, 0.42 s | |
 | Session side: `git push origin change` to the fork | 0.36 s | 0.79 s | |
 | `repo.fork()` through the binding | 3.4 s | 41.3 s | |
 
-Where the full-clone time goes: the gateway saw 24.2 s between sending the `git-upload-pack` request and receiving response headers, and 19.0 s for the one-commit fork fetch. The time is Artifacts producing the pack, not the container.
+Where the full-clone time goes is only partly known. The gateway saw 24.2 s between sending the `git-upload-pack` request and receiving response headers in the 62 s run (15.2 s and 12.7 s in the two round-2 runs of 39.6 s and 38.1 s), and 19.0 s of the 19.5 s one-commit fork fetch. So a third or more of a full clone, and nearly all of that fetch, passes before Artifacts starts answering; the remainder — transfer and `index-pack` in the container — was not broken down. The container matters too: the same clone took 203.5 s on `lite`.
 
-The shallow path, in full (`clone-variants.sh`): `--depth=1` clone of the parent, `git fetch --depth=2 fork change`, then `merge-base` resolved to the parent's tip and `diff -M` and `merge-tree` gave the same results as in the full clone, with `.git` at 4.0 MB. `--depth=2` was enough because the branch had one commit; in general the fetch depth must be the number of commits on the branch plus one.
+The shallow path, first round (`clone-variants.sh`), which stopped at `merge-tree`: `--depth=1` clone of the parent, `git fetch --depth=2 fork change`, then `merge-base` resolved to the parent's tip and `diff -M` and `merge-tree` gave the same results as in the full clone, with `.git` at 4.0 MB. `--depth=2` was enough because the branch had one commit; in general the fetch depth must be the number of commits on the branch plus one.
+
+The shallow path end to end (round 2, `forge-shallow.sh`): for each run a new Durable Object starts a `standard-1` container with Internet off, then clones with `--depth=1`, fetches the fork branch with `--depth=2`, diffs, merges with `--no-ff` and pushes the merge commit (to a scratch branch, so the run can repeat). The client's clock runs from before `start()` to after the push returns:
+
+```txt
+run 1  readyMs 599   clone 1891 ms  fetch 1197 ms  diff 6 ms   merge 46 ms  push 387 ms  TOTAL in container 3578 ms  CLIENT WALL CLOCK 5380 ms
+run 2  readyMs 267   clone 1039 ms  fetch  886 ms  diff 5 ms   merge 64 ms  push 274 ms  TOTAL in container 2297 ms  CLIENT WALL CLOCK 3709 ms
+run 3  readyMs 464   clone 1595 ms  fetch 1069 ms  diff 10 ms  merge 72 ms  push 418 ms  TOTAL in container 3216 ms  CLIENT WALL CLOCK 4989 ms
+
+*   d0d4146 Merge change
+|\
+| * 7008b83 session change
+|/
+* 4ab865a fix(suspense): skip rendering async components unmounted while pending
+```
+
+The client figure includes minting two repository tokens (~0.5 s) and two HTTP round trips from a laptop.
 
 Capabilities Artifacts advertised: protocol v2 `fetch=shallow filter sideband-all`, `ls-refs=unborn`, `agent=gitty/1.0`. `--filter=blob:none` worked (promisor remote, 23,426 objects left missing). `--filter=tree:0 --depth=1` failed: `error: RPC failed; HTTP 400 … fatal: expected 'packfile'`.
 
 `env.ARTIFACTS.import()` of `https://github.com/vuejs/core` failed twice, 66 s and 68 s after the call: `ArtifactsError: The upstream service is unavailable. Please retry.` (`UPSTREAM_UNAVAILABLE`). The repository was loaded by cloning from GitHub inside a container (5.4 s) and pushing through the gateway (91 s) instead.
 
-Verdict: **works**. Diff and merge belong in a container: the git work is milliseconds even on `lite`, and a cold run on a 50 MB repository is about 4 s if every clone and fetch is depth-limited. A full clone must never sit on a request path, and `lite` is too slow for anything but the smallest repositories (3.3× slower on network transfer, ~25× on git CPU work). `--filter=blob:none` is available, but slower than `--depth=1` and not needed for diff or merge. `fork()` at 41 s means opening a session's fork is a background step with a visible state.
+Verdict: **works**. Diff and merge belong in a container: the git work is milliseconds on `standard-1` and 0.1–0.2 s on `lite`, and a cold merge of a one-commit branch on a repository with a 33 MB pack took 3.7–5.4 s end to end when every clone and fetch was depth-limited (three runs). Nothing here was run on a repository larger than that, and a branch with many commits needs a deeper fetch that was not timed. A full clone must never sit on a request path, and `lite` is too slow for anything but the smallest repositories (one run each: the full clone took 203.5 s against 62.1 s, and `diff` 200 ms against 7 ms). `--filter=blob:none` is available, but slower than `--depth=1` and not needed for diff or merge. `fork()` at 41 s means opening a session's fork is a background step with a visible state.
 
 ## 4. A CI run
 
@@ -309,8 +367,21 @@ Failure modes, as the Durable Object sees them:
 | Step exceeded its `timeout` (3 s) | `exitCode: 124` after 3.0 s | a child the step had started (`sleep 77 &`) was still running afterwards |
 | `destroy()` from another request, 4 s into a step | reading the stream threw `Error: Network connection lost.`; no exit code | `monitor()` resolved; `running: false` |
 | `signal(9)` to the container's main process, 4 s into a step | `exitCode: 137`, no error | 50 ms later `monitor()` rejected: `Container exited with unexpected exit code: 137`; `running: false` |
-| Process ran out of memory on `lite` | `exitCode: 137` after 4 s | container kept running; a repeat left `/proc/uptime` continuous and files intact |
+| Process ran out of memory (round 2: `lite` twice, `standard-1` once) | `exitCode: 137` after 3.8 s, 2.2 s and 8.7 s; stderr `Killed` | container kept running: `running: true`, `/proc/uptime` continuous, a marker file still there; no `monitor()` event |
 | `exec()` on a container that had just been destroyed | threw `Error: Network connection lost.` or `Error: Container connectivity was lost` | |
+
+The out-of-memory runs, quoted (round 2; the step is `node -e` allocating 50 MB buffers in a loop, followed by a step that must not run):
+
+```txt
+before:  136.62 1091.43   MemTotal: 469264 kB
+{"run":"b823dc79","passed":false,"steps":[{"name":"oom","exitCode":137,"ms":3794}]}
+{"run":"91ce00a4","passed":false,"steps":[{"name":"oom","exitCode":137,"ms":2220}]}        (same container)
+last log lines of run 1:  out 150 MB / out 200 MB / err Killed / meta {"name":"oom","exitCode":137,"ms":3794}
+after:   143.24 1132.18   /marker   running: true
+standard-1: {"run":"8b489676","passed":false,"steps":[{"name":"oom","exitCode":137,"ms":8691}]}   running: true
+```
+
+In the first round the capture of this test was overwritten by a re-run whose command ended in `| tail -1`; that run reported `exitCode: 0` after 137,661 ms, which is `tail`'s exit status and says nothing about the killed process. It is not used here.
 
 Verdict: **works**. Log lines reach the Durable Object as they are produced and the exit code decides the result. Consequences for our runner: (a) `137` is ambiguous — a step killed for memory, and a whole container killed, look identical from the step, so after any non-zero exit check `container.running` (or the `monitor()` outcome) before reporting "tests failed"; (b) `timeout` does not stop a step's children, so run each step in its own process group and kill the group, or destroy the container after a timeout; (c) dependency installs with Internet off work through a `*` intercept with an allow-list, which gives an egress log per run for free.
 
@@ -381,7 +452,7 @@ gateway: HEAD gateway.ai.cloudflare.com api/hello -> 404
            {"success":false,…"error":[{"code":2021,"message":"Insufficient wholesale credits. …"}],"name":"AiGatewayError","httpCode":402,…}
 ```
 
-Verdict: **partial**. Proven: the agent image can be built without Docker; Claude Code starts headless as root in the offline container; its request to the gateway hostname is intercepted; the authenticated gateway accepts the request from the binding with no token anywhere; the failure comes back to Claude Code as an ordinary API error within 1.3 s. Not proven: an actual model response, streaming of it, and tool use, because the account has no Unified Billing credits and no stored Anthropic key, and adding either is a billing change outside this task. No model cost was incurred. Notes for the design: the gateway needs credits or a provider key before a hosted session can run, so the installer must check for one; Claude Code exited `1` here with `is_error: true` and `subtype: "success"`, so the outcome has to be read from `is_error` and `api_error_status`, as the research note says.
+Verdict: **partial**. Proven: the agent image can be built without Docker; Claude Code starts headless as root in the offline container; its request to the gateway hostname is intercepted; an authenticated gateway answered the binding's request with a billing error (`402`) rather than an authentication error, with no gateway token anywhere — which suggests, but does not show, that the binding is sufficient authentication; the failure comes back to Claude Code as an ordinary API error within 1.3 s. Not proven: an actual model response, streaming of it, and tool use, because the account has no Unified Billing credits and no stored Anthropic key, and adding either is a billing change outside this task. No model cost was incurred. Notes for the design: the gateway needs credits or a provider key before a hosted session can run, so the installer must check for one; Claude Code exited `1` here with `is_error: true` and `subtype: "success"`, so the outcome has to be read from `is_error` and `api_error_status`, as the research note says.
 
 ## Smaller observations
 
@@ -389,10 +460,21 @@ Verdict: **partial**. Proven: the agent image can be built without Docker; Claud
 - `env.ARTIFACTS.list()` entries carried `remote`, `status` and `jurisdiction` (`"unrestricted"`), and `lastPushAt: null` for a repository that had been pushed to minutes earlier. `repo.info()` on the fork returned `source: "artifacts:gitflare-spike-c-ns/gitflare-spike-c-big"`.
 - `repo.fork()` did not return until the fork was usable (3.4 s and 41.3 s); no `FORK_IN_PROGRESS` was seen.
 - `DELETE /accounts/<account-id>/artifacts/namespaces/<namespace>` on an empty namespace returned `204` and the namespace was gone. That route is not on the documented list.
+- A deleted namespace does not come back implicitly: in round 2, `env.ARTIFACTS.create()` into the namespace deleted earlier failed with `ArtifactsError: Namespace is not active` (`NOT_FOUND`) until `POST /artifacts/namespaces {"namespace": …}` recreated it (`201`).
 - Deleting the Worker does not delete its container application: `wrangler containers list` still showed `gitflare-spike-c-box` (`ready`, 0 instances) until `wrangler containers delete`.
 
 ## Spend and cleanup
 
-Estimated spend: under $0.25 at list price, before included allowances. About 40 containers ran, most for the 5–15 minutes of their inactivity timeout: roughly 150 minutes of `standard-1`, 35 of `standard-2` and 120 of `lite`, with little active CPU (memory ≈ $0.13, CPU and disk ≈ $0.03). Artifacts operations and storage were within the allowance and are not billed before 2026-10-14. No model call was served.
+Estimated spend: under $0.35 at list price, before included allowances. In the first round about 40 containers ran, most for the 5–15 minutes of their inactivity timeout: roughly 150 minutes of `standard-1`, 35 of `standard-2` and 120 of `lite`, with little active CPU (memory ≈ $0.13, CPU and disk ≈ $0.03). Round 2 added about 20 containers, mostly destroyed within minutes, plus three `lite` containers for 20–26 minutes each (≈ $0.05). Artifacts operations and storage were within the allowance and are not billed before 2026-10-14. No model call was served.
 
-Deleted: the Worker, the container application, the Dockerfile image, all five snapshots, the four Artifacts repositories and their namespace, and the AI gateway. Nothing is left over.
+Deleted after each round: the Worker, the container application, the Dockerfile image, every snapshot (five in the first round, one in the second), the Artifacts repositories and their namespace, and the AI gateway. Nothing is left over. After round 2:
+
+```txt
+wrangler containers list           No containers found.
+wrangler containers images list    (empty)
+GET …/artifacts/namespaces         []
+GET …/ai-gateway/gateways          three pre-existing gateways, untouched
+GET …/workers/scripts              one pre-existing Worker, untouched
+```
+
+A snapshot of a container started from a Dockerfile image was stored under that image's own repository (`gitflare-spike-c-container-box-git:rootfs-snapshot-…`), not under `cloudchamber-snapshots/`.
