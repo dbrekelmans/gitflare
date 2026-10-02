@@ -37,7 +37,11 @@ export function Row({
   return (
     <div
       className={cn(
-        "flex items-start gap-s11",
+        // Below `lg` the label and annotation's fixed widths leave no room for
+        // the description to shrink into (it hits `min-w-0` and collapses to
+        // 0, wrapping one character per line). Stack instead of forcing three
+        // fixed columns into less space than they need.
+        "flex flex-col gap-s2 lg:flex-row lg:items-start lg:gap-s11",
         inverse
           ? "on-ink bg-ink px-[36px] pt-[32px] pb-s9"
           : "border-t border-rule pt-[22px] pb-[26px]",
@@ -47,15 +51,15 @@ export function Row({
     >
       <div
         className={cn(
-          "shrink-0 font-display text-body-m leading-body font-semibold",
-          inverse ? "w-[224px] text-flare" : "w-label text-ink",
+          "font-display text-body-m leading-body font-semibold lg:shrink-0",
+          inverse ? "lg:w-[224px] text-flare" : "lg:w-label text-ink",
         )}
       >
         {label}
       </div>
       <div
         className={cn(
-          "type-body max-w-body min-w-0 flex-1",
+          "type-body max-w-body lg:min-w-0 lg:flex-1",
           inverse ? "text-on-ink" : "text-muted-foreground",
         )}
       >
@@ -64,7 +68,7 @@ export function Row({
       {annotation != null && (
         <div
           className={cn(
-            "type-detail ml-auto w-annotation shrink-0 text-right leading-body",
+            "type-detail text-left leading-body lg:ml-auto lg:w-annotation lg:shrink-0 lg:text-right",
             inverse ? "text-faint-inverse" : "text-faint",
           )}
         >
