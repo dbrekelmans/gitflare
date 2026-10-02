@@ -9,12 +9,12 @@ Sources were read directly: the Artifacts docs as markdown (`developers.cloudfla
 - **The binding has no local simulator, and never will.** Miniflare classifies `artifacts` as `"DO-NOT-USE-this-resource-will-never-have-a-local-simulator"`: under `wrangler dev` the binding always proxies to the real service and `remote: false` is a hard error. Every package that touches Artifacts needs a port with an in-memory fake for tests; anything else is an integration test against a real, billed account.
 - **A push event does not say who pushed.** `cf.artifacts.repo.pushed` carries `ref`, `before`, `after` and commit author/committer strings — no token id, no actor. Cloudflare's own CI SDK sets `actor` from the commit author name. Attribution has to come from the repo itself: one fork per session means the fork's name identifies the session and its user.
 - **Tokens cannot carry a label.** No label, name or metadata field exists on token create (binding or REST), and the Basic-auth username is ignored and not logged. Gitflare must store `token id → user` itself, using the `id` returned at mint time.
-- **Writing from a Worker without a container is documented and supported**: isomorphic-git over the HTTPS remote with an in-memory filesystem. Writing decision files into the sibling repo does not require a Sandbox. Whether merges can also be done this way is a size question, not a capability question (see "Could not verify").
+- **Writing from a Worker without a container is documented, but only for a new repo.** Cloudflare's isomorphic-git example runs `init → commit → push` into a freshly created empty repo, over the HTTPS remote with an in-memory filesystem. Committing into an *existing* repo (clone or fetch, modify, push) is named in that page's prose but not shown, and was not tested. So "decision files can be written to the sibling repo without a Sandbox" is a likely inference, not a verified fact; the same goes for merges (see "Could not verify"). Keep the writer behind a port so a container implementation can replace it.
 - **There are two event routes, and only one is namespace-wide.** A `triggers.events` entry in the Wrangler config starts a Workflow directly (no Queue) and can filter on `namespace` alone, so it covers forks created later. The Queues `artifacts.repo` source is documented as scoped to a single repository, and `wrangler queues subscription create` has no flag to name that repository.
 - **The docs and Wrangler disagree on the trigger shape.** The guide shows `filter.repoName` and `target: { scriptName, workflowName }`; `wrangler@4.147.0` validates `filter.repo_name` and `targets: [{ type: "workflow", workflow_name }]` and rejects unknown keys. Follow Wrangler (and the `cloudflare/ci` example, which matches it).
 - **The binding reads content now** (`readFile`, `readBlob`, `readTree`, `readCommit`, `log`), so a file browser and commit list need neither REST nor a container. Still absent everywhere: diff, compare, merge, ref/branch listing, search, and any write to repo contents.
 - **`fork()` copies only the default branch by default** (`defaultBranchOnly` defaults to `true`) and takes no target namespace. A fork is an independent repo: there is no sync or merge-back API, only git with two remotes.
-- **Jurisdiction must be set by an explicit REST call before the first repo exists.** Creating a repo in an unknown namespace creates that namespace implicitly and unrestricted; Wrangler has no `namespaces create` command.
+- **Jurisdiction must be set by explicitly creating the namespace before the first repo exists.** Creating a repo in an unknown namespace creates that namespace implicitly and unrestricted. The only documented way to pass a jurisdiction is the REST call; Wrangler has no `namespaces create` command, and the dashboard can create namespaces but whether it offers a jurisdiction there is undocumented.
 - **Partial clone may not work.** The git protocol page lists `filter` among unsupported capabilities, while the ArtifactFS page says it starts with a blobless clone of an Artifacts remote. Until tested, plan on a shallow fetch (`--depth=1` of a SHA, which is what Cloudflare's CI does), not `--filter=blob:none`.
 
 ## Verified facts
@@ -263,14 +263,15 @@ Complete documented route list, relative to `/accounts/$ACCOUNT_ID`:
 | GET | `/artifacts/namespaces/:namespace/repos/:name/blob/:hash` | raw bytes |
 | GET | `/artifacts/namespaces/:namespace/repos/:name/file?ref=&path=` | raw bytes, `application/octet-stream` |
 | GET | `/artifacts/namespaces/:namespace/repos/:name/raw/:ref/:path` | raw bytes, sniffed `Content-Type` |
-| GET | `/artifacts/namespaces/:namespace/repos/:name/tokens?state=&per_page=&page=` | `state` default `active`; `per_page` default 30, max 100 |
+| GET | `/artifacts/namespaces/:namespace/repos/:name/tokens?state=&per_page=&page=` | `state` is `active` \| `expired` \| `revoked` \| `all`, default `active`; `per_page` default 30, max 100 |
 | POST | `/artifacts/namespaces/:namespace/tokens` | body `repo`, `scope?`, `ttl?` |
 | DELETE | `/artifacts/namespaces/:namespace/tokens/:id` | |
 
 - **Confirmed: no diff, compare, merge, ref/branch, search-in-content, or write-content route.** "Object routes use immutable Git SHA-1 hashes. File routes resolve a path at a branch, tag, or commit hash."
 - JSON responses use the v4 envelope `{ result, success, errors, messages, result_info? }`. Repo lists paginate by cursor (`result_info.cursor`); token lists paginate by page (`page`, `per_page`, `total_pages`, `count`, `total_count`). `log` paginates by `offset`.
 - Blob, file and raw routes return bytes on success and the JSON envelope on error (`code: 10200`, "File not found").
-- Fork result adds `objects: number` to the create result. "If a repo exists but is still importing or forking, this route can return `409 Conflict` with a retriable error message."
+- Fork result adds `objects: number` to the create result.
+- Under **Import**, the page says: "If a repo exists but is still importing or forking, this route can return `409 Conflict` with a retriable error message." "This route" is the import route. The import guide adds that follow-up REST calls on a repo still importing can return `409 Conflict`. The docs do not state a status code for the fork route or for calls on a repo still forking; `FORK_IN_PROGRESS` (10303) is the documented error code.
 - REST-only (not on the binding): namespace create/list/get; repo list `search`/`sort`/`direction`; token list `state` filter and paging; the `raw` route; `objects` in the fork result.
 - Error codes (https://developers.cloudflare.com/artifacts/api/errors/): `INVALID_INPUT` 10100, `INVALID_REPO_NAME` 10101, `INVALID_TTL` 10103, `INVALID_URL` 10104, `REMOTE_AUTH_REQUIRED` 10106, `NOT_FOUND` 10200, `ALREADY_EXISTS` 10201, `IMPORT_IN_PROGRESS` 10302, `FORK_IN_PROGRESS` 10303, `INTERNAL_ERROR` 10400, `UPSTREAM_UNAVAILABLE` 10401, `MEMORY_LIMIT` 10402.
 
@@ -329,7 +330,7 @@ export ARTIFACTS_AUTH_REMOTE="https://x:${ARTIFACTS_TOKEN_SECRET}@${ARTIFACTS_RE
 ```
 
 - "Use any non-empty username in the URL. Artifacts accepts that username but does not otherwise use or log it." A credential helper therefore returns any username plus the stripped secret as the password.
-- Scopes: `read` allows clone, fetch, pull; `write` adds push. Tokens are repo-scoped; there is no per-branch or per-ref rule.
+- Scopes: `read` allows clone, fetch, pull; `write` adds push. Tokens are repo-scoped. The docs list only these two scopes; no per-branch or per-ref restriction is documented anywhere (an absence, not a stated guarantee).
 - TTL: minimum 60 s, maximum 31,536,000 s (1 year), default 86,400 s (24 h). Out of range is `INVALID_TTL`.
 - Minting: `repo.createToken(scope?, ttl?)`, `POST …/tokens`, `wrangler artifacts repos issue-token <REPO> --namespace --scope --ttl`, or the dashboard. Listing: `repo.listTokens()` or `GET …/repos/:name/tokens`. Revoking: `repo.revokeToken(tokenOrId)` (plaintext or id) or `DELETE …/tokens/:id`.
 - **No label, name or metadata field** on any token create path; `TokenInfo` is `id`, `scope`, `state`, `created_at`, `expires_at`.
@@ -344,7 +345,7 @@ Sources: https://developers.cloudflare.com/artifacts/concepts/how-artifacts-work
 - "A fork creates a new repo that starts from an existing repo's history, then diverges independently with its own tokens, routing, and lifecycle."
 - Neither `fork()` nor `POST …/fork` accepts a target namespace; the fork lands in the source repo's namespace.
 - `defaultBranchOnly` defaults to `true` (type comment). Pass `false` to copy every branch.
-- Forking is asynchronous: the fork can be in `forking` status, `get()` throws `FORK_IN_PROGRESS`, REST returns `409`.
+- Forking is asynchronous: the fork can be in `forking` status and `get()` throws `FORK_IN_PROGRESS`. The REST status code for a repo still forking is not documented (the `409` statement on the REST page is about the import route).
 - `source` on the fork's info reads `"artifacts:namespace/repo"`.
 - `readOnly` / `read_only` can be set on create, fork and import. No route or method changes it afterwards.
 - No API fetches from the parent or merges back. With a normal git client it is two remotes and two repo tokens.
@@ -400,7 +401,8 @@ Exact documented payload:
 ```
 
 - It carries the ref and before/after SHAs. It carries **no token id and no actor**. `commits` can be truncated (`commitsTruncated`, `totalCommitsCount`) and long messages too (`messageTruncated`), so the range must be re-read from the repo, not trusted from the event.
-- One `ref` per event. `cloudflare/ci` (`src/artifacts/events.ts`) treats an `after` of forty zeros as a deletion and ignores refs outside `refs/heads/` and `refs/tags/` — so events for other refs are expected. It sets `actor: commit?.author.name`.
+- The documented payload has a single `ref` field, not a list. `cloudflare/ci` (`src/artifacts/events.ts`) treats an `after` of forty zeros as a deletion, ignores refs outside `refs/heads/` and `refs/tags/`, and sets `actor: commit?.author.name`.
+- Inference, not stated by either source: a push that updates several refs produces one event per ref, and pushes to other refs (for example `refs/notes/*`) also produce events. The single `ref` field and the parser's guard suggest both; handle them, but do not rely on them.
 - All event types (`wrangler@4.147.0`, `ARTIFACTS_EVENT_TYPES`): `cf.artifacts.repo.created`, `.deleted`, `.forked`, `.imported`, `.pushed`, `.cloned`, `.fetched`, `.token.created`, `.token.revoked`.
 - Account-level source `artifacts`: created, deleted, forked, imported. Repo-level source `artifacts.repo` ("with a `namespace` and `repo_name`"): pushed, cloned, fetched, token.created, token.revoked.
 - `cloned` and `fetched` have an empty `payload`. `token.created` payload is `{ tokenId, scope, expiresAt }`; `token.revoked` is `{ tokenId }`. `repo.forked` has the parent in `source` and the fork's `namespace`, `repoName`, `repoId` in `payload`.
@@ -518,7 +520,7 @@ artifact-fs daemon --root /tmp &
 
 Source: https://developers.cloudflare.com/artifacts/examples/isomorphic-git/ (`isomorphic-git@1.42.6` current on npm).
 
-- Documented, with a full example: `git.init`, write files into an in-memory `fs`, `git.add`, `git.commit`, `git.push` against `created.remote`.
+- Documented, with a full example, for one flow only: `env.ARTIFACTS.create()` a new empty repo, then `git.init`, write files into an in-memory `fs`, `git.add`, `git.commit`, `git.push` against `created.remote`. The example does not clone or fetch.
 
 ```ts
 import git from "isomorphic-git";
@@ -540,8 +542,8 @@ const push = await git.push({
 ```
 
 - The filesystem is a `MemoryFS` class printed on that page (about 220 lines of TypeScript) exposing `promises.readFile/writeFile/unlink/readdir/mkdir/rmdir/stat/lstat`; it is not an npm package.
-- The page names the intended use: "an automation that clones a repo, modifies files, and pushes changes back".
-- The binding and REST have no write-content operation, so this and a container running real git are the only two ways to create a commit.
+- The page names a wider use in prose only: "an automation that clones a repo, modifies files, and pushes changes back". No code for it is shown.
+- The binding and REST have no documented write-content operation. That leaves a git client as the only documented way to create a commit: isomorphic-git in a Worker, or real git in a container.
 - isomorphic-git has a `merge` command with `fastForward`, `fastForwardOnly`, `dryRun` and `abortOnConflict` options (https://isomorphic-git.org/docs/en/merge).
 
 ## Local development and tests
@@ -550,7 +552,7 @@ const push = await git.push({
 - **`@cloudflare/vitest-pool-workers@0.22.0`**: has a `remoteBindings` pool option that defaults to `true`, so a test with an Artifacts binding in its config would call the real service. Not exercised here. Unit tests should inject a fake through a port instead.
 - **Fake needed for**: the binding (all methods), the event payloads (enqueue the documented JSON by hand; Queues and Workflows themselves are simulated locally), and token minting.
 - **Git over HTTPS**: there is no local Artifacts git endpoint. Any local smart-HTTP git server can stand in for clone/fetch/push logic; it will not reproduce Artifacts' token format, missing `filter`, or v1-only push.
-- **isomorphic-git path**: plain JavaScript, runs under Miniflare and in Vitest; only the remote it pushes to needs standing in.
+- **isomorphic-git path**: a JavaScript library with no binding dependency, so it should run under Miniflare and Vitest with only the remote standing in. Not exercised here.
 - **ArtifactFS**: needs Docker with FUSE (`--cap-add SYS_ADMIN --device /dev/fuse`). Its own e2e suite runs against a local bare repo, no network.
 - **Cannot run locally at all**: event emission on push, `triggers.events` delivery, fork/import asynchrony, rate limits, jurisdiction.
 
@@ -565,6 +567,10 @@ const push = await git.push({
 - **REST JSON for `log`, `commit/:hash`, `tree/:hash`.** The REST page gives routes and curl only. The binding types give the camelCase shapes; the REST field names (probably snake_case) are not published. The Cloudflare API reference has no Artifacts section (`/api/resources/artifacts/` is 404 and absent from `/api/llms.txt`).
 - **The initial token from `create()` / `fork()` / `import()`.** A getting-started comment calls it a write token; its TTL is not stated (parse `?expires=`). Whether it appears in `listTokens()` was not checked.
 - **`read_only` enforcement.** Not stated whether a push with a write token to a read-only repo is rejected, with what error, or whether the flag can ever be changed.
+- **isomorphic-git `clone` / `fetch` against Artifacts.** Cloudflare's example only pushes into a new empty repo. Committing into an existing repo from a Worker needs a clone or fetch first; that is mentioned in prose, not demonstrated, and the protocol page says some optional v1 capabilities are unsupported. Whether isomorphic-git's fetch negotiation works against Artifacts was not tested. Until it is, writing to an existing repo without a container is unproven.
+- **One event per ref, and events for refs outside `refs/heads/` and `refs/tags/`.** Inferred from the single `ref` field in the example payload and from a guard in `cloudflare/ci`; neither source states it.
+- **Jurisdiction in the dashboard.** The 2026-06-17 changelog says namespaces can be created in the dashboard; it does not say whether a jurisdiction can be chosen there.
+- **REST status while a repo is forking.** The `409 Conflict` statement on the REST page belongs to the import route.
 - **Merging in a Worker at realistic size.** isomorphic-git needs the objects in memory; no source states what repo size fits a Worker's memory and CPU limits, and its merge behaviour (rename handling, conflict output) was not tested. Treat container git as the default for merges until measured.
 - **ArtifactFS inside a Cloudflare Container.** An example image exists, pinned to `cloudflare/sandbox:0.12.5`; how `/dev/fuse` is made available there, and whether it works on Sandbox SDK 1.0 images, was not established.
 - **Which calls are billed operations.** The pricing page gives examples only; binding reads (`readFile`, `log`), token mints and fetches are not classified.
