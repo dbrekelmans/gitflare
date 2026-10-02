@@ -1,0 +1,27 @@
+{
+  "name": "@gitflare/artifacts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --root ../.. packages/artifacts/"
+  },
+  "dependencies": {
+    "@gitflare/core": "workspace:*",
+    "@gitflare/db": "workspace:*",
+    "drizzle-orm": "catalog:",
+    "isomorphic-git": "^1.42.6",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@gitflare/testing": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

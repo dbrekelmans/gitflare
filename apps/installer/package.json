@@ -1,0 +1,23 @@
+{
+  "name": "create-gitflare",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Installs gitflare into your own Cloudflare account.",
+  "type": "module",
+  "bin": {
+    "create-gitflare": "./src/cli.ts"
+  },
+  "scripts": {
+    "dev": "node --experimental-strip-types src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --root ../.. apps/installer/"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

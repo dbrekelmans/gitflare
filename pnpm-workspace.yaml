@@ -1,0 +1,28 @@
+packages:
+  - apps/*
+  - packages/*
+
+allowBuilds:
+  esbuild: false
+  workerd: false
+
+# Versions shared by more than one workspace. A dependency only one package
+# uses is pinned in that package's own package.json, so adding it never
+# touches this file.
+catalog:
+  "@types/node": ^22.18.0
+  "@types/react": ^19.3.0
+  "@types/react-dom": ^19.3.0
+  drizzle-orm: ^0.45.3
+  react: ^19.3.0
+  react-dom: ^19.3.0
+  typescript: ^7.0.2
+  vitest: ^4.1.11
+  zod: ^4.6.5
+
+minimumReleaseAgeExclude:
+  - '@cloudflare/vite-plugin@1.62.5'
+  - '@cloudflare/vitest-plugin@1.3.6'
+  - '@tanstack/query-core@5.104.1'
+  - '@tanstack/react-query@5.104.1'
+  - wrangler@4.147.0
