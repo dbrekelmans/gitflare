@@ -128,16 +128,86 @@ describe("the workspace, for an administrator", () => {
     expect(screen.getByRole("button", { name: "Prepare again" })).toBeTruthy();
   });
 
-  it("re-preparing an already-prepared workspace does not get stuck on 'Preparing…'", async () => {
+  it("shows preparing in progress from `preparation`, not only from the mutation's own pending state", async () => {
+    await renderSettings({
+      data: demoWith((data) => {
+        data.organisation.settings.workspace.snapshot = { id: "snap_demo", image: "debian" };
+        data.organisation.settings.workspace.preparation = {
+          state: "running",
+          startedAt: Date.now(),
+        };
+      }),
+    });
+    // The mutation that started it has long since resolved; `preparation`
+    // is the only thing still saying it is running.
+    expect(screen.getByText("preparing")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Preparing…" })).toBeTruthy();
+  });
+
+  it("shows a failed preparation with its reason", async () => {
+    await renderSettings({
+      data: demoWith((data) => {
+        data.organisation.settings.workspace.preparation = {
+          state: "failed",
+          failedAt: Date.now(),
+          error: "The managed image could not be reached.",
+        };
+      }),
+    });
+    expect(screen.getByText("not prepared")).toBeTruthy();
+    expect(screen.getByText("The managed image could not be reached.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Prepare workspace" })).toBeTruthy();
+  });
+
+  it("keeps polling after the mutation resolves, so a workspace the backend finishes preparing in the background still turns 'prepared' without a manual reload", async () => {
+    await renderSettings();
+    const base = await server.api.account.getSettings({ user: demoUsers.maya });
+
+    // The real backend accepts the request and returns immediately,
+    // writing neither a snapshot nor `preparation: running` on this
+    // response (see the task comment on GF-49): the only way the page
+    // ever learns the real preparation finished is by polling.
+    server.api.account.prepareWorkspace = () => Promise.resolve(undefined);
+    let prepared = false;
+    server.api.account.getSettings = () =>
+      Promise.resolve({
+        ...base,
+        workspace: prepared
+          ? { ...base.workspace, snapshot: { id: "snap_live", image: base.workspace.image } }
+          : base.workspace,
+      });
+
+    fireEvent.click(screen.getByRole("button", { name: "Prepare workspace" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Preparing…" })).toBeTruthy());
+
+    // The real preparation finishes well after the request that kicked
+    // it off already resolved. The poll interval is 3s; give it room.
+    prepared = true;
+    await waitFor(() => expect(screen.getByText("prepared")).toBeTruthy(), { timeout: 8000 });
+    // A first install can tell it is done from its own snapshot appearing,
+    // so the button is not left disabled for the rest of the window.
+    expect(screen.getByRole("button", { name: "Prepare again" })).toBeTruthy();
+  }, 10000);
+
+  it("re-preparing an already-prepared workspace stays disabled rather than offering a second preparation", async () => {
+    // A re-preparation keeps its existing snapshot throughout, so there is
+    // no "it changed" signal to watch for the way a first install has;
+    // without the backend reporting `preparation: running` (see the task
+    // comment on GF-49), this is the only thing stopping a second
+    // preparation from starting while the first is still under way.
     await renderSettings({
       data: demoWith((data) => {
         data.organisation.settings.workspace.snapshot = { id: "snap_demo", image: "debian" };
       }),
     });
     fireEvent.click(screen.getByRole("button", { name: "Prepare again" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Prepare again" })).toBeTruthy());
-    expect(screen.queryByRole("button", { name: "Preparing…" })).toBeNull();
-    expect(screen.getByText("prepared")).toBeTruthy();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Preparing…" })).toBeTruthy());
+    // The mutation itself has long since resolved (the fixture answers
+    // instantly), yet the button stays disabled: only the fallback window
+    // is still holding it there.
+    expect(screen.getByRole("button", { name: "Preparing…" })).toHaveProperty("disabled", true);
+    expect(screen.getByText(/snapshot snap_fixture/)).toBeTruthy();
   });
 
   it("does not get stuck on 'Preparing…' when the request is refused", async () => {

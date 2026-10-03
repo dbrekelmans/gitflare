@@ -1,10 +1,11 @@
 import type { DecisionEvent, DecisionEventKind, DecisionId, DecisionOrigin } from "@gitflare/core";
+import type { UserRef } from "@gitflare/core/api";
 import { Row, SectionHead } from "@gitflare/ui/components/row";
 import { StatusPill } from "@gitflare/ui/components/status";
 import { Evidence, Text } from "@gitflare/ui/components/typography";
-import { Button } from "@gitflare/ui/components/ui/button";
+import { Button, buttonVariants } from "@gitflare/ui/components/ui/button";
 import { useSuspenseQuery } from "@tanstack/react-query";
-import { useRouter } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { RouteLink } from "@/components/shell/link";
 import { PageHead } from "@/components/shell/page";
@@ -31,27 +32,57 @@ const originCopy: Record<DecisionOrigin, string> = {
   manual: "Added by hand, not derived from a review.",
 };
 
-/** Whether the event reworded the statement, which is the part of the wording this page shows. */
-function wordingChanged(event: DecisionEvent): boolean {
+/** Whether the event reworded the statement specifically, the part of the wording shown struck through. */
+function statementChanged(event: DecisionEvent): boolean {
   return event.wording !== null && event.wording.before.statement !== event.wording.after.statement;
 }
 
+/** Whether the event changed any part of the wording: title, statement or rationale. */
+function wordingChanged(event: DecisionEvent): boolean {
+  if (event.wording === null) return false;
+  const { before, after } = event.wording;
+  return (
+    before.title !== after.title ||
+    before.statement !== after.statement ||
+    before.rationale !== after.rationale
+  );
+}
+
 function historyLabel(event: DecisionEvent): string {
-  if (event.kind === "reshaped" && !wordingChanged(event)) return "Edited";
+  if (event.kind === "reshaped" && !statementChanged(event)) return "Edited";
   return eventLabel[event.kind];
 }
 
-function BackLink() {
-  const router = useRouter();
+function attribution(user: UserRef | null, userId: string | null): string | null {
+  if (user) return user.name;
+  if (userId) return userId;
+  return null;
+}
+
+/** One part of a wording diff: struck-through old text (when there was any) and the new text. */
+function WordingDiff({ before, after }: { before: string; after: string }) {
+  if (before === after) return null;
   return (
-    <Button
-      type="button"
-      variant="link"
-      className="mb-s6 px-0"
-      onClick={() => router.history.back()}
+    <>
+      {before !== "" && (
+        <Text size="body-s" tone="muted" className="line-through">
+          {before}
+        </Text>
+      )}
+      <Text size="body-s">{after}</Text>
+    </>
+  );
+}
+
+function BackLink({ repoSlug }: { repoSlug: string }) {
+  return (
+    <Link
+      to="/repos/$repoSlug/decisions"
+      params={{ repoSlug }}
+      className={buttonVariants({ variant: "link", className: "mb-s6" })}
     >
       Back to decisions
-    </Button>
+    </Link>
   );
 }
 
@@ -60,12 +91,12 @@ export function DecisionPage({ decisionId }: { decisionId: DecisionId }) {
   const [editing, setEditing] = useState(false);
   const revive = useReviveDecision();
   const revert = useRevertDecision();
-  const { decision, events } = data;
+  const { decision, repository, events } = data;
 
   if (editing) {
     return (
       <>
-        <BackLink />
+        <BackLink repoSlug={repository.slug} />
         <PageHead title="Edit decision" />
         <EditDecisionForm
           decisionId={decision.id}
@@ -83,7 +114,7 @@ export function DecisionPage({ decisionId }: { decisionId: DecisionId }) {
 
   return (
     <>
-      <BackLink />
+      <BackLink repoSlug={repository.slug} />
       <PageHead
         title={decision.title}
         lede={decision.statement}
@@ -161,12 +192,20 @@ export function DecisionPage({ decisionId }: { decisionId: DecisionId }) {
                   </Evidence>
                 }
               >
-                {changed && (
+                {changed && event.wording && (
                   <>
-                    <Text size="body-s" tone="muted" className="line-through">
-                      {event.wording?.before.statement}
-                    </Text>
-                    <Text size="body-s">{event.wording?.after.statement}</Text>
+                    <WordingDiff
+                      before={event.wording.before.title}
+                      after={event.wording.after.title}
+                    />
+                    <WordingDiff
+                      before={event.wording.before.statement}
+                      after={event.wording.after.statement}
+                    />
+                    <WordingDiff
+                      before={event.wording.before.rationale}
+                      after={event.wording.after.rationale}
+                    />
                   </>
                 )}
                 {event.note != null && (
@@ -178,7 +217,7 @@ export function DecisionPage({ decisionId }: { decisionId: DecisionId }) {
                   <div className="mt-s2 flex flex-wrap items-center gap-s4">
                     {event.userId && (
                       <Evidence size="sm" kind="note">
-                        by {event.userId}
+                        by {attribution(event.user, event.userId)}
                       </Evidence>
                     )}
                     {event.changeId && (
@@ -197,7 +236,7 @@ export function DecisionPage({ decisionId }: { decisionId: DecisionId }) {
                     )}
                   </div>
                 )}
-                {event.kind === "reshaped" && changed && (
+                {(event.kind === "reshaped" || event.kind === "reverted") && changed && (
                   <Button
                     type="button"
                     variant="link"

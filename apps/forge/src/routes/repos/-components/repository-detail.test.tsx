@@ -70,7 +70,7 @@ describe("a repository page, against the demo", () => {
     expect(screen.getByText("gitflare capture enable")).toBeTruthy();
   });
 
-  it("shows a freshly started import as not ready, with no clone instructions", async () => {
+  it("shows an import still in progress as not ready, with no clone instructions", async () => {
     await renderRepository({
       repoSlug: "billing-worker",
       data: demoWith((data) => {
@@ -84,22 +84,25 @@ describe("a repository page, against the demo", () => {
     expect(screen.getByText("importing")).toBeTruthy();
     expect(screen.getByText(/still being imported/)).toBeTruthy();
     expect(screen.queryByText(/git clone/)).toBeNull();
-    expect(screen.queryByText("not responding")).toBeNull();
+    expect(screen.queryByText("import failed")).toBeNull();
   });
 
-  it("says an import running a long time may have failed", async () => {
+  it("shows the backend's own report of a failed import, not a guess from how long it has run", async () => {
     await renderRepository({
       repoSlug: "billing-worker",
       data: demoWith((data) => {
         const billing = data.repositories.find((r) => r.slug === "billing-worker");
         if (billing) {
           billing.readyAt = null;
-          billing.createdAt = Date.now() - 60 * 60 * 1000;
+          // Freshly created, which the old time-based guess read as still importing.
+          billing.createdAt = Date.now();
+          billing.importFailedAt = Date.now();
+          billing.importError = "The source repository could not be reached.";
         }
       }),
     });
-    expect(screen.getByText("not responding")).toBeTruthy();
-    expect(screen.getByText(/may have failed/)).toBeTruthy();
+    expect(screen.getByText("import failed")).toBeTruthy();
+    expect(screen.getByText("The source repository could not be reached.")).toBeTruthy();
     expect(screen.queryByText(/still being imported/)).toBeNull();
     expect(screen.queryByText(/git clone/)).toBeNull();
   });

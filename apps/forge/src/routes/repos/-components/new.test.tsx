@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { User } from "@gitflare/core";
 import { CreateRepositoryInput } from "@gitflare/core/api";
 import { demoUsers } from "@gitflare/testing/demo";
@@ -12,7 +14,7 @@ import {
 } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NewRepository } from "../new";
+import { NewRepository } from "./new";
 
 const server = vi.hoisted(() => ({
   api: undefined as unknown as ReturnType<typeof createFixtureApi>,
@@ -113,5 +115,23 @@ describe("creating a repository", () => {
 
     expect(await screen.findByRole("alert")).toBeTruthy();
     expect(screen.queryByTestId("landed-on-repo")).toBeNull();
+  });
+
+  // A navigation failure after a successful create has no DOM-observable
+  // difference between being swallowed (the bug) and correctly surfacing as
+  // an unhandled rejection (the fix): both leave the screen exactly as it
+  // was when `navigate` was called. A behavioural test that forces
+  // `navigate` to reject can only prove this by causing a real unhandled
+  // rejection, which fails the test run itself in this harness (Vitest
+  // treats it as a run-level error, not a per-test assertion) rather than
+  // failing only when the bug regresses. This characterises the source
+  // directly instead: the `.catch` sits on the `mutateAsync` call, and
+  // `navigate` is awaited outside of it, so a navigation failure is never
+  // caught.
+  it("only the create's own catch is scoped around `create.mutateAsync`, not around `navigate`", () => {
+    const source = readFileSync(join(import.meta.dirname, "new.tsx"), "utf8");
+    const onSubmit = source.slice(source.indexOf("onSubmit: async"), source.indexOf("  });"));
+    expect(onSubmit).toContain("mutateAsync(toInput(value)).catch(");
+    expect(onSubmit).not.toMatch(/navigate\([^)]*\)[\s\S]*\.catch\(/);
   });
 });

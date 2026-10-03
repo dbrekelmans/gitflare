@@ -6,6 +6,7 @@ import { RouteLink } from "@/components/shell/link";
 import { PageHead } from "@/components/shell/page";
 import { repositoryQueries } from "@/data/repositories.queries";
 import { formatTime, shortSha } from "@/lib/format";
+import { stillImporting } from "./import-status";
 
 /**
  * How to turn on session capture, for a repository that does not have it
@@ -30,21 +31,16 @@ function CaptureRow({ enabled }: { enabled: boolean }) {
   );
 }
 
-/**
- * The provisioning Workflow retries an import for a while before giving up,
- * so a few minutes of `importing` is normal. Past this, `readyAt` staying
- * null more likely means a source the host could never import (too large,
- * not reachable): `completeRepositoryImport` leaves the repository exactly
- * like this on that failure, with nothing in the contract to tell the two
- * apart (see the task comment on GF-34). This is a guess from `createdAt`
- * alone, not a fact the backend reports.
- */
-const IMPORT_STALL_MS = 30 * 60 * 1000;
-
 export function RepositoryPage({ repoSlug }: { repoSlug: string }) {
-  const { data } = useSuspenseQuery(repositoryQueries.detail(repoSlug));
+  const { data } = useSuspenseQuery({
+    ...repositoryQueries.detail(repoSlug),
+    refetchInterval: (query) => {
+      const repository = query.state.data?.repository;
+      return repository && stillImporting(repository) ? 3000 : false;
+    },
+  });
   const ready = data.repository.readyAt !== null;
-  const stalled = !ready && Date.now() - data.repository.createdAt > IMPORT_STALL_MS;
+  const failed = data.repository.importFailedAt !== null;
   return (
     <>
       <PageHead
@@ -56,16 +52,17 @@ export function RepositoryPage({ repoSlug }: { repoSlug: string }) {
               {data.activeDecisions} decisions
             </RouteLink>
           ) : (
-            <StatusPill tone={stalled ? "warning" : "neutral"}>
-              {stalled ? "not responding" : "importing"}
+            <StatusPill tone={failed ? "warning" : "neutral"}>
+              {failed ? "import failed" : "importing"}
             </StatusPill>
           )
         }
       />
       {!ready ? (
         <Text tone="muted">
-          {stalled
-            ? "This import has been running a long time and may have failed. Check that the source is reachable and fits, or create the repository again."
+          {failed
+            ? (data.repository.importError ??
+              "This import failed. Check that the source is reachable and fits, or create the repository again.")
             : "This repository is still being imported. Check back shortly: this page will show how to clone it once it is ready."}
         </Text>
       ) : (

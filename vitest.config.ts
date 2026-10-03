@@ -20,6 +20,7 @@ export default defineConfig({
       },
       "apps/forge/vitest.web.config.ts",
       "apps/forge/vitest.worker.config.ts",
+      "packages/ui/vitest.config.ts",
     ],
   },
 });

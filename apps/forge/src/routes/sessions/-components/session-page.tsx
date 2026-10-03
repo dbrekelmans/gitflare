@@ -4,6 +4,17 @@ import type { SessionView } from "@gitflare/core/api";
 import { Row, SectionHead } from "@gitflare/ui/components/row";
 import { Evidence, Text } from "@gitflare/ui/components/typography";
 import { Button } from "@gitflare/ui/components/ui/button";
+import {
+  Dialog,
+  DialogBody,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@gitflare/ui/components/ui/dialog";
 import { Textarea } from "@gitflare/ui/components/ui/textarea";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { useState } from "react";
@@ -166,6 +177,7 @@ function Actions({
 }) {
   const stop = useStopSession();
   const abandon = useAbandonSession();
+  const [confirmingAbandon, setConfirmingAbandon] = useState(false);
 
   return (
     <div className="flex items-center gap-s5">
@@ -179,17 +191,33 @@ function Actions({
         </Button>
       )}
       {mayAbandon && (
-        <Button
-          variant="ghost"
-          className="text-danger"
-          disabled={abandon.isPending}
-          onClick={() => {
-            if (!confirm("Abandon this session? Its fork will be deleted.")) return;
-            abandon.mutate({ sessionId });
-          }}
-        >
-          {abandon.isPending ? "Abandoning…" : "Abandon"}
-        </Button>
+        <Dialog open={confirmingAbandon} onOpenChange={setConfirmingAbandon}>
+          <DialogTrigger
+            render={<Button variant="ghost" className="text-danger" disabled={abandon.isPending} />}
+          >
+            {abandon.isPending ? "Abandoning…" : "Abandon"}
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Abandon this session?</DialogTitle>
+            </DialogHeader>
+            <DialogBody>
+              <DialogDescription>Its fork will be deleted.</DialogDescription>
+            </DialogBody>
+            <DialogFooter>
+              <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  setConfirmingAbandon(false);
+                  abandon.mutate({ sessionId });
+                }}
+              >
+                Abandon
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
       {(stop.error || abandon.error) && (
         <Text size="detail" className="text-danger" role="alert">
