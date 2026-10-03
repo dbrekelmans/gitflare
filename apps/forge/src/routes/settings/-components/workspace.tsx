@@ -23,6 +23,11 @@ export function Workspace() {
   const prepare = usePrepareWorkspace();
   const mayManage = can(me.user, { type: "settings.manage" });
   const [pollUntil, setPollUntil] = useState<number | null>(null);
+  // Whether a snapshot already existed when this fallback window started:
+  // only a first-time install can reliably tell itself "done" from here (no
+  // snapshot becoming one). A re-preparation keeps its existing snapshot
+  // throughout, so there is nothing to watch for; it runs the full window.
+  const [pollingFreshInstall, setPollingFreshInstall] = useState(false);
 
   // Clears itself once the fallback window elapses, so polling actually
   // stops rather than running until the next unrelated re-render.
@@ -52,11 +57,21 @@ export function Workspace() {
     },
   });
   const { workspace } = settings;
-  // The fallback window only keeps polling alive; it does not by itself
-  // mean preparing is still running; a mutation the fixture (or a fast
-  // backend) settles immediately must not show "Preparing…" for the rest
-  // of that window.
-  const running = prepare.isPending || workspace.preparation?.state === "running";
+
+  // A first install stops the fallback the moment its own snapshot shows
+  // up, rather than waiting out the rest of the window.
+  useEffect(() => {
+    if (pollUntil !== null && pollingFreshInstall && workspace.snapshot !== null) {
+      setPollUntil(null);
+    }
+  }, [pollUntil, pollingFreshInstall, workspace.snapshot]);
+
+  // Disabled, and shown as preparing, for as long as the fallback window
+  // runs: without a `preparation: running` signal from the backend this is
+  // the only thing stopping a second preparation from being started while
+  // the first is still actually in progress.
+  const running =
+    prepare.isPending || workspace.preparation?.state === "running" || pollUntil !== null;
   const failed = workspace.preparation?.state === "failed" ? workspace.preparation : null;
 
   return (
@@ -88,8 +103,12 @@ export function Workspace() {
             variant="outline"
             disabled={running}
             onClick={() => {
+              setPollingFreshInstall(workspace.snapshot === null);
               setPollUntil(Date.now() + FALLBACK_POLL_MS);
-              prepare.mutate(undefined);
+              // A flat refusal (no permission, budget, …) is not "under
+              // way": don't leave the button disabled for the fallback
+              // window over a request that never started anything.
+              prepare.mutate(undefined, { onError: () => setPollUntil(null) });
             }}
           >
             {running ? "Preparing…" : workspace.snapshot ? "Prepare again" : "Prepare workspace"}

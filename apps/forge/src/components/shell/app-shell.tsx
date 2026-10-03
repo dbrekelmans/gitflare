@@ -39,12 +39,12 @@ export function AppShell({ children }: { children: ReactNode }) {
               </Link>
             ))}
           </nav>
-          <div className="ml-auto flex items-baseline gap-s7 whitespace-nowrap">
-            <Evidence size="sm" kind="note">
+          <div className="ml-auto flex min-w-0 items-baseline gap-s7">
+            <Evidence size="sm" kind="note" className="hidden whitespace-nowrap lg:inline-flex">
               {formatUsd(me.budget.spentMicroUsd)} of {formatUsd(me.budget.budgetMicroUsd)} this
               month
             </Evidence>
-            <Text as="span" size="meta" tone="muted">
+            <Text as="span" size="meta" tone="muted" className="truncate">
               {me.user.name}
             </Text>
           </div>

@@ -40,7 +40,14 @@ async function renderShell() {
 
 afterEach(cleanup);
 
-describe("the app shell's header, which must not wrap at 768px", () => {
+// happy-dom does not run a real layout engine, so none of these tests can
+// measure actual page width or catch horizontal overflow the way a browser
+// at a real viewport size can (that was verified by hand in `pnpm dev` —
+// see the task comment on GF-49). These only check the className-level
+// contract: that wrapping is disabled where it must be, and that the one
+// group allowed to lose content below 1024px (the spend line) actually
+// does, rather than forcing the header wider than the viewport.
+describe("the app shell's header, which must not wrap or overflow at 768px", () => {
   it("never wraps a destination's label mid-word", async () => {
     await renderShell();
     for (const label of ["Inbox", "Repositories", "Sessions", "Settings"]) {
@@ -57,11 +64,19 @@ describe("the app shell's header, which must not wrap at 768px", () => {
     expect(nav.className).toContain("shrink-0");
   });
 
-  it("keeps the spend and the account name on one line each", async () => {
+  it("hides the spend line below 1024px instead of forcing the header wider than the viewport", async () => {
+    await renderShell();
+    const spend = screen.getByText(/this month/);
+    expect(spend.className).toContain("hidden");
+    expect(spend.className).toContain("lg:inline-flex");
+  });
+
+  it("truncates the account name rather than letting it push the header wider", async () => {
     await renderShell();
     const name = screen.getByText("Maya Okafor");
+    expect(name.className).toContain("truncate");
     const rightGroup = name.closest("div");
     if (!rightGroup) throw new Error("the account group has no wrapping div");
-    expect(rightGroup.className).toContain("whitespace-nowrap");
+    expect(rightGroup.className).toContain("min-w-0");
   });
 });
