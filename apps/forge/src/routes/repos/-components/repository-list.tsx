@@ -2,7 +2,7 @@ import type { RepositoryView } from "@gitflare/core/api";
 import { Row } from "@gitflare/ui/components/row";
 import { StatusPill } from "@gitflare/ui/components/status";
 import { Evidence, Text } from "@gitflare/ui/components/typography";
-import { Button } from "@gitflare/ui/components/ui/button";
+import { buttonVariants } from "@gitflare/ui/components/ui/button";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { RouteLink } from "@/components/shell/link";
@@ -53,9 +53,9 @@ export function RepositoryList() {
         title="Repositories"
         lede="Each one has a main repository only gitflare writes to, and a context repository beside it."
         aside={
-          <Button variant="outline" nativeButton={false} render={<Link to="/repos/new" />}>
+          <Link to="/repos/new" className={buttonVariants({ variant: "outline" })}>
             New repository
-          </Button>
+          </Link>
         }
       />
       {data.length === 0 ? (

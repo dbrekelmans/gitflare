@@ -24,10 +24,10 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="min-h-dvh bg-ground">
       <header className="border-b border-rule">
         <div className="mx-auto flex h-16 max-w-frame items-center gap-s10 px-s13">
-          <Link to="/" aria-label="gitflare, inbox">
+          <Link to="/" aria-label="gitflare, inbox" className="shrink-0">
             <Logo size={20} />
           </Link>
-          <nav aria-label="Main" className="flex items-center gap-s7">
+          <nav aria-label="Main" className="flex shrink-0 items-center gap-s7">
             {destinations.map((destination) => (
               <Link
                 key={destination.to}
@@ -39,7 +39,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               </Link>
             ))}
           </nav>
-          <div className="ml-auto flex items-baseline gap-s7">
+          <div className="ml-auto flex items-baseline gap-s7 whitespace-nowrap">
             <Evidence size="sm" kind="note">
               {formatUsd(me.budget.spentMicroUsd)} of {formatUsd(me.budget.budgetMicroUsd)} this
               month

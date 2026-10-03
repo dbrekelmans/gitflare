@@ -1,11 +1,12 @@
 import type { DecisionId, User } from "@gitflare/core";
 import {
+  CreateDecisionInput,
   DecisionRef,
   EditDecisionInput,
   type ForgeApi,
   RevertDecisionInput,
 } from "@gitflare/core/api";
-import { demo, demoUsers } from "@gitflare/testing/demo";
+import { DEMO_SLUG, demo, demoUsers } from "@gitflare/testing/demo";
 import { createFixtureApi } from "@gitflare/testing/fixture-api";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -35,8 +36,12 @@ vi.mock("@/data/decisions.functions", () => ({
     server.api.decisions.revive({ user: server.user }, DecisionRef.parse(data)),
 }));
 
-async function renderDecision(decisionId: DecisionId, as: User = demoUsers.maya) {
-  server.api = createFixtureApi(demo);
+async function renderDecision(
+  decisionId: DecisionId,
+  as: User = demoUsers.maya,
+  api: ForgeApi = createFixtureApi(demo),
+) {
+  server.api = api;
   server.user = as;
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const root = createRootRoute();
@@ -144,6 +149,32 @@ describe("a decision's page, against the demo", () => {
     expect(row.getByRole("button", { name: /Revert/ })).toBeTruthy();
   });
 
+  it("does not render an empty struck-through line when a rationale goes from blank to some text", async () => {
+    const api = createFixtureApi(demo);
+    const created = await api.decisions.create(
+      { user: demoUsers.maya },
+      CreateDecisionInput.parse({
+        repoSlug: "atlas-web",
+        title: "A decision with no rationale yet",
+        statement: "Something the team decided.",
+        rationale: "",
+      }),
+    );
+
+    await renderDecision(created.decision.id, demoUsers.maya, api);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Rationale"), {
+      target: { value: "Because it keeps things simple." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.getByText("Because it keeps things simple.")).toBeTruthy());
+    const rowEl = nthRow(0);
+    // The rationale is shown, but nothing is struck through: there was
+    // nothing before it to strike through.
+    expect(rowEl.querySelectorAll(".line-through").length).toBe(0);
+  });
+
   it("reverts a reshaped event to restore the earlier wording", async () => {
     await renderDecision("dec_no_secrets_in_logs" as DecisionId);
     expect(
@@ -230,8 +261,9 @@ describe("a decision's page, against the demo", () => {
 
   it("links back to the decision's own repository, not a fixed or history-based route", async () => {
     await renderDecision("dec_thin_routes" as DecisionId);
-    const back = screen.getByRole("button", { name: "Back to decisions" });
+    // A real link, not a button: a screen reader must announce it as one.
+    const back = screen.getByRole("link", { name: "Back to decisions" });
     fireEvent.click(back);
-    expect(await screen.findByText(/^Decisions for /)).toBeTruthy();
+    expect(await screen.findByText(`Decisions for ${DEMO_SLUG}`)).toBeTruthy();
   });
 });

@@ -40,12 +40,28 @@ async function renderShell() {
 
 afterEach(cleanup);
 
-describe("the app shell's main navigation", () => {
-  it("never wraps a destination's label mid-word, however narrow the viewport", async () => {
+describe("the app shell's header, which must not wrap at 768px", () => {
+  it("never wraps a destination's label mid-word", async () => {
     await renderShell();
     for (const label of ["Inbox", "Repositories", "Sessions", "Settings"]) {
       const link = screen.getByRole("link", { name: label });
       expect(link.className).toContain("whitespace-nowrap");
     }
+  });
+
+  it("keeps the wordmark and the nav from shrinking, so neither stacks its own text", async () => {
+    await renderShell();
+    const wordmark = screen.getByRole("link", { name: "gitflare, inbox" });
+    expect(wordmark.className).toContain("shrink-0");
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    expect(nav.className).toContain("shrink-0");
+  });
+
+  it("keeps the spend and the account name on one line each", async () => {
+    await renderShell();
+    const name = screen.getByText("Maya Okafor");
+    const rightGroup = name.closest("div");
+    if (!rightGroup) throw new Error("the account group has no wrapping div");
+    expect(rightGroup.className).toContain("whitespace-nowrap");
   });
 });

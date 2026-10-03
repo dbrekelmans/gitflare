@@ -3,7 +3,7 @@ import type { UserRef } from "@gitflare/core/api";
 import { Row, SectionHead } from "@gitflare/ui/components/row";
 import { StatusPill } from "@gitflare/ui/components/status";
 import { Evidence, Text } from "@gitflare/ui/components/typography";
-import { Button } from "@gitflare/ui/components/ui/button";
+import { Button, buttonVariants } from "@gitflare/ui/components/ui/button";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
@@ -59,16 +59,30 @@ function attribution(user: UserRef | null, userId: string | null): string | null
   return null;
 }
 
+/** One part of a wording diff: struck-through old text (when there was any) and the new text. */
+function WordingDiff({ before, after }: { before: string; after: string }) {
+  if (before === after) return null;
+  return (
+    <>
+      {before !== "" && (
+        <Text size="body-s" tone="muted" className="line-through">
+          {before}
+        </Text>
+      )}
+      <Text size="body-s">{after}</Text>
+    </>
+  );
+}
+
 function BackLink({ repoSlug }: { repoSlug: string }) {
   return (
-    <Button
-      variant="link"
-      className="mb-s6 px-0"
-      nativeButton={false}
-      render={<Link to="/repos/$repoSlug/decisions" params={{ repoSlug }} />}
+    <Link
+      to="/repos/$repoSlug/decisions"
+      params={{ repoSlug }}
+      className={buttonVariants({ variant: "link", className: "mb-s6" })}
     >
       Back to decisions
-    </Button>
+    </Link>
   );
 }
 
@@ -180,30 +194,18 @@ export function DecisionPage({ decisionId }: { decisionId: DecisionId }) {
               >
                 {changed && event.wording && (
                   <>
-                    {event.wording.before.title !== event.wording.after.title && (
-                      <>
-                        <Text size="body-s" tone="muted" className="line-through">
-                          {event.wording.before.title}
-                        </Text>
-                        <Text size="body-s">{event.wording.after.title}</Text>
-                      </>
-                    )}
-                    {event.wording.before.statement !== event.wording.after.statement && (
-                      <>
-                        <Text size="body-s" tone="muted" className="line-through">
-                          {event.wording.before.statement}
-                        </Text>
-                        <Text size="body-s">{event.wording.after.statement}</Text>
-                      </>
-                    )}
-                    {event.wording.before.rationale !== event.wording.after.rationale && (
-                      <>
-                        <Text size="body-s" tone="muted" className="line-through">
-                          {event.wording.before.rationale}
-                        </Text>
-                        <Text size="body-s">{event.wording.after.rationale}</Text>
-                      </>
-                    )}
+                    <WordingDiff
+                      before={event.wording.before.title}
+                      after={event.wording.after.title}
+                    />
+                    <WordingDiff
+                      before={event.wording.before.statement}
+                      after={event.wording.after.statement}
+                    />
+                    <WordingDiff
+                      before={event.wording.before.rationale}
+                      after={event.wording.after.rationale}
+                    />
                   </>
                 )}
                 {event.note != null && (

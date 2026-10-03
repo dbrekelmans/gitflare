@@ -1,6 +1,6 @@
 import { Row } from "@gitflare/ui/components/row";
 import { Evidence } from "@gitflare/ui/components/typography";
-import { Button } from "@gitflare/ui/components/ui/button";
+import { buttonVariants } from "@gitflare/ui/components/ui/button";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { RouteLink } from "@/components/shell/link";
@@ -21,9 +21,9 @@ function Sessions() {
         title="Sessions"
         lede="Your work in progress. A session is a fork, the commits pushed to it and how they were made, wherever it runs."
         aside={
-          <Button variant="flare" nativeButton={false} render={<Link to="/sessions/new" />}>
+          <Link to="/sessions/new" className={buttonVariants({ variant: "flare" })}>
             Start a session
-          </Button>
+          </Link>
         }
       />
       {data.length === 0 && (

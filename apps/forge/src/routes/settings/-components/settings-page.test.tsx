@@ -159,6 +159,35 @@ describe("the workspace, for an administrator", () => {
     expect(screen.getByRole("button", { name: "Prepare workspace" })).toBeTruthy();
   });
 
+  it("keeps polling after the mutation resolves, so a workspace the backend finishes preparing in the background still turns 'prepared' without a manual reload", async () => {
+    await renderSettings();
+    const base = await server.api.account.getSettings({ user: demoUsers.maya });
+
+    // The real backend accepts the request and returns immediately,
+    // writing neither a snapshot nor `preparation: running` on this
+    // response (see the task comment on GF-49): the only way the page
+    // ever learns the real preparation finished is by polling.
+    server.api.account.prepareWorkspace = () => Promise.resolve(undefined);
+    let prepared = false;
+    server.api.account.getSettings = () =>
+      Promise.resolve({
+        ...base,
+        workspace: prepared
+          ? { ...base.workspace, snapshot: { id: "snap_live", image: base.workspace.image } }
+          : base.workspace,
+      });
+
+    fireEvent.click(screen.getByRole("button", { name: "Prepare workspace" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Prepare workspace" })).toBeTruthy(),
+    );
+
+    // The real preparation finishes well after the request that kicked
+    // it off already resolved. The poll interval is 3s; give it room.
+    prepared = true;
+    await waitFor(() => expect(screen.getByText("prepared")).toBeTruthy(), { timeout: 8000 });
+  }, 10000);
+
   it("re-preparing an already-prepared workspace does not get stuck on 'Preparing…'", async () => {
     await renderSettings({
       data: demoWith((data) => {
